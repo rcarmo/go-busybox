@@ -59,6 +59,7 @@ make build
 ./_build/echo "Hello, World!"
 ./_build/cat file.txt
 ./_build/ls -la
+./_build/busybox echo "Hello from unified binary"
 ```
 
 ### WASM (requires wasmtime, wasmer, or similar)
@@ -67,6 +68,7 @@ make build-wasm
 wasmtime _build/echo.wasm "Hello, World!"
 wasmtime --dir=. _build/cat.wasm file.txt
 wasmtime --dir=. _build/ls.wasm -la
+wasmtime _build/busybox.wasm echo "Hello from unified binary"
 ```
 
 ## Development

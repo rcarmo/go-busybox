@@ -16,7 +16,7 @@ GOLANGCI_LINT_VERSION := latest
 GOSEC_VERSION := latest
 
 # Applets to build
-APPLETS := echo cat ls cp mv rm head tail wc mkdir pwd
+APPLETS := echo cat ls cp mv rm head tail wc mkdir pwd busybox
 
 .PHONY: help
 help: ## Show targets
