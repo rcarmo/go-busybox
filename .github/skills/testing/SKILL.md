@@ -1,7 +1,7 @@
 # Skill: Testing Strategy & Best Practices
 
 ## Goal
-Provide a comprehensive, maintainable test suite that maximizes coverage while minimizing duplication through parameterization, fixtures, and continuous code quality monitoring.
+Provide a comprehensive, maintainable test suite that maximizes coverage while minimizing duplication through parameterization, fixtures, and continuous code quality monitoring. Prefer comparative testing patterns defined in `.github/skills/comparison/SKILL.md` for parity cases.
 
 ## Core Principles
 

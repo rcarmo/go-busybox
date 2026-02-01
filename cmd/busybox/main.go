@@ -7,6 +7,7 @@ import (
 	"github.com/rcarmo/busybox-wasm/pkg/applets/cat"
 	"github.com/rcarmo/busybox-wasm/pkg/applets/cp"
 	"github.com/rcarmo/busybox-wasm/pkg/applets/echo"
+	"github.com/rcarmo/busybox-wasm/pkg/applets/find"
 	"github.com/rcarmo/busybox-wasm/pkg/applets/head"
 	"github.com/rcarmo/busybox-wasm/pkg/applets/ls"
 	"github.com/rcarmo/busybox-wasm/pkg/applets/mkdir"
@@ -32,6 +33,7 @@ var applets = map[string]appletFunc{
 	"head":  head.Run,
 	"tail":  tail.Run,
 	"wc":    wc.Run,
+	"find":  find.Run,
 	"mkdir": mkdir.Run,
 	"pwd":   pwd.Run,
 }
