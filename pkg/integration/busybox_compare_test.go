@@ -35,6 +35,7 @@ func TestBusyboxComparisons(t *testing.T) {
 		input   string
 		files   map[string]string
 		wantOut string
+		setup   func(t *testing.T, dir string)
 	}{
 		{
 			name:   "echo_basic",
@@ -86,12 +87,26 @@ func TestBusyboxComparisons(t *testing.T) {
 			name:   "pwd",
 			applet: "pwd",
 		},
+		{
+			name:   "rmdir_parents",
+			applet: "rmdir",
+			args:   []string{"-p", "a/b/c"},
+			setup: func(t *testing.T, dir string) {
+				if err := os.MkdirAll(filepath.Join(dir, "a/b/c"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ourDir := testutil.TempDirWithFiles(t, tt.files)
 			busyDir := testutil.TempDirWithFiles(t, tt.files)
+			if tt.setup != nil {
+				tt.setup(t, ourDir)
+				tt.setup(t, busyDir)
+			}
 
 			if tt.name == "pwd" {
 				// Ensure both cwd outputs are compared per directory
