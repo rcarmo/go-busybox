@@ -76,6 +76,15 @@ func TestBusyboxComparisons(t *testing.T) {
 				"b.md":  "b",
 			},
 		},
+
+		{
+			name:   "sort_basic",
+			applet: "sort",
+			args:   []string{"input.txt"},
+			files: map[string]string{
+				"input.txt": "z\na\nb\n",
+			},
+		},
 		{
 			name:   "ls_basic",
 			applet: "ls",
