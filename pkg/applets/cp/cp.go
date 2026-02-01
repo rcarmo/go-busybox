@@ -23,37 +23,22 @@ type Options struct {
 // Run executes the cp command with the given arguments.
 func Run(stdio *core.Stdio, args []string) int {
 	opts := Options{}
-	var paths []string
 
-	// Parse arguments
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			paths = append(paths, args[i+1:]...)
-			break
-		}
-		if len(arg) > 0 && arg[0] == '-' && len(arg) > 1 {
-			for _, c := range arg[1:] {
-				switch c {
-				case 'r', 'R':
-					opts.Recursive = true
-				case 'f':
-					opts.Force = true
-				case 'i':
-					opts.Interactive = true
-				case 'p':
-					opts.Preserve = true
-				case 'n':
-					opts.NoClobber = true
-				case 'v':
-					opts.Verbose = true
-				default:
-					return core.UsageError(stdio, "cp", "invalid option -- '"+string(c)+"'")
-				}
-			}
-		} else {
-			paths = append(paths, arg)
-		}
+	flagMap := map[byte]*bool{
+		'f': &opts.Force,
+		'i': &opts.Interactive,
+		'p': &opts.Preserve,
+		'n': &opts.NoClobber,
+		'v': &opts.Verbose,
+		'r': &opts.Recursive,
+	}
+	aliases := map[byte]byte{
+		'R': 'r',
+	}
+
+	paths, code := core.ParseBoolFlags(stdio, "cp", args, flagMap, aliases)
+	if code != core.ExitSuccess {
+		return code
 	}
 
 	if len(paths) < 2 {

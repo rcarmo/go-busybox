@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/rcarmo/busybox-wasm/pkg/core"
+	"github.com/rcarmo/busybox-wasm/pkg/core/fs"
 )
 
 // Run executes the pwd command with the given arguments.
@@ -28,10 +29,10 @@ func Run(stdio *core.Stdio, args []string) int {
 	if logical {
 		dir = os.Getenv("PWD")
 		if dir == "" {
-			dir, err = os.Getwd()
+			dir, err = fs.Getwd()
 		}
 	} else {
-		dir, err = os.Getwd()
+		dir, err = fs.Getwd()
 	}
 
 	if err != nil {

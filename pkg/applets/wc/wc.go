@@ -38,7 +38,7 @@ func Run(stdio *core.Stdio, args []string) int {
 		'c': &opts.Bytes,
 	}
 
-	files, code := core.ParseBoolFlags(stdio, "wc", args, flagMap)
+	files, code := core.ParseBoolFlags(stdio, "wc", args, flagMap, nil)
 	if code != core.ExitSuccess {
 		return code
 	}

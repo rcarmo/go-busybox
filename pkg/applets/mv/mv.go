@@ -27,7 +27,7 @@ func Run(stdio *core.Stdio, args []string) int {
 		'v': &opts.Verbose,
 	}
 
-	paths, code := core.ParseBoolFlags(stdio, "mv", args, flagMap)
+	paths, code := core.ParseBoolFlags(stdio, "mv", args, flagMap, nil)
 	if code != core.ExitSuccess {
 		return code
 	}

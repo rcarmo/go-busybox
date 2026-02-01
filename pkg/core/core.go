@@ -134,7 +134,7 @@ func ParseHeadTailArgs(stdio *Stdio, applet string, args []string) (*HeadTailOpt
 }
 
 // ParseBoolFlags parses short boolean flags (e.g., -abc) and returns remaining args.
-func ParseBoolFlags(stdio *Stdio, applet string, args []string, flags map[byte]*bool) ([]string, int) {
+func ParseBoolFlags(stdio *Stdio, applet string, args []string, flags map[byte]*bool, aliases map[byte]byte) ([]string, int) {
 	var files []string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -144,7 +144,11 @@ func ParseBoolFlags(stdio *Stdio, applet string, args []string, flags map[byte]*
 		}
 		if len(arg) > 1 && arg[0] == '-' {
 			for _, c := range arg[1:] {
-				target, ok := flags[byte(c)]
+				flagKey := byte(c)
+				if alias, ok := aliases[flagKey]; ok {
+					flagKey = alias
+				}
+				target, ok := flags[flagKey]
 				if !ok {
 					return nil, UsageError(stdio, applet, "invalid option -- '"+string(c)+"'")
 				}
