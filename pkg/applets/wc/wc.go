@@ -127,17 +127,18 @@ func countFile(stdio *core.Stdio, path string) (*Counts, error) {
 
 func printCounts(stdio *core.Stdio, c *Counts, name string, opts *Options) {
 	if opts.Lines {
-		stdio.Printf("%7d ", c.Lines)
+		stdio.Printf("%9d ", c.Lines)
 	}
 	if opts.Words {
-		stdio.Printf("%7d ", c.Words)
+		stdio.Printf("%9d ", c.Words)
 	}
 	if opts.Chars && !opts.Bytes {
-		stdio.Printf("%7d ", c.Chars)
+		stdio.Printf("%9d ", c.Chars)
 	}
 	if opts.Bytes {
-		stdio.Printf("%7d ", c.Bytes)
+		stdio.Printf("%9d ", c.Bytes)
 	}
+
 	stdio.Println(name)
 }
 

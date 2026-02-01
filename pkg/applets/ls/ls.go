@@ -11,6 +11,7 @@ import (
 
 	"github.com/rcarmo/busybox-wasm/pkg/core"
 	sbfs "github.com/rcarmo/busybox-wasm/pkg/core/fs"
+	"golang.org/x/term"
 )
 
 // Options holds ls command options.
@@ -77,6 +78,10 @@ func Run(stdio *core.Stdio, args []string) int {
 
 	if len(paths) == 0 {
 		paths = []string{"."}
+	}
+
+	if !opts.Long && !opts.OnePerLine {
+		opts.OnePerLine = shouldForceOnePerLine(stdio)
 	}
 
 	exitCode := core.ExitSuccess
@@ -233,4 +238,11 @@ func humanSize(size int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f%c", float64(size)/float64(div), "KMGTPE"[exp])
+}
+
+func shouldForceOnePerLine(stdio *core.Stdio) bool {
+	if f, ok := stdio.Out.(*os.File); ok {
+		return !term.IsTerminal(int(f.Fd()))
+	}
+	return true
 }
