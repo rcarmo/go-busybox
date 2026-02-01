@@ -50,6 +50,7 @@ func main() {
 		os.Exit(core.ExitUsage)
 	}
 
+	// Applets expect args without the applet name.
 	os.Exit(run(stdio, args))
 }
 
