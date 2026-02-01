@@ -19,33 +19,17 @@ type Options struct {
 // Run executes the mv command with the given arguments.
 func Run(stdio *core.Stdio, args []string) int {
 	opts := Options{}
-	var paths []string
 
-	// Parse arguments
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			paths = append(paths, args[i+1:]...)
-			break
-		}
-		if len(arg) > 0 && arg[0] == '-' && len(arg) > 1 {
-			for _, c := range arg[1:] {
-				switch c {
-				case 'f':
-					opts.Force = true
-				case 'i':
-					opts.Interactive = true
-				case 'n':
-					opts.NoClobber = true
-				case 'v':
-					opts.Verbose = true
-				default:
-					return core.UsageError(stdio, "mv", "invalid option -- '"+string(c)+"'")
-				}
-			}
-		} else {
-			paths = append(paths, arg)
-		}
+	flagMap := map[byte]*bool{
+		'f': &opts.Force,
+		'i': &opts.Interactive,
+		'n': &opts.NoClobber,
+		'v': &opts.Verbose,
+	}
+
+	paths, code := core.ParseBoolFlags(stdio, "mv", args, flagMap)
+	if code != core.ExitSuccess {
+		return code
 	}
 
 	if len(paths) < 2 {

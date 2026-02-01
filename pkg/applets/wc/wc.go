@@ -30,33 +30,17 @@ type Counts struct {
 // Run executes the wc command with the given arguments.
 func Run(stdio *core.Stdio, args []string) int {
 	opts := Options{}
-	var files []string
 
-	// Parse arguments
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			files = append(files, args[i+1:]...)
-			break
-		}
-		if len(arg) > 0 && arg[0] == '-' && arg != "-" {
-			for _, c := range arg[1:] {
-				switch c {
-				case 'l':
-					opts.Lines = true
-				case 'w':
-					opts.Words = true
-				case 'm':
-					opts.Chars = true
-				case 'c':
-					opts.Bytes = true
-				default:
-					return core.UsageError(stdio, "wc", "invalid option -- '"+string(c)+"'")
-				}
-			}
-		} else {
-			files = append(files, arg)
-		}
+	flagMap := map[byte]*bool{
+		'l': &opts.Lines,
+		'w': &opts.Words,
+		'm': &opts.Chars,
+		'c': &opts.Bytes,
+	}
+
+	files, code := core.ParseBoolFlags(stdio, "wc", args, flagMap)
+	if code != core.ExitSuccess {
+		return code
 	}
 
 	// Default: show all
