@@ -40,10 +40,10 @@ make test
 - `mv` - Move/rename files
 - `rm` - Remove files
 
-### Phase 2 (Planned)
-- File: `head`, `tail`, `wc`, `sort`, `uniq`, `cut`, `grep`
-- Directory: `mkdir`, `rmdir`, `pwd`, `find`
-- Text: `sed`, `awk`, `tr`, `diff`
+### Phase 2 (In Progress)
+- File: `head`, `tail`, `wc`
+- Directory: `mkdir`, `rmdir`, `pwd`
+- Planned: `sort`, `uniq`, `cut`, `grep`, `find`, `sed`, `awk`, `tr`, `diff`
 
 ### Phase 3 (Planned)
 - Shell: `ash` subset
