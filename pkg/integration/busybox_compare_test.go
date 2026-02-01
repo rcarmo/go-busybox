@@ -66,6 +66,16 @@ func TestBusyboxComparisons(t *testing.T) {
 				"input.txt": "alpha\nbeta\ngamma\n",
 			},
 		},
+
+		{
+			name:   "find_basic",
+			applet: "find",
+			args:   []string{"-name", "*.txt"},
+			files: map[string]string{
+				"a.txt": "a",
+				"b.md":  "b",
+			},
+		},
 		{
 			name:   "ls_basic",
 			applet: "ls",
@@ -112,6 +122,13 @@ func TestBusyboxComparisons(t *testing.T) {
 				// Ensure both cwd outputs are compared per directory
 				ourOut, ourErr, ourCode := runCmd(t, ourPath, tt.applet, tt.args, tt.input, ourDir)
 				busyOut, busyErr, busyCode := runCmd(t, busyboxPath, tt.applet, tt.args, tt.input, busyDir)
+
+				// Normalize busybox output for find: strip leading './' when present so
+				// comparisons focus on names/paths rather than a './' prefix.
+				if tt.applet == "find" {
+					busyOut = strings.ReplaceAll(busyOut, "./", "")
+				}
+
 				if ourCode != busyCode {
 					t.Fatalf("exit code mismatch: ours=%d busybox=%d", ourCode, busyCode)
 				}
