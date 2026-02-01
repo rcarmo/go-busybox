@@ -4,10 +4,10 @@ package head
 import (
 	"bufio"
 	"io"
-	"os"
 	"strconv"
 
 	"github.com/rcarmo/busybox-wasm/pkg/core"
+	"github.com/rcarmo/busybox-wasm/pkg/core/fs"
 )
 
 // Run executes the head command with the given arguments.
@@ -111,7 +111,7 @@ func headFile(stdio *core.Stdio, path string, lines, bytes int) error {
 	if path == "-" {
 		reader = stdio.In
 	} else {
-		f, err := os.Open(path)
+		f, err := fs.Open(path)
 		if err != nil {
 			stdio.Errorf("head: %s: %v\n", path, err)
 			return err

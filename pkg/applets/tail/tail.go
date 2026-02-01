@@ -4,10 +4,10 @@ package tail
 import (
 	"bufio"
 	"io"
-	"os"
 	"strconv"
 
 	"github.com/rcarmo/busybox-wasm/pkg/core"
+	"github.com/rcarmo/busybox-wasm/pkg/core/fs"
 )
 
 // Run executes the tail command with the given arguments.
@@ -110,7 +110,7 @@ func tailFile(stdio *core.Stdio, path string, lines, bytes int) error {
 	if path == "-" {
 		reader = stdio.In
 	} else {
-		f, err := os.Open(path)
+		f, err := fs.Open(path)
 		if err != nil {
 			stdio.Errorf("tail: %s: %v\n", path, err)
 			return err

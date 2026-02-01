@@ -4,11 +4,11 @@ package wc
 import (
 	"bufio"
 	"io"
-	"os"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/rcarmo/busybox-wasm/pkg/core"
+	"github.com/rcarmo/busybox-wasm/pkg/core/fs"
 )
 
 // Options holds wc command options.
@@ -101,7 +101,7 @@ func countFile(stdio *core.Stdio, path string) (*Counts, error) {
 	if path == "-" {
 		reader = stdio.In
 	} else {
-		f, err := os.Open(path)
+		f, err := fs.Open(path)
 		if err != nil {
 			stdio.Errorf("wc: %s: %v\n", path, err)
 			return nil, err
