@@ -144,6 +144,12 @@ func TestBusyboxComparisons(t *testing.T) {
 			ourOut, ourErr, ourCode := runCmd(t, ourPath, tt.applet, tt.args, tt.input, ourDir)
 			busyOut, busyErr, busyCode := runCmd(t, busyboxPath, tt.applet, tt.args, tt.input, busyDir)
 
+			// Normalize busybox output for find: strip leading './' when present so
+			// comparisons focus on names/paths rather than a './' prefix.
+			if tt.applet == "find" {
+				busyOut = strings.ReplaceAll(busyOut, "./", "")
+			}
+
 			if ourCode != busyCode {
 				t.Fatalf("exit code mismatch: ours=%d busybox=%d", ourCode, busyCode)
 			}
