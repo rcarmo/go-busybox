@@ -116,9 +116,67 @@ func TestBusyboxComparisons(t *testing.T) {
 				}
 			},
 		},
+
+		{
+			name:   "uniq_basic",
+			applet: "uniq",
+			args:   []string{"input.txt"},
+			files: map[string]string{
+				"input.txt": "a\na\nb\nb\n",
+			},
+		},
+		{
+			name:   "cut_basic",
+			applet: "cut",
+			args:   []string{"-f", "2", "input.txt"},
+			files: map[string]string{
+				"input.txt": "1,2,3\n4,5,6\n",
+			},
+		},
+		{
+			name:   "grep_basic",
+			applet: "grep",
+			args:   []string{"-n", "foo", "input.txt"},
+			files: map[string]string{
+				"input.txt": "foo\nbar\nfoo\n",
+			},
+		},
+		{
+			name:   "sed_basic",
+			applet: "sed",
+			args:   []string{"s/foo/bar/", "input.txt"},
+			files: map[string]string{
+				"input.txt": "foo\nfoo\n",
+			},
+		},
+		{
+			name:   "tr_basic",
+			applet: "tr",
+			args:   []string{"a-z", "A-Z"},
+			input:  "hello\n",
+		},
+		{
+			name:   "diff_basic",
+			applet: "diff",
+			args:   []string{"a.txt", "b.txt"},
+			files: map[string]string{
+				"a.txt": "a\n",
+				"b.txt": "b\n",
+			},
+		},
 	}
 
 	for _, tt := range tests {
+
+		// Skip parity for applets not implemented yet
+		implemented := map[string]bool{
+			"echo": true, "cat": true, "head": true, "tail": true,
+			"ls": true, "wc": true, "pwd": true, "rmdir": true,
+			"find": true, "sort": true,
+		}
+		if !implemented[tt.applet] {
+			t.Skipf("applet %s not implemented yet", tt.applet)
+		}
 		t.Run(tt.name, func(t *testing.T) {
 			ourDir := testutil.TempDirWithFiles(t, tt.files)
 			busyDir := testutil.TempDirWithFiles(t, tt.files)
