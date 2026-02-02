@@ -6,8 +6,11 @@ import (
 
 	"github.com/rcarmo/busybox-wasm/pkg/applets/cat"
 	"github.com/rcarmo/busybox-wasm/pkg/applets/cp"
+	"github.com/rcarmo/busybox-wasm/pkg/applets/cut"
+	"github.com/rcarmo/busybox-wasm/pkg/applets/diff"
 	"github.com/rcarmo/busybox-wasm/pkg/applets/echo"
 	"github.com/rcarmo/busybox-wasm/pkg/applets/find"
+	"github.com/rcarmo/busybox-wasm/pkg/applets/grep"
 	"github.com/rcarmo/busybox-wasm/pkg/applets/head"
 	"github.com/rcarmo/busybox-wasm/pkg/applets/ls"
 	"github.com/rcarmo/busybox-wasm/pkg/applets/mkdir"
@@ -15,8 +18,11 @@ import (
 	"github.com/rcarmo/busybox-wasm/pkg/applets/pwd"
 	"github.com/rcarmo/busybox-wasm/pkg/applets/rm"
 	"github.com/rcarmo/busybox-wasm/pkg/applets/rmdir"
+	"github.com/rcarmo/busybox-wasm/pkg/applets/sed"
 	"github.com/rcarmo/busybox-wasm/pkg/applets/sort"
 	"github.com/rcarmo/busybox-wasm/pkg/applets/tail"
+	"github.com/rcarmo/busybox-wasm/pkg/applets/tr"
+	"github.com/rcarmo/busybox-wasm/pkg/applets/uniq"
 	"github.com/rcarmo/busybox-wasm/pkg/applets/wc"
 	"github.com/rcarmo/busybox-wasm/pkg/core"
 )
@@ -38,6 +44,12 @@ var applets = map[string]appletFunc{
 	"sort":  sort.Run,
 	"mkdir": mkdir.Run,
 	"pwd":   pwd.Run,
+	"uniq":  uniq.Run,
+	"cut":   cut.Run,
+	"grep":  grep.Run,
+	"sed":   sed.Run,
+	"tr":    tr.Run,
+	"diff":  diff.Run,
 }
 
 func main() {

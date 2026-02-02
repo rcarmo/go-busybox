@@ -172,7 +172,8 @@ func TestBusyboxComparisons(t *testing.T) {
 		implemented := map[string]bool{
 			"echo": true, "cat": true, "head": true, "tail": true,
 			"ls": true, "wc": true, "pwd": true, "rmdir": true,
-			"find": true, "sort": true,
+			"find": true, "sort": true, "uniq": true, "cut": true,
+			"grep": true, "sed": true, "tr": true, "diff": true,
 		}
 		if !implemented[tt.applet] {
 			t.Skipf("applet %s not implemented yet", tt.applet)
