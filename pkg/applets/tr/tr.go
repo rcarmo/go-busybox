@@ -19,7 +19,29 @@ func Run(stdio *core.Stdio, args []string) int {
 		return core.ExitFailure
 	}
 	s := buf.String()
-	// naive implementation: map by index
+	// support simple a-z -> A-Z style ranges like 'a-z' -> 'A-Z'
+	if len(from) == 3 && from[1] == '-' && len(to) == 3 && to[1] == '-' {
+		startFrom := from[0]
+		endFrom := from[2]
+		startTo := to[0]
+		// build translation map
+		tm := map[rune]rune{}
+		rf := int(endFrom - startFrom)
+		for i := 0; i <= rf; i++ {
+			r := rune(startFrom + byte(i))
+			t := rune(startTo + byte(i))
+			tm[r] = t
+		}
+		b := []rune(s)
+		for i, r := range b {
+			if t, ok := tm[r]; ok {
+				b[i] = t
+			}
+		}
+		stdio.Print(string(b))
+		return core.ExitSuccess
+	}
+	// fallback to index-based mapping
 	runes := []rune(s)
 	for i := range runes {
 		if idx := strings.IndexRune(from, runes[i]); idx >= 0 && idx < len(to) {

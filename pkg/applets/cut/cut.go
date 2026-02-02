@@ -41,6 +41,9 @@ func Run(stdio *core.Stdio, args []string) int {
 		parts := strings.Split(scanner.Text(), ",")
 		if field <= len(parts) {
 			stdio.Println(parts[field-1])
+		} else {
+			// if field doesn't exist, print the whole line (busybox behavior)
+			stdio.Println(scanner.Text())
 		}
 	}
 	if err := scanner.Err(); err != nil {

@@ -24,6 +24,10 @@ func Run(stdio *core.Stdio, args []string) int {
 	}
 	old := parts[0]
 	new := parts[1]
+	// strip trailing delimiter if user provided s/foo/bar/ form that left an empty string
+	if strings.HasSuffix(new, "/") {
+		new = strings.TrimSuffix(new, "/")
+	}
 	file := args[1]
 	var scanner *bufio.Scanner
 	if file == "-" {
