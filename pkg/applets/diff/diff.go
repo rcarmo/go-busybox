@@ -35,10 +35,13 @@ func Run(stdio *core.Stdio, args []string) int {
 			lineB = scB.Text()
 		}
 		if !hasB || lineA != lineB {
-			stdio.Printf("%dc%d\\n", line, line)
-			stdio.Printf("< %s\\n", lineA)
+			// emulate unified diff header lines minimally for parity
+			stdio.Printf("--- %s\n", args[0])
+			stdio.Printf("+++ %s\n", args[1])
+			stdio.Printf("@@ -%d +%d @@\n", line, line)
+			stdio.Printf("-%s\n", lineA)
 			if hasB {
-				stdio.Printf("> %s\\n", lineB)
+				stdio.Printf("+%s\n", lineB)
 			}
 			changed = true
 		}

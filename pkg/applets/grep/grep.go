@@ -27,10 +27,13 @@ func Run(stdio *core.Stdio, args []string) int {
 		scanner = bufio.NewScanner(f)
 	}
 	lineNum := 1
+
+	matched := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.Contains(line, pattern) {
 			stdio.Printf("%d:%s\n", lineNum, line)
+			matched = true
 		}
 		lineNum++
 	}
@@ -38,5 +41,8 @@ func Run(stdio *core.Stdio, args []string) int {
 		stdio.Errorf("grep: %v\n", err)
 		return core.ExitFailure
 	}
-	return core.ExitSuccess
+	if matched {
+		return 0
+	}
+	return 1
 }
