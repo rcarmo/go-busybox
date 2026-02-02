@@ -32,7 +32,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.Contains(line, pattern) {
-			stdio.Printf("%d:%s\n", lineNum, line)
+			stdio.Printf("%d:%s\n", lineNum, line) // keep -n style output
 			matched = true
 		}
 		lineNum++

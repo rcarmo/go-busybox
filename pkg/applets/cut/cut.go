@@ -38,7 +38,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	}
 
 	for scanner.Scan() {
-		parts := strings.Split(scanner.Text(), ",")
+		parts := strings.Split(scanner.Text(), "\t") // use tab delimiter like busybox default
 		if field <= len(parts) {
 			stdio.Println(parts[field-1])
 		} else {
