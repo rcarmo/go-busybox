@@ -123,6 +123,30 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:   "sort_numeric",
+			applet: "sort",
+			args:   []string{"-n", "input.txt"},
+			files: map[string]string{
+				"input.txt": "c\na\n10\n2\n",
+			},
+		},
+		{
+			name:   "sort_reverse",
+			applet: "sort",
+			args:   []string{"-r", "input.txt"},
+			files: map[string]string{
+				"input.txt": "c\na\n10\n2\n",
+			},
+		},
+		{
+			name:   "sort_unique",
+			applet: "sort",
+			args:   []string{"-u", "input.txt"},
+			files: map[string]string{
+				"input.txt": "a\na\n2\n10\n",
+			},
+		},
+		{
 			name:   "ls_basic",
 			applet: "ls",
 			args:   []string{"-1"},

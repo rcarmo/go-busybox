@@ -61,7 +61,7 @@ When going through this checklist, ensure maxiumum code reuse and proper use of 
 - [x] Implement `-p`, `-m`, `-v` and mode parsing.
 
 ## pwd
-- [ ] Implement `-L`/`-P` semantics and symlink resolution parity.
+- [x] Implement `-L`/`-P` semantics and symlink resolution parity.
 
 ## rmdir
 - [x] Implement `-p`, `-v` and error wording parity.

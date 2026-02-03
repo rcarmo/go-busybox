@@ -1,0 +1,52 @@
+package sort_test
+
+import (
+	"testing"
+
+	"github.com/rcarmo/busybox-wasm/pkg/applets/sort"
+	"github.com/rcarmo/busybox-wasm/pkg/core"
+	"github.com/rcarmo/busybox-wasm/pkg/testutil"
+)
+
+func TestSort(t *testing.T) {
+	tests := []testutil.AppletTestCase{
+		{
+			Name:     "default",
+			Args:     []string{"input.txt"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "10\n2\na\nc\n",
+			Files: map[string]string{
+				"input.txt": "c\na\n10\n2\n",
+			},
+		},
+		{
+			Name:     "numeric",
+			Args:     []string{"-n", "input.txt"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "a\nc\n2\n10\n",
+			Files: map[string]string{
+				"input.txt": "c\na\n10\n2\n",
+			},
+		},
+		{
+			Name:     "reverse",
+			Args:     []string{"-r", "input.txt"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "c\na\n2\n10\n",
+			Files: map[string]string{
+				"input.txt": "c\na\n10\n2\n",
+			},
+		},
+		{
+			Name:     "unique",
+			Args:     []string{"-u", "input.txt"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "10\n2\na\n",
+			Files: map[string]string{
+				"input.txt": "a\na\n2\n10\n",
+			},
+		},
+	}
+
+	testutil.RunAppletTests(t, sort.Run, tests)
+}
