@@ -100,6 +100,11 @@ func TestBusyboxComparisons(t *testing.T) {
 		},
 
 		{
+			name:   "mkdir_parents_verbose",
+			applet: "mkdir",
+			args:   []string{"-p", "-v", "a/b"},
+		},
+		{
 			name:   "find_basic",
 			applet: "find",
 			args:   []string{"-name", "*.txt"},

@@ -49,8 +49,8 @@ When going through this checklist, ensure maxiumum code reuse and proper use of 
 - [x] Match multi-file headers and error messages.
 
 ## wc
-- [ ] Implement `-l`, `-w`, `-c`, `-m` with correct precedence.
-- [ ] Match multi-file totals output formatting.
+- [x] Implement `-l`, `-w`, `-c`, `-m` with correct precedence.
+- [x] Match multi-file totals output formatting.
 
 ## find
 - [ ] Add predicates: `-name/-iname`, `-type`, `-maxdepth/-mindepth` (confirm edge cases), `-print0`.

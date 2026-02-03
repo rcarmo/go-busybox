@@ -3,7 +3,9 @@ package mkdir
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/rcarmo/busybox-wasm/pkg/core"
 	"github.com/rcarmo/busybox-wasm/pkg/core/fs"
@@ -63,21 +65,52 @@ func Run(stdio *core.Stdio, args []string) int {
 	for _, dir := range dirs {
 		var err error
 		if parents {
-			err = fs.MkdirAll(dir, mode)
+			err = mkdirParents(stdio, dir, mode, verbose)
 		} else {
 			err = fs.Mkdir(dir, mode)
+			if err == nil && verbose {
+				stdio.Printf("created directory: '%s'\n", dir)
+			}
 		}
 
 		if err != nil {
 			stdio.Errorf("mkdir: cannot create directory '%s': %v\n", dir, err)
 			exitCode = core.ExitFailure
-			continue
-		}
-
-		if verbose {
-			stdio.Printf("mkdir: created directory '%s'\n", dir)
 		}
 	}
 
 	return exitCode
+}
+
+func mkdirParents(stdio *core.Stdio, dir string, mode os.FileMode, verbose bool) error {
+	clean := filepath.Clean(dir)
+	if clean == "." {
+		return nil
+	}
+	parts := strings.Split(clean, string(os.PathSeparator))
+	current := ""
+	if strings.HasPrefix(clean, string(os.PathSeparator)) {
+		current = string(os.PathSeparator)
+		parts = parts[1:]
+	}
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		if current == "" || current == string(os.PathSeparator) {
+			current = current + part
+		} else {
+			current = current + string(os.PathSeparator) + part
+		}
+		if err := fs.Mkdir(current, mode); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return err
+		}
+		if verbose {
+			stdio.Printf("created directory: '%s'\n", current)
+		}
+	}
+	return nil
 }
