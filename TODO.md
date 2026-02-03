@@ -64,7 +64,7 @@ When going through this checklist, ensure maxiumum code reuse and proper use of 
 - [ ] Implement `-L`/`-P` semantics and symlink resolution parity.
 
 ## rmdir
-- [ ] Implement `-p`, `-v` and error wording parity.
+- [x] Implement `-p`, `-v` and error wording parity.
 
 ## sort
 - [ ] Implement `-r`, `-n`, `-k`, `-t`, `-u`, `-o`, `-f` and stable sort parity.

@@ -3,6 +3,7 @@ package head
 
 import (
 	"bufio"
+	"errors"
 	"io"
 
 	"github.com/rcarmo/busybox-wasm/pkg/core"
@@ -14,7 +15,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	return core.RunHeadTail(stdio, "head", args, headFile)
 }
 
-func headFile(stdio *core.Stdio, path string, lines, bytes int) error {
+func headFile(stdio *core.Stdio, path string, lines, bytes int, fromStart bool) error {
 	var reader io.Reader
 
 	if path == "-" {
@@ -27,6 +28,10 @@ func headFile(stdio *core.Stdio, path string, lines, bytes int) error {
 		}
 		defer f.Close()
 		reader = f
+	}
+
+	if fromStart {
+		return errors.New("invalid number")
 	}
 
 	if bytes >= 0 {

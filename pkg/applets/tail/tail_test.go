@@ -29,6 +29,15 @@ func TestTail(t *testing.T) {
 			},
 		},
 		{
+			Name:     "from_start",
+			Args:     []string{"-n", "+2", "test.txt"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "b\nc\n",
+			Files: map[string]string{
+				"test.txt": "a\nb\nc\n",
+			},
+		},
+		{
 			Name:     "byte_count",
 			Args:     []string{"-c", "3", "bytes.txt"},
 			WantCode: core.ExitSuccess,

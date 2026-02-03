@@ -90,6 +90,14 @@ func TestBusyboxComparisons(t *testing.T) {
 				"input.txt": "alpha\nbeta\ngamma\n",
 			},
 		},
+		{
+			name:   "tail_from_start",
+			applet: "tail",
+			args:   []string{"-n", "+2", "input.txt"},
+			files: map[string]string{
+				"input.txt": "alpha\nbeta\ngamma\n",
+			},
+		},
 
 		{
 			name:   "find_basic",

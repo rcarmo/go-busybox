@@ -14,7 +14,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	return core.RunHeadTail(stdio, "tail", args, tailFile)
 }
 
-func tailFile(stdio *core.Stdio, path string, lines, bytes int) error {
+func tailFile(stdio *core.Stdio, path string, lines, bytes int, fromStart bool) error {
 	var reader io.Reader
 
 	if path == "-" {
@@ -30,7 +30,14 @@ func tailFile(stdio *core.Stdio, path string, lines, bytes int) error {
 	}
 
 	if bytes >= 0 {
+		if fromStart {
+			return tailBytesFrom(stdio, reader, bytes)
+		}
 		return tailBytes(stdio, reader, path, bytes)
+	}
+
+	if fromStart {
+		return tailLinesFrom(stdio, reader, lines)
 	}
 
 	return tailLines(stdio, reader, lines)
@@ -66,6 +73,47 @@ func tailLines(stdio *core.Stdio, reader io.Reader, n int) error {
 	}
 
 	return nil
+}
+
+func tailLinesFrom(stdio *core.Stdio, reader io.Reader, start int) error {
+	scanner := bufio.NewScanner(reader)
+	lineNum := 1
+	for scanner.Scan() {
+		if lineNum >= start {
+			stdio.Println(scanner.Text())
+		}
+		lineNum++
+	}
+	return scanner.Err()
+}
+
+func tailBytesFrom(stdio *core.Stdio, reader io.Reader, start int) error {
+	if start < 1 {
+		start = 1
+	}
+	buf := make([]byte, 4096)
+	pos := 1
+	for {
+		n, err := reader.Read(buf)
+		if n > 0 {
+			endPos := pos + n - 1
+			if endPos >= start {
+				idx := 0
+				if start > pos {
+					idx = start - pos
+				}
+				_, _ = stdio.Out.Write(buf[idx:n])
+				start = endPos + 1
+			}
+			pos = endPos + 1
+		}
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+	}
 }
 
 func tailBytes(stdio *core.Stdio, reader io.Reader, path string, n int) error {
