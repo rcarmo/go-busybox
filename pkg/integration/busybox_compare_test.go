@@ -135,6 +135,22 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:   "wc_chars",
+			applet: "wc",
+			args:   []string{"-m", "input.txt"},
+			files: map[string]string{
+				"input.txt": "a b\n",
+			},
+		},
+		{
+			name:   "wc_bytes",
+			applet: "wc",
+			args:   []string{"-c", "input.txt"},
+			files: map[string]string{
+				"input.txt": "a b\n",
+			},
+		},
+		{
 			name:   "pwd",
 			applet: "pwd",
 		},

@@ -41,8 +41,8 @@ When going through this checklist, ensure maxiumum code reuse and proper use of 
 - [ ] Match behavior for directories, non-empty dirs, and missing files.
 
 ## head
-- [ ] Implement `-c` bytes, `-q/-v`, `-n` with `+N` semantics.
-- [ ] Match multi-file headers and error messages.
+- [x] Implement `-c` bytes, `-q/-v`, `-n` (BusyBox rejects +N).
+- [x] Match multi-file headers and error messages.
 
 ## tail
 - [x] Implement `-c` bytes, `-q/-v`, `-n` with `+N` semantics.

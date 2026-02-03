@@ -43,7 +43,7 @@ func Run(stdio *core.Stdio, args []string) int {
 		return code
 	}
 
-	// Default: show all
+	// Default: show lines, words, bytes
 	if !opts.Lines && !opts.Words && !opts.Chars && !opts.Bytes {
 		opts.Lines = true
 		opts.Words = true
@@ -64,7 +64,7 @@ func Run(stdio *core.Stdio, args []string) int {
 			continue
 		}
 
-		printCounts(stdio, counts, file, &opts)
+		printCounts(stdio, counts, file, &opts, file == "-")
 
 		total.Lines += counts.Lines
 		total.Words += counts.Words
@@ -73,7 +73,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	}
 
 	if len(files) > 1 {
-		printCounts(stdio, &total, "total", &opts)
+		printCounts(stdio, &total, "total", &opts, false)
 	}
 
 	return exitCode
@@ -125,21 +125,34 @@ func countFile(stdio *core.Stdio, path string) (*Counts, error) {
 	return counts, nil
 }
 
-func printCounts(stdio *core.Stdio, c *Counts, name string, opts *Options) {
+func printCounts(stdio *core.Stdio, c *Counts, name string, opts *Options, stdin bool) {
+	fields := []int64{}
 	if opts.Lines {
-		stdio.Printf("%9d ", c.Lines)
+		fields = append(fields, c.Lines)
 	}
 	if opts.Words {
-		stdio.Printf("%9d ", c.Words)
+		fields = append(fields, c.Words)
 	}
 	if opts.Chars && !opts.Bytes {
-		stdio.Printf("%9d ", c.Chars)
+		fields = append(fields, c.Chars)
 	}
 	if opts.Bytes {
-		stdio.Printf("%9d ", c.Bytes)
+		fields = append(fields, c.Bytes)
 	}
-
-	stdio.Println(name)
+	format := "%9d"
+	if len(fields) == 1 {
+		format = "%d"
+	}
+	for i, v := range fields {
+		if i > 0 {
+			stdio.Print(" ")
+		}
+		stdio.Printf(format, v)
+	}
+	if !stdin {
+		stdio.Printf(" %s", name)
+	}
+	stdio.Println()
 }
 
 // CountString counts words, lines, chars in a string (for testing).
