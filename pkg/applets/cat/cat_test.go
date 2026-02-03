@@ -30,6 +30,42 @@ func TestCat(t *testing.T) {
 			},
 		},
 		{
+			Name:     "number_nonblank",
+			Args:     []string{"-b", "test.txt"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "     1	a\n\n     2	b\n",
+			Files: map[string]string{
+				"test.txt": "a\n\nb\n",
+			},
+		},
+		{
+			Name:     "show_ends",
+			Args:     []string{"-e", "test.txt"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "a$\n",
+			Files: map[string]string{
+				"test.txt": "a\n",
+			},
+		},
+		{
+			Name:     "show_tabs",
+			Args:     []string{"-t", "test.txt"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "a^Ib\n",
+			Files: map[string]string{
+				"test.txt": "a\tb\n",
+			},
+		},
+		{
+			Name:     "show_all",
+			Args:     []string{"-A", "test.txt"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "a^Ib$\n",
+			Files: map[string]string{
+				"test.txt": "a\tb\n",
+			},
+		},
+		{
 			Name:       "number_lines",
 			Args:       []string{"-n", "test.txt"},
 			WantCode:   core.ExitSuccess,

@@ -51,6 +51,30 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:   "cat_number",
+			applet: "cat",
+			args:   []string{"-n", "input.txt"},
+			files: map[string]string{
+				"input.txt": "alpha\n\n",
+			},
+		},
+		{
+			name:   "cat_show_ends",
+			applet: "cat",
+			args:   []string{"-e", "input.txt"},
+			files: map[string]string{
+				"input.txt": "alpha\n",
+			},
+		},
+		{
+			name:   "cat_show_tabs",
+			applet: "cat",
+			args:   []string{"-t", "input.txt"},
+			files: map[string]string{
+				"input.txt": "a\tb\n",
+			},
+		},
+		{
 			name:   "head_file",
 			applet: "head",
 			args:   []string{"-n", "2", "input.txt"},
