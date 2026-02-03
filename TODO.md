@@ -45,8 +45,8 @@ When going through this checklist, ensure maxiumum code reuse and proper use of 
 - [ ] Match multi-file headers and error messages.
 
 ## tail
-- [ ] Implement `-c` bytes, `-q/-v`, `-n` with `+N` semantics.
-- [ ] Match multi-file headers and error messages.
+- [x] Implement `-c` bytes, `-q/-v`, `-n` with `+N` semantics.
+- [x] Match multi-file headers and error messages.
 
 ## wc
 - [ ] Implement `-l`, `-w`, `-c`, `-m` with correct precedence.

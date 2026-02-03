@@ -1,8 +1,6 @@
 package core
 
 import (
-	"bufio"
-	"io"
 	"strconv"
 )
 
@@ -135,6 +133,11 @@ func RunHeadTail(stdio *Stdio, applet string, args []string, fn HeadTailFileFunc
 			stdio.Printf("==> %s <==\n", file)
 		}
 
+		if opts.From && applet == "head" {
+			exitCode = ExitFailure
+			stdio.Errorf("head: invalid number '+%d'\n", opts.Lines)
+			continue
+		}
 		if err := fn(stdio, file, opts.Lines, opts.Bytes, opts.From); err != nil {
 			exitCode = ExitFailure
 		}
@@ -160,47 +163,4 @@ func parseNumericFlagValue(args []string, i int, arg string, j int, applet strin
 		return n, i, ExitSuccess
 	}
 	return 0, i, UsageError(stdio, applet, "missing number")
-}
-
-// TailLinesFrom reads starting from a line number (1-based).
-func TailLinesFrom(reader io.Reader, start int, stdio *Stdio) error {
-	scanner := bufio.NewScanner(reader)
-	lineNum := 1
-	for scanner.Scan() {
-		if lineNum >= start {
-			stdio.Println(scanner.Text())
-		}
-		lineNum++
-	}
-	return scanner.Err()
-}
-
-// TailBytesFrom reads starting from a byte offset (1-based).
-func TailBytesFrom(reader io.Reader, start int, stdio *Stdio) error {
-	if start < 1 {
-		start = 1
-	}
-	buf := make([]byte, 4096)
-	pos := 1
-	for {
-		n, err := reader.Read(buf)
-		if n > 0 {
-			endPos := pos + n - 1
-			if endPos >= start {
-				idx := 0
-				if start > pos {
-					idx = start - pos
-				}
-				_, _ = stdio.Out.Write(buf[idx:n])
-				start = endPos + 1
-			}
-			pos = endPos + 1
-		}
-		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			return err
-		}
-	}
 }
