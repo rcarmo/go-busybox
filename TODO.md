@@ -18,8 +18,9 @@ When going through this checklist, ensure maxiumum code reuse and proper use of 
 - [ ] Validate handling of `--` and unknown flags.
 
 ## cat
-- [ ] Implement `-n`, `-b`, `-A`, `-E`, `-T` and verify line numbering/parsing.
-- [ ] Handle multiple files and stdin (`-`) exactly as BusyBox.
+- [x] Implement `-n`, `-b`, `-A`, `-e`, `-t`, `-v` and verify line numbering/parsing.
+- [x] Handle multiple files and stdin (`-`) exactly as BusyBox.
+- [ ] Remaining: `-s` not supported by BusyBox; ensure usage text parity (done).
 
 ## ls
 - [ ] Implement `-a`, `-A`, `-l`, `-h`, `-F`, `-R`, `-t`, `-S`, `-r`.

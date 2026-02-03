@@ -29,7 +29,18 @@ func TestRmdir(t *testing.T) {
 			Name:     "remove_missing",
 			Args:     []string{"missing"},
 			WantCode: core.ExitFailure,
-			WantErr:  "rmdir:",
+			WantErr:  "rmdir: '",
+		},
+		{
+			Name:     "verbose",
+			Args:     []string{"-v", "empty"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "rmdir: removing directory, 'empty'\n",
+			Setup: func(t *testing.T, dir string) {
+				if err := os.Mkdir(filepath.Join(dir, "empty"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			},
 		},
 		{
 			Name:     "parents",

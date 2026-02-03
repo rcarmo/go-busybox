@@ -140,6 +140,16 @@ func TestBusyboxComparisons(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:   "rmdir_verbose",
+			applet: "rmdir",
+			args:   []string{"-v", "empty"},
+			setup: func(t *testing.T, dir string) {
+				if err := os.MkdirAll(filepath.Join(dir, "empty"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
 
 		{
 			name:   "uniq_basic",

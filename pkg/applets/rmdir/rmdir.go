@@ -43,21 +43,21 @@ func Run(stdio *core.Stdio, args []string) int {
 func removeDir(stdio *core.Stdio, dir string, parents bool, verbose bool) error {
 	if err := fs.Remove(dir); err != nil {
 		if os.IsNotExist(err) {
-			stdio.Errorf("rmdir: failed to remove '%s': No such file or directory\n", dir)
+			stdio.Errorf("rmdir: '%s': No such file or directory\n", dir)
 			return err
 		}
-		stdio.Errorf("rmdir: failed to remove '%s': %v\n", dir, err)
+		stdio.Errorf("rmdir: '%s': %v\n", dir, err)
 		return err
 	}
 
 	if verbose {
-		stdio.Printf("rmdir: removed directory '%s'\n", dir)
+		stdio.Printf("rmdir: removing directory, '%s'\n", dir)
 	}
 
 	if parents {
 		parent := filepath.Dir(dir)
 		if parent != "." && parent != "/" {
-			_ = removeDir(stdio, parent, parents, verbose)
+			return removeDir(stdio, parent, parents, verbose)
 		}
 	}
 
