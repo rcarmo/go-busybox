@@ -9,18 +9,33 @@ import (
 )
 
 func Run(stdio *core.Stdio, args []string) int {
-	if len(args) < 2 {
+	// parse optional flags (only -n supported)
+	showLineNum := false
+	i := 0
+	for i < len(args) && strings.HasPrefix(args[i], "-") {
+		if args[i] == "-n" {
+			showLineNum = true
+			i++
+			continue
+		}
+		return core.UsageError(stdio, "grep", "invalid option")
+	}
+	if i >= len(args) {
 		return core.UsageError(stdio, "grep", "missing pattern or file")
 	}
-	pattern := args[0]
-	file := args[1]
+	pattern := args[i]
+	i++
+	file := "-"
+	if i < len(args) {
+		file = args[i]
+	}
 	var scanner *bufio.Scanner
 	if file == "-" {
 		scanner = bufio.NewScanner(stdio.In)
 	} else {
 		f, err := fs.Open(file)
 		if err != nil {
-			stdio.Errorf("grep: %s: %v\n", file, err)
+			stdio.Errorf("grep: %s: %v\\n", file, err)
 			return core.ExitFailure
 		}
 		defer f.Close()
@@ -32,13 +47,17 @@ func Run(stdio *core.Stdio, args []string) int {
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.Contains(line, pattern) {
-			stdio.Printf("%d:%s\n", lineNum, line) // keep -n style output
+			if showLineNum {
+				stdio.Printf("%d:%s\\n", lineNum, line)
+			} else {
+				stdio.Printf("%s\\n", line)
+			}
 			matched = true
 		}
 		lineNum++
 	}
 	if err := scanner.Err(); err != nil {
-		stdio.Errorf("grep: %v\n", err)
+		stdio.Errorf("grep: %v\\n", err)
 		return core.ExitFailure
 	}
 	if matched {
