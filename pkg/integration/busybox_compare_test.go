@@ -142,6 +142,30 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:   "grep_ignore_case",
+			applet: "grep",
+			args:   []string{"-i", "foo", "input.txt"},
+			files: map[string]string{
+				"input.txt": "Foo\nbar\nFOO\n",
+			},
+		},
+		{
+			name:   "grep_invert",
+			applet: "grep",
+			args:   []string{"-v", "foo", "input.txt"},
+			files: map[string]string{
+				"input.txt": "foo\nbar\nfoo\n",
+			},
+		},
+		{
+			name:   "grep_count",
+			applet: "grep",
+			args:   []string{"-c", "foo", "input.txt"},
+			files: map[string]string{
+				"input.txt": "foo\nbar\nfoo\n",
+			},
+		},
+		{
 			name:   "sed_basic",
 			applet: "sed",
 			args:   []string{"s/foo/bar/", "input.txt"},
