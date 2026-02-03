@@ -13,13 +13,13 @@ func Run(stdio *core.Stdio, args []string) int {
 	}
 	a, err := fs.Open(args[0])
 	if err != nil {
-		stdio.Errorf("diff: %v\\n", err)
+		stdio.Errorf("diff: %v\n", err)
 		return core.ExitFailure
 	}
 	defer a.Close()
 	b, err := fs.Open(args[1])
 	if err != nil {
-		stdio.Errorf("diff: %v\\n", err)
+		stdio.Errorf("diff: %v\n", err)
 		return core.ExitFailure
 	}
 	defer b.Close()
@@ -48,13 +48,13 @@ func Run(stdio *core.Stdio, args []string) int {
 		line++
 	}
 	if err := scA.Err(); err != nil {
-		stdio.Errorf("diff: %v\\n", err)
+		stdio.Errorf("diff: %v\n", err)
 		return core.ExitFailure
 	}
 	if scB.Scan() {
 		// additional lines in B
-		stdio.Printf("%dA%d\\n", line, line)
-		stdio.Printf("> %s\\n", scB.Text())
+		stdio.Printf("%dA%d\n", line, line)
+		stdio.Printf("> %s\n", scB.Text())
 		changed = true
 	}
 	if changed {

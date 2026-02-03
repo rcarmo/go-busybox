@@ -35,7 +35,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	} else {
 		f, err := fs.Open(file)
 		if err != nil {
-			stdio.Errorf("grep: %s: %v\\n", file, err)
+			stdio.Errorf("grep: %s: %v\n", file, err)
 			return core.ExitFailure
 		}
 		defer f.Close()
@@ -48,16 +48,16 @@ func Run(stdio *core.Stdio, args []string) int {
 		line := scanner.Text()
 		if strings.Contains(line, pattern) {
 			if showLineNum {
-				stdio.Printf("%d:%s\\n", lineNum, line)
+				stdio.Printf("%d:%s\n", lineNum, line)
 			} else {
-				stdio.Printf("%s\\n", line)
+				stdio.Printf("%s\n", line)
 			}
 			matched = true
 		}
 		lineNum++
 	}
 	if err := scanner.Err(); err != nil {
-		stdio.Errorf("grep: %v\\n", err)
+		stdio.Errorf("grep: %v\n", err)
 		return core.ExitFailure
 	}
 	if matched {

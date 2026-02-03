@@ -35,7 +35,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	} else {
 		f, err := fs.Open(file)
 		if err != nil {
-			stdio.Errorf("sed: %s: %v\\n", file, err)
+			stdio.Errorf("sed: %s: %v\n", file, err)
 			return core.ExitFailure
 		}
 		defer f.Close()
@@ -46,7 +46,7 @@ func Run(stdio *core.Stdio, args []string) int {
 		stdio.Println(strings.ReplaceAll(line, old, new))
 	}
 	if err := scanner.Err(); err != nil {
-		stdio.Errorf("sed: %v\\n", err)
+		stdio.Errorf("sed: %v\n", err)
 		return core.ExitFailure
 	}
 	return core.ExitSuccess

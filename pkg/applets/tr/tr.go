@@ -15,7 +15,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	to := args[1]
 	buf := new(strings.Builder)
 	if _, err := io.Copy(buf, stdio.In); err != nil {
-		stdio.Errorf("tr: %v\\n", err)
+		stdio.Errorf("tr: %v\n", err)
 		return core.ExitFailure
 	}
 	s := buf.String()
