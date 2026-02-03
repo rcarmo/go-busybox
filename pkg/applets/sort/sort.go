@@ -8,12 +8,19 @@ import (
 
 	"github.com/rcarmo/busybox-wasm/pkg/core"
 	"github.com/rcarmo/busybox-wasm/pkg/core/fs"
+	"github.com/rcarmo/busybox-wasm/pkg/core/textutil"
 )
 
 type options struct {
 	reverse bool
 	numeric bool
 	unique  bool
+	ignore  bool
+	sep     string
+	key     string
+	keyField int
+	keyChar  int
+	outFile string
 }
 
 func Run(stdio *core.Stdio, args []string) int {
@@ -27,6 +34,27 @@ func Run(stdio *core.Stdio, args []string) int {
 			break
 		}
 		if strings.HasPrefix(arg, "-") && arg != "-" {
+			if arg == "-t" || arg == "-k" || arg == "-o" {
+				if i+1 >= len(args) {
+					return core.UsageError(stdio, "sort", "missing argument")
+				}
+				i++
+				switch arg {
+				case "-t":
+					opts.sep = args[i]
+				case "-k":
+					opts.key = args[i]
+					field, char, err := textutil.ParseKeySpec(opts.key)
+					if err != nil {
+						return core.UsageError(stdio, "sort", "invalid key")
+					}
+					opts.keyField = field
+					opts.keyChar = char
+				case "-o":
+					opts.outFile = args[i]
+				}
+				continue
+			}
 			for _, c := range arg[1:] {
 				switch c {
 				case 'r':
@@ -35,12 +63,20 @@ func Run(stdio *core.Stdio, args []string) int {
 					opts.numeric = true
 				case 'u':
 					opts.unique = true
+				case 'f':
+					opts.ignore = true
 				default:
 					return core.UsageError(stdio, "sort", "invalid option -- '"+string(c)+"'")
 				}
 			}
 		} else {
 			files = append(files, arg)
+		}
+	}
+	if opts.sep != "" {
+		runes := []rune(opts.sep)
+		if len(runes) != 1 {
+			return core.UsageError(stdio, "sort", "invalid separator")
 		}
 	}
 
@@ -74,9 +110,15 @@ func Run(stdio *core.Stdio, args []string) int {
 	sort.SliceStable(lines, func(i, j int) bool {
 		li := lines[i]
 		lj := lines[j]
+		ki := buildSortKey(li, opts)
+		kj := buildSortKey(lj, opts)
+		if opts.ignore {
+			ki = strings.ToLower(ki)
+			kj = strings.ToLower(kj)
+		}
 		if opts.numeric {
-			ni, erri := strconv.ParseFloat(strings.TrimSpace(li), 64)
-			nj, errj := strconv.ParseFloat(strings.TrimSpace(lj), 64)
+			ni, erri := strconv.ParseFloat(strings.TrimSpace(ki), 64)
+			nj, errj := strconv.ParseFloat(strings.TrimSpace(kj), 64)
 			if erri != nil && errj == nil {
 				return !opts.reverse
 			}
@@ -85,7 +127,7 @@ func Run(stdio *core.Stdio, args []string) int {
 			}
 			if erri == nil && errj == nil {
 				if ni == nj {
-					return li < lj
+					return ki < kj
 				}
 				if opts.reverse {
 					return ni > nj
@@ -94,22 +136,44 @@ func Run(stdio *core.Stdio, args []string) int {
 			}
 		}
 		if opts.reverse {
-			return li > lj
+			return ki > kj
 		}
-		return li < lj
+		return ki < kj
 	})
 
-	last := ""
+	output := make([]string, 0, len(lines))
+	lastKey := ""
 	first := true
 	for _, l := range lines {
+		key := buildSortKey(l, opts)
+		if opts.ignore {
+			key = strings.ToLower(key)
+		}
 		if opts.unique {
-			if !first && l == last {
+			if !first && key == lastKey {
 				continue
 			}
-			last = l
+			lastKey = key
 			first = false
 		}
-		stdio.Println(l)
+		output = append(output, l)
+	}
+	if opts.outFile != "" {
+		if err := fs.WriteFile(opts.outFile, []byte(strings.Join(output, "\n")+"\n"), 0644); err != nil {
+			stdio.Errorf("sort: %v\n", err)
+			return core.ExitFailure
+		}
+		return core.ExitSuccess
+	}
+	for _, line := range output {
+		stdio.Println(line)
 	}
 	return core.ExitSuccess
+}
+
+func buildSortKey(line string, opts options) string {
+	if opts.key == "" {
+		return line
+	}
+	return textutil.ExtractKey(line, opts.keyField, opts.keyChar, opts.sep)
 }

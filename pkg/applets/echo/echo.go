@@ -24,9 +24,6 @@ func Run(stdio *core.Stdio, args []string) int {
 		} else if arg == "-E" {
 			enableEscapes = false
 			startIdx = i + 1
-		} else if arg == "--" {
-			startIdx = i + 1
-			break
 		} else if len(arg) > 0 && arg[0] == '-' {
 			// Combined flags like -ne
 			for _, c := range arg[1:] {
@@ -50,12 +47,13 @@ func Run(stdio *core.Stdio, args []string) int {
 done:
 
 	output := strings.Join(args[startIdx:], " ")
+	halt := false
 
 	if enableEscapes {
-		output = processEscapes(output)
+		output, halt = processEscapes(output)
 	}
 
-	if noNewline {
+	if noNewline || halt {
 		stdio.Print(output)
 	} else {
 		stdio.Println(output)
@@ -65,9 +63,10 @@ done:
 }
 
 // processEscapes handles escape sequences like \n, \t, etc.
-func processEscapes(s string) string {
+func processEscapes(s string) (string, bool) {
 	var result strings.Builder
 	i := 0
+	halt := false
 	for i < len(s) {
 		if s[i] == '\\' && i+1 < len(s) {
 			switch s[i+1] {
@@ -99,6 +98,9 @@ func processEscapes(s string) string {
 				// Octal escape - simplified, just handle \0
 				result.WriteByte(0)
 				i += 2
+			case 'c':
+				halt = true
+				i = len(s)
 			default:
 				result.WriteByte(s[i])
 				i++
@@ -108,5 +110,5 @@ func processEscapes(s string) string {
 			i++
 		}
 	}
-	return result.String()
+	return result.String(), halt
 }

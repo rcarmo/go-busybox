@@ -46,6 +46,33 @@ func TestSort(t *testing.T) {
 				"input.txt": "a\na\n2\n10\n",
 			},
 		},
+		{
+			Name:     "ignore_case",
+			Args:     []string{"-f", "input.txt"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "a\nA\n",
+			Files: map[string]string{
+				"input.txt": "a\nA\n",
+			},
+		},
+		{
+			Name:     "key_field",
+			Args:     []string{"-k", "2", "input.txt"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "b 1\na 2\n",
+			Files: map[string]string{
+				"input.txt": "a 2\nb 1\n",
+			},
+		},
+		{
+			Name:     "separator_key",
+			Args:     []string{"-t", ":", "-k", "2", "input.txt"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "b:1\na:2\n",
+			Files: map[string]string{
+				"input.txt": "a:2\nb:1\n",
+			},
+		},
 	}
 
 	testutil.RunAppletTests(t, sort.Run, tests)

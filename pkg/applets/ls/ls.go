@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/rcarmo/busybox-wasm/pkg/core"
 	sbfs "github.com/rcarmo/busybox-wasm/pkg/core/fs"
@@ -27,6 +28,7 @@ type Options struct {
 	SortSize   bool // -S: sort by size
 	NoSort     bool // -f: do not sort
 	Classify   bool // -F: append indicator to entries
+	DirSlash   bool // -p: append / to directories
 }
 
 // Run executes the ls command with the given arguments.
@@ -67,6 +69,8 @@ func Run(stdio *core.Stdio, args []string) int {
 					opts.All = true
 				case 'F':
 					opts.Classify = true
+				case 'p':
+					opts.DirSlash = true
 				default:
 					return core.UsageError(stdio, "ls", "invalid option -- '"+string(c)+"'")
 				}
@@ -94,7 +98,7 @@ func Run(stdio *core.Stdio, args []string) int {
 			}
 			stdio.Printf("%s:\n", path)
 		}
-		if err := listPath(stdio, path, &opts); err != nil {
+		if err := listPath(stdio, path, path, &opts); err != nil {
 			exitCode = core.ExitFailure
 		}
 	}
@@ -102,7 +106,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	return exitCode
 }
 
-func listPath(stdio *core.Stdio, path string, opts *Options) error {
+func listPath(stdio *core.Stdio, path string, display string, opts *Options) error {
 	info, err := sbfs.Stat(path)
 	if err != nil {
 		stdio.Errorf("ls: cannot access '%s': %v\n", path, err)
@@ -110,7 +114,7 @@ func listPath(stdio *core.Stdio, path string, opts *Options) error {
 	}
 
 	if !info.IsDir() {
-		printEntry(stdio, path, info, opts)
+		printEntry(stdio, display, path, info, opts)
 		return nil
 	}
 
@@ -145,7 +149,7 @@ func listPath(stdio *core.Stdio, path string, opts *Options) error {
 			stdio.Errorf("ls: cannot stat '%s': %v\n", e.Name(), err)
 			continue
 		}
-		printEntry(stdio, e.Name(), info, opts)
+		printEntry(stdio, e.Name(), filepath.Join(path, e.Name()), info, opts)
 	}
 
 	// Recursive listing
@@ -154,7 +158,7 @@ func listPath(stdio *core.Stdio, path string, opts *Options) error {
 			if e.IsDir() {
 				subpath := filepath.Join(path, e.Name())
 				stdio.Printf("\n%s:\n", subpath)
-				_ = listPath(stdio, subpath, opts)
+				_ = listPath(stdio, subpath, subpath, opts)
 			}
 		}
 	}
@@ -185,25 +189,34 @@ func sortEntries(entries []fs.DirEntry, opts *Options) {
 	})
 }
 
-func printEntry(stdio *core.Stdio, name string, info fs.FileInfo, opts *Options) {
+func printEntry(stdio *core.Stdio, name string, path string, info fs.FileInfo, opts *Options) {
 	if opts.Long {
 		mode := info.Mode()
 		size := info.Size()
 		modTime := info.ModTime()
+		displayName := name
+		if mode&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err == nil {
+				displayName = fmt.Sprintf("%s -> %s", name, target)
+			}
+		}
 
 		sizeStr := fmt.Sprintf("%d", size)
 		if opts.Human {
 			sizeStr = humanSize(size)
 		}
+		timeStr := formatTime(modTime)
 
-		stdio.Printf("%s %8s %s %s", mode.String(), sizeStr,
-			modTime.Format("Jan _2 15:04"), name)
+		stdio.Printf("%s %8s %s %s", mode.String(), sizeStr, timeStr, displayName)
 	} else {
 		stdio.Print(name)
 	}
 
 	if opts.Classify {
 		stdio.Print(classifyChar(info))
+	} else if opts.DirSlash && info.IsDir() {
+		stdio.Print("/")
 	}
 
 	if opts.Long || opts.OnePerLine {
@@ -225,6 +238,10 @@ func classifyChar(info fs.FileInfo) string {
 		return "*"
 	}
 	return ""
+}
+
+func formatTime(t time.Time) string {
+	return t.Format("Jan _2 15:04")
 }
 
 func humanSize(size int64) string {

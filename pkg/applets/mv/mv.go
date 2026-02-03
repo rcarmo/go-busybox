@@ -2,9 +2,8 @@
 package mv
 
 import (
-	"path/filepath"
-
 	"github.com/rcarmo/busybox-wasm/pkg/core"
+	"github.com/rcarmo/busybox-wasm/pkg/core/fileutil"
 	"github.com/rcarmo/busybox-wasm/pkg/core/fs"
 )
 
@@ -14,22 +13,50 @@ type Options struct {
 	Interactive bool // -i: prompt before overwrite
 	NoClobber   bool // -n: do not overwrite existing files
 	Verbose     bool // -v: verbose output
+	MoveToDir   string
+	NoTargetDir bool
 }
 
 // Run executes the mv command with the given arguments.
 func Run(stdio *core.Stdio, args []string) int {
 	opts := Options{}
 
-	flagMap := map[byte]*bool{
-		'f': &opts.Force,
-		'i': &opts.Interactive,
-		'n': &opts.NoClobber,
-		'v': &opts.Verbose,
-	}
-
-	paths, code := core.ParseBoolFlags(stdio, "mv", args, flagMap, nil)
-	if code != core.ExitSuccess {
-		return code
+	var paths []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			paths = append(paths, args[i+1:]...)
+			break
+		}
+		if len(arg) > 0 && arg[0] == '-' && len(arg) > 1 {
+			switch arg {
+			case "-t":
+				if i+1 >= len(args) {
+					return core.UsageError(stdio, "mv", "missing operand")
+				}
+				i++
+				opts.MoveToDir = args[i]
+			case "-T":
+				opts.NoTargetDir = true
+			default:
+				for _, c := range arg[1:] {
+					switch c {
+					case 'f':
+						opts.Force = true
+					case 'i':
+						opts.Interactive = true
+					case 'n':
+						opts.NoClobber = true
+					case 'v':
+						opts.Verbose = true
+					default:
+						return core.UsageError(stdio, "mv", "invalid option -- '"+string(c)+"'")
+					}
+				}
+			}
+		} else {
+			paths = append(paths, arg)
+		}
 	}
 
 	if len(paths) < 2 {
@@ -38,22 +65,22 @@ func Run(stdio *core.Stdio, args []string) int {
 
 	dest := paths[len(paths)-1]
 	sources := paths[:len(paths)-1]
+	if opts.MoveToDir != "" {
+		sources = paths
+		dest = opts.MoveToDir
+	}
 
-	// Check if destination is a directory
-	destInfo, destErr := fs.Stat(dest)
-	destIsDir := destErr == nil && destInfo.IsDir()
-
-	// Multiple sources require directory destination
-	if len(sources) > 1 && !destIsDir {
+	dest, destIsDir, code := fileutil.ResolveDest(sources, dest)
+	if code != core.ExitSuccess {
 		return core.UsageError(stdio, "mv", "target '"+dest+"' is not a directory")
+	}
+	if opts.NoTargetDir && destIsDir {
+		return core.UsageError(stdio, "mv", "target '"+dest+"' is a directory")
 	}
 
 	exitCode := core.ExitSuccess
 	for _, src := range sources {
-		target := dest
-		if destIsDir {
-			target = filepath.Join(dest, filepath.Base(src))
-		}
+		target := fileutil.TargetPath(src, dest, destIsDir)
 
 		if err := movePath(stdio, src, target, &opts); err != nil {
 			exitCode = core.ExitFailure
@@ -75,7 +102,9 @@ func movePath(stdio *core.Stdio, src, dest string, opts *Options) error {
 		if opts.NoClobber {
 			return nil
 		}
-		// Force mode removes destination first
+		if opts.Interactive && !opts.Force {
+			return nil
+		}
 		if opts.Force {
 			_ = fs.Remove(dest)
 		}

@@ -43,6 +43,11 @@ func TestBusyboxComparisons(t *testing.T) {
 			args:   []string{"hello", "world"},
 		},
 		{
+			name:   "echo_escape_stop",
+			applet: "echo",
+			args:   []string{"-e", "hi\\cbye"},
+		},
+		{
 			name:   "cat_file",
 			applet: "cat",
 			args:   []string{"input.txt"},
@@ -113,6 +118,31 @@ func TestBusyboxComparisons(t *testing.T) {
 				"b.md":  "b",
 			},
 		},
+		{
+			name:   "find_path",
+			applet: "find",
+			args:   []string{"-path", "*/a/*"},
+			files: map[string]string{
+				"a/b.txt": "a",
+				"c.txt":   "c",
+			},
+		},
+		{
+			name:   "find_print0",
+			applet: "find",
+			args:   []string{"-print0"},
+			files: map[string]string{
+				"a.txt": "a",
+			},
+		},
+		{
+			name:   "find_size",
+			applet: "find",
+			args:   []string{"-size", "+0c"},
+			files: map[string]string{
+				"a.txt": "a",
+			},
+		},
 
 		{
 			name:   "sort_basic",
@@ -147,12 +177,60 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:   "sort_key",
+			applet: "sort",
+			args:   []string{"-k", "2", "input.txt"},
+			files: map[string]string{
+				"input.txt": "a 2\nb 1\n",
+			},
+		},
+		{
+			name:   "sort_separator_key",
+			applet: "sort",
+			args:   []string{"-t", ":", "-k", "2", "input.txt"},
+			files: map[string]string{
+				"input.txt": "a:2\nb:1\n",
+			},
+		},
+		{
 			name:   "ls_basic",
 			applet: "ls",
 			args:   []string{"-1"},
 			files: map[string]string{
 				"a.txt": "a",
 				"b.txt": "b",
+			},
+		},
+		{
+			name:   "ls_classify",
+			applet: "ls",
+			args:   []string{"-F"},
+			files: map[string]string{
+				"dir/file.txt": "a",
+			},
+		},
+		{
+			name:   "cp_basic",
+			applet: "cp",
+			args:   []string{"a.txt", "b.txt"},
+			files: map[string]string{
+				"a.txt": "a",
+			},
+		},
+		{
+			name:   "mv_basic",
+			applet: "mv",
+			args:   []string{"a.txt", "b.txt"},
+			files: map[string]string{
+				"a.txt": "a",
+			},
+		},
+		{
+			name:   "rm_basic",
+			applet: "rm",
+			args:   []string{"a.txt"},
+			files: map[string]string{
+				"a.txt": "a",
 			},
 		},
 		{
@@ -237,11 +315,51 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:   "uniq_ignore_case",
+			applet: "uniq",
+			args:   []string{"-i", "input.txt"},
+			files: map[string]string{
+				"input.txt": "A\na\n",
+			},
+		},
+		{
+			name:   "uniq_skip_fields",
+			applet: "uniq",
+			args:   []string{"-f", "1", "input.txt"},
+			files: map[string]string{
+				"input.txt": "x a\ny a\nz b\n",
+			},
+		},
+		{
+			name:   "uniq_skip_chars",
+			applet: "uniq",
+			args:   []string{"-s", "1", "input.txt"},
+			files: map[string]string{
+				"input.txt": "aa\nba\n",
+			},
+		},
+		{
 			name:   "cut_basic",
 			applet: "cut",
 			args:   []string{"-f", "2", "input.txt"},
 			files: map[string]string{
 				"input.txt": "1,2,3\n4,5,6\n",
+			},
+		},
+		{
+			name:   "cut_delimiter",
+			applet: "cut",
+			args:   []string{"-d", ",", "-f", "1,3", "input.txt"},
+			files: map[string]string{
+				"input.txt": "1,2,3\n4,5,6\n",
+			},
+		},
+		{
+			name:   "cut_chars",
+			applet: "cut",
+			args:   []string{"-c", "2-3", "input.txt"},
+			files: map[string]string{
+				"input.txt": "abcd\n",
 			},
 		},
 		{
@@ -309,10 +427,44 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:   "sed_print",
+			applet: "sed",
+			args:   []string{"-n", "p", "input.txt"},
+			files: map[string]string{
+				"input.txt": "foo\n",
+			},
+		},
+		{
+			name:   "sed_delete",
+			applet: "sed",
+			args:   []string{"d", "input.txt"},
+			files: map[string]string{
+				"input.txt": "foo\n",
+			},
+		},
+		{
 			name:   "tr_basic",
 			applet: "tr",
 			args:   []string{"a-z", "A-Z"},
 			input:  "hello\n",
+		},
+		{
+			name:   "tr_delete",
+			applet: "tr",
+			args:   []string{"-d", "aeiou"},
+			input:  "hello\n",
+		},
+		{
+			name:   "tr_squeeze",
+			applet: "tr",
+			args:   []string{"-s", "a", "a"},
+			input:  "aaab\n",
+		},
+		{
+			name:   "tr_complement_delete",
+			applet: "tr",
+			args:   []string{"-cd", "a"},
+			input:  "abca\n",
 		},
 		{
 			name:   "diff_brief",
@@ -321,6 +473,41 @@ func TestBusyboxComparisons(t *testing.T) {
 			files: map[string]string{
 				"a.txt": "a\n",
 				"b.txt": "b\n",
+			},
+		},
+		{
+			name:   "diff_ignore_space",
+			applet: "diff",
+			args:   []string{"-b", "a.txt", "b.txt"},
+			files: map[string]string{
+				"a.txt": "a  b\n",
+				"b.txt": "a b\n",
+			},
+		},
+		{
+			name:   "diff_ignore_case",
+			applet: "diff",
+			args:   []string{"-i", "a.txt", "b.txt"},
+			files: map[string]string{
+				"a.txt": "A\n",
+				"b.txt": "a\n",
+			},
+		},
+		{
+			name:   "diff_labels",
+			applet: "diff",
+			args:   []string{"-L", "LEFT", "-L", "RIGHT", "a.txt", "b.txt"},
+			files: map[string]string{
+				"a.txt": "a\n",
+				"b.txt": "b\n",
+			},
+		},
+		{
+			name:   "diff_allow_absent",
+			applet: "diff",
+			args:   []string{"-N", "a.txt", "missing.txt"},
+			files: map[string]string{
+				"a.txt": "a\n",
 			},
 		},
 		{

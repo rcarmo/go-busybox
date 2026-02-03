@@ -46,6 +46,33 @@ func TestUniq(t *testing.T) {
 				"input.txt": "a\na\nb\n",
 			},
 		},
+		{
+			Name:     "ignore_case",
+			Args:     []string{"-i", "input.txt"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "A\n",
+			Files: map[string]string{
+				"input.txt": "A\na\n",
+			},
+		},
+		{
+			Name:     "skip_fields",
+			Args:     []string{"-f", "1", "input.txt"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "x a\nz b\n",
+			Files: map[string]string{
+				"input.txt": "x a\ny a\nz b\n",
+			},
+		},
+		{
+			Name:     "skip_chars",
+			Args:     []string{"-s", "1", "input.txt"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "aa\n",
+			Files: map[string]string{
+				"input.txt": "aa\nba\n",
+			},
+		},
 	}
 
 	testutil.RunAppletTests(t, uniq.Run, tests)

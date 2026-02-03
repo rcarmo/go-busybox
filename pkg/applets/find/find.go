@@ -5,32 +5,59 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/rcarmo/busybox-wasm/pkg/core"
 	"github.com/rcarmo/busybox-wasm/pkg/core/fs"
 )
 
-// Options holds find command options.
-type Options struct {
-	FollowSymlinks bool
-	MinDepth       int
-	MaxDepth       int
-	NamePattern    string
-	TypeFilter     rune
-	Print0         bool
+type actionType int
+
+const (
+	actionPrint actionType = iota
+	actionPrint0
+	actionDelete
+	actionPrune
+)
+
+type options struct {
+	followSymlinks bool
+	minDepth       int
+	maxDepth       int
+	namePattern    string
+	nameInsensitive bool
+	pathPattern    string
+	pathInsensitive bool
+	typeFilter     rune
+	print0         bool
+	prune          bool
+	sizeFilter     *sizeFilter
+	mtimeFilter    *timeFilter
+	atimeFilter    *timeFilter
+	ctimeFilter    *timeFilter
+	actions        []actionType
+}
+
+type sizeFilter struct {
+	op   byte
+	size int64
+	unit int64
+}
+
+type timeFilter struct {
+	op   byte
+	days int
 }
 
 // Run executes the find command with the given arguments.
 func Run(stdio *core.Stdio, args []string) int {
-	opts := Options{
-		MinDepth: 0,
-		MaxDepth: -1,
+	opts := options{
+		minDepth: 0,
+		maxDepth: -1,
 	}
-
 	paths := []string{}
 	i := 0
 
-	// Parse paths first (until an option is found)
 	for i < len(args) && !strings.HasPrefix(args[i], "-") {
 		paths = append(paths, args[i])
 		i++
@@ -39,22 +66,39 @@ func Run(stdio *core.Stdio, args []string) int {
 		paths = []string{"."}
 	}
 
-	// Parse options
 	for i < len(args) {
 		arg := args[i]
 		switch arg {
 		case "-L", "-follow":
-			opts.FollowSymlinks = true
+			opts.followSymlinks = true
 		case "-H":
-			// Busybox treats -H as follow command line symlinks only.
-			// We treat it the same as -L for now.
-			opts.FollowSymlinks = true
+			opts.followSymlinks = true
 		case "-name":
 			i++
 			if i >= len(args) {
 				return core.UsageError(stdio, "find", "missing argument to '-name'")
 			}
-			opts.NamePattern = args[i]
+			opts.namePattern = args[i]
+		case "-iname":
+			i++
+			if i >= len(args) {
+				return core.UsageError(stdio, "find", "missing argument to '-iname'")
+			}
+			opts.namePattern = args[i]
+			opts.nameInsensitive = true
+		case "-path":
+			i++
+			if i >= len(args) {
+				return core.UsageError(stdio, "find", "missing argument to '-path'")
+			}
+			opts.pathPattern = args[i]
+		case "-ipath":
+			i++
+			if i >= len(args) {
+				return core.UsageError(stdio, "find", "missing argument to '-ipath'")
+			}
+			opts.pathPattern = args[i]
+			opts.pathInsensitive = true
 		case "-type":
 			i++
 			if i >= len(args) {
@@ -63,7 +107,7 @@ func Run(stdio *core.Stdio, args []string) int {
 			if len(args[i]) != 1 {
 				return core.UsageError(stdio, "find", "invalid -type")
 			}
-			opts.TypeFilter = rune(args[i][0])
+			opts.typeFilter = rune(args[i][0])
 		case "-mindepth":
 			i++
 			if i >= len(args) {
@@ -73,7 +117,7 @@ func Run(stdio *core.Stdio, args []string) int {
 			if err != nil || val < 0 {
 				return core.UsageError(stdio, "find", "invalid -mindepth")
 			}
-			opts.MinDepth = val
+			opts.minDepth = val
 		case "-maxdepth":
 			i++
 			if i >= len(args) {
@@ -83,17 +127,62 @@ func Run(stdio *core.Stdio, args []string) int {
 			if err != nil || val < 0 {
 				return core.UsageError(stdio, "find", "invalid -maxdepth")
 			}
-			opts.MaxDepth = val
+			opts.maxDepth = val
 		case "-print0":
-			opts.Print0 = true
+			opts.print0 = true
+			opts.actions = append(opts.actions, actionPrint0)
 		case "-print":
-			// default, ignore
+			opts.actions = append(opts.actions, actionPrint)
+		case "-prune":
+			opts.prune = true
+			opts.actions = append(opts.actions, actionPrune)
+		case "-delete":
+			opts.actions = append(opts.actions, actionDelete)
+		case "-size":
+			i++
+			if i >= len(args) {
+				return core.UsageError(stdio, "find", "missing argument to '-size'")
+			}
+			filter, err := parseSize(args[i])
+			if err != nil {
+				return core.UsageError(stdio, "find", "invalid -size")
+			}
+			opts.sizeFilter = filter
+		case "-mtime":
+			i++
+			filter, err := parseTimeFilter(args, i, "mtime")
+			if err != nil {
+				return core.UsageError(stdio, "find", err.Error())
+			}
+			opts.mtimeFilter = filter
+		case "-atime":
+			i++
+			filter, err := parseTimeFilter(args, i, "atime")
+			if err != nil {
+				return core.UsageError(stdio, "find", err.Error())
+			}
+			opts.atimeFilter = filter
+		case "-ctime":
+			i++
+			filter, err := parseTimeFilter(args, i, "ctime")
+			if err != nil {
+				return core.UsageError(stdio, "find", err.Error())
+			}
+			opts.ctimeFilter = filter
 		default:
 			if strings.HasPrefix(arg, "-") {
 				return core.UsageError(stdio, "find", "unknown predicate: "+arg)
 			}
 		}
 		i++
+	}
+
+	if len(opts.actions) == 0 {
+		if opts.print0 {
+			opts.actions = append(opts.actions, actionPrint0)
+		} else {
+			opts.actions = append(opts.actions, actionPrint)
+		}
 	}
 
 	exitCode := core.ExitSuccess
@@ -106,28 +195,30 @@ func Run(stdio *core.Stdio, args []string) int {
 	return exitCode
 }
 
-func walkPath(stdio *core.Stdio, root string, opts *Options) error {
+func walkPath(stdio *core.Stdio, root string, opts *options) error {
 	info, err := fs.Stat(root)
 	if err != nil {
 		stdio.Errorf("find: '%s': %v\n", root, err)
 		return err
 	}
-
 	return walkRecursive(stdio, root, info, opts, 0)
 }
 
-func walkRecursive(stdio *core.Stdio, path string, info os.FileInfo, opts *Options, depth int) error {
-	if depth >= opts.MinDepth {
-		if match(path, info, opts) {
-			printPath(stdio, path, opts)
+func walkRecursive(stdio *core.Stdio, path string, info os.FileInfo, opts *options, depth int) error {
+	matched := match(path, info, opts)
+	if depth >= opts.minDepth && matched {
+		if err := applyActions(stdio, path, info, opts, matched); err != nil {
+			return err
 		}
 	}
 
 	if !info.IsDir() {
 		return nil
 	}
-
-	if opts.MaxDepth >= 0 && depth >= opts.MaxDepth {
+	if opts.maxDepth >= 0 && depth >= opts.maxDepth {
+		return nil
+	}
+	if matched && opts.prune {
 		return nil
 	}
 
@@ -136,11 +227,10 @@ func walkRecursive(stdio *core.Stdio, path string, info os.FileInfo, opts *Optio
 		stdio.Errorf("find: '%s': %v\n", path, err)
 		return err
 	}
-
 	for _, entry := range entries {
 		childPath := filepath.Join(path, entry.Name())
 		var childInfo os.FileInfo
-		if opts.FollowSymlinks {
+		if opts.followSymlinks {
 			childInfo, err = fs.Stat(childPath)
 		} else {
 			childInfo, err = fs.Lstat(childPath)
@@ -156,17 +246,33 @@ func walkRecursive(stdio *core.Stdio, path string, info os.FileInfo, opts *Optio
 	return nil
 }
 
-func match(path string, info os.FileInfo, opts *Options) bool {
-	if opts.NamePattern != "" {
+func match(path string, info os.FileInfo, opts *options) bool {
+	if opts.namePattern != "" {
 		name := filepath.Base(path)
-		matched, err := filepath.Match(opts.NamePattern, name)
-		if err != nil || !matched {
+		if opts.nameInsensitive {
+			if !matchPattern(strings.ToLower(opts.namePattern), strings.ToLower(name)) {
+				return false
+			}
+		} else if !matchPattern(opts.namePattern, name) {
 			return false
 		}
 	}
-
-	if opts.TypeFilter != 0 {
-		switch opts.TypeFilter {
+	if opts.pathPattern != "" {
+		target := filepath.ToSlash(path)
+		pattern := opts.pathPattern
+		if !strings.HasPrefix(pattern, "*") {
+			pattern = "*" + pattern
+		}
+		if opts.pathInsensitive {
+			if !matchPattern(strings.ToLower(pattern), strings.ToLower(target)) {
+				return false
+			}
+		} else if !matchPattern(pattern, target) {
+			return false
+		}
+	}
+	if opts.typeFilter != 0 {
+		switch opts.typeFilter {
 		case 'f':
 			if !info.Mode().IsRegular() {
 				return false
@@ -183,15 +289,141 @@ func match(path string, info os.FileInfo, opts *Options) bool {
 			return false
 		}
 	}
-
+	if opts.sizeFilter != nil {
+		if !matchSize(info, opts.sizeFilter) {
+			return false
+		}
+	}
+	if opts.mtimeFilter != nil {
+		if !matchTime(info.ModTime(), opts.mtimeFilter) {
+			return false
+		}
+	}
+	if opts.atimeFilter != nil {
+		if !matchTime(info.ModTime(), opts.atimeFilter) {
+			return false
+		}
+	}
+	if opts.ctimeFilter != nil {
+		if !matchTime(info.ModTime(), opts.ctimeFilter) {
+			return false
+		}
+	}
 	return true
 }
 
-func printPath(stdio *core.Stdio, path string, opts *Options) {
-	if opts.Print0 {
-		stdio.Print(path, "\x00")
-	} else {
-		stdio.Println(path)
+func applyActions(stdio *core.Stdio, path string, info os.FileInfo, opts *options, matched bool) error {
+	for _, action := range opts.actions {
+		switch action {
+		case actionPrint:
+			stdio.Println(path)
+		case actionPrint0:
+			stdio.Print(path, "\x00")
+		case actionDelete:
+			if info.IsDir() {
+				if err := fs.Remove(path); err != nil {
+					stdio.Errorf("find: '%s': %v\n", path, err)
+					return err
+				}
+			} else {
+				if err := fs.Remove(path); err != nil {
+					stdio.Errorf("find: '%s': %v\n", path, err)
+					return err
+				}
+			}
+		case actionPrune:
+			opts.prune = true
+		}
+	}
+	return nil
+}
+
+func matchPattern(pattern string, name string) bool {
+	if matched, err := filepath.Match(pattern, name); err == nil && matched {
+		return true
+	}
+	for i := 0; i < len(name); i++ {
+		if matched, err := filepath.Match(pattern, name[i:]); err == nil && matched {
+			return true
+		}
+	}
+	return false
+}
+
+func parseSize(val string) (*sizeFilter, error) {
+	if val == "" {
+		return nil, os.ErrInvalid
+	}
+	filter := &sizeFilter{op: 0, unit: 512}
+	if val[0] == '+' || val[0] == '-' {
+		filter.op = val[0]
+		val = val[1:]
+	}
+	if val == "" {
+		return nil, os.ErrInvalid
+	}
+	unit := val[len(val)-1]
+	if unit == 'c' || unit == 'k' || unit == 'b' {
+		switch unit {
+		case 'c':
+			filter.unit = 1
+		case 'k':
+			filter.unit = 1024
+		case 'b':
+			filter.unit = 512
+		}
+		val = val[:len(val)-1]
+	}
+	size, err := parseInt(val)
+	if err != nil {
+		return nil, err
+	}
+	filter.size = int64(size)
+	return filter, nil
+}
+
+func matchSize(info os.FileInfo, filter *sizeFilter) bool {
+	size := info.Size() / filter.unit
+	switch filter.op {
+	case '+':
+		return size > filter.size
+	case '-':
+		return size < filter.size
+	default:
+		return size == filter.size
+	}
+}
+
+func parseTimeFilter(args []string, i int, label string) (*timeFilter, error) {
+	if i >= len(args) {
+		return nil, os.ErrInvalid
+	}
+	val := args[i]
+	if val == "" {
+		return nil, os.ErrInvalid
+	}
+	filter := &timeFilter{op: 0}
+	if val[0] == '+' || val[0] == '-' {
+		filter.op = val[0]
+		val = val[1:]
+	}
+	n, err := parseInt(val)
+	if err != nil {
+		return nil, os.ErrInvalid
+	}
+	filter.days = n
+	return filter, nil
+}
+
+func matchTime(t time.Time, filter *timeFilter) bool {
+	ageDays := int(time.Since(t).Hours() / 24)
+	switch filter.op {
+	case '+':
+		return ageDays > filter.days
+	case '-':
+		return ageDays < filter.days
+	default:
+		return ageDays == filter.days
 	}
 }
 

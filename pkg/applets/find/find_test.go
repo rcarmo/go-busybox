@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rcarmo/busybox-wasm/pkg/applets/find"
 	"github.com/rcarmo/busybox-wasm/pkg/core"
@@ -107,6 +108,97 @@ func TestFind(t *testing.T) {
 				}
 				if rootPrinted {
 					t.Fatalf("unexpected root in output: %q", out.String())
+				}
+			},
+		},
+		{
+			Name:     "path_filter",
+			Args:     []string{"-path", "*/a/*"},
+			WantCode: core.ExitSuccess,
+			Setup: func(t *testing.T, dir string) {
+				if err := os.MkdirAll(filepath.Join(dir, "a/b"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			Check: func(t *testing.T, dir string) {
+				stdio, out, _ := testutil.CaptureStdioNoInput()
+				code := find.Run(stdio, []string{dir, "-path", "*/a/*"})
+				testutil.AssertExitCode(t, code, core.ExitSuccess)
+				if !strings.Contains(out.String(), filepath.Join(dir, "a", "b")) && !strings.Contains(out.String(), filepath.ToSlash(filepath.Join(dir, "a", "b"))) {
+					t.Fatalf("expected path in output: %q", out.String())
+				}
+			},
+		},
+		{
+			Name:     "print0",
+			Args:     []string{"-print0"},
+			WantCode: core.ExitSuccess,
+			Files: map[string]string{
+				"a.txt": "a",
+			},
+			Check: func(t *testing.T, dir string) {
+				stdio, out, _ := testutil.CaptureStdioNoInput()
+				code := find.Run(stdio, []string{dir, "-print0"})
+				testutil.AssertExitCode(t, code, core.ExitSuccess)
+				if !strings.Contains(out.String(), "\x00") {
+					t.Fatalf("expected NUL terminator, got %q", out.String())
+				}
+			},
+		},
+		{
+			Name:     "prune",
+			Args:     []string{"-path", "*/skip", "-prune"},
+			WantCode: core.ExitSuccess,
+			Setup: func(t *testing.T, dir string) {
+				if err := os.MkdirAll(filepath.Join(dir, "skip", "child"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			Check: func(t *testing.T, dir string) {
+				stdio, out, _ := testutil.CaptureStdioNoInput()
+				code := find.Run(stdio, []string{dir, "-path", "*/skip", "-prune"})
+				testutil.AssertExitCode(t, code, core.ExitSuccess)
+				if strings.Contains(out.String(), "child") {
+					t.Fatalf("expected pruned output, got %q", out.String())
+				}
+			},
+		},
+		{
+			Name:     "size_filter",
+			Args:     []string{"-size", "+0c"},
+			WantCode: core.ExitSuccess,
+			Files: map[string]string{
+				"a.txt": "a",
+			},
+			Check: func(t *testing.T, dir string) {
+				stdio, out, _ := testutil.CaptureStdioNoInput()
+				code := find.Run(stdio, []string{dir, "-size", "+0c"})
+				testutil.AssertExitCode(t, code, core.ExitSuccess)
+				if !strings.Contains(out.String(), "a.txt") {
+					t.Fatalf("expected size match, got %q", out.String())
+				}
+			},
+		},
+		{
+			Name:     "mtime_filter",
+			Args:     []string{"-mtime", "+0"},
+			WantCode: core.ExitSuccess,
+			Files: map[string]string{
+				"old.txt": "a",
+			},
+			Setup: func(t *testing.T, dir string) {
+				path := filepath.Join(dir, "old.txt")
+				older := time.Now().Add(-48 * time.Hour)
+				if err := os.Chtimes(path, older, older); err != nil {
+					t.Fatal(err)
+				}
+			},
+			Check: func(t *testing.T, dir string) {
+				stdio, out, _ := testutil.CaptureStdioNoInput()
+				code := find.Run(stdio, []string{dir, "-mtime", "+0"})
+				testutil.AssertExitCode(t, code, core.ExitSuccess)
+				if !strings.Contains(out.String(), "old.txt") {
+					t.Fatalf("expected mtime match, got %q", out.String())
 				}
 			},
 		},

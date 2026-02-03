@@ -14,8 +14,8 @@ When going through this checklist, ensure maxiumum code reuse and proper use of 
 - [ ] Add fuzz/differential tests for argv + stdin permutations (bounded).
 
 ## echo
-- [ ] Match BusyBox `-n`, `-e`, `-E` behavior and escape set (\a \b \c \f \n \r \t \v \\).
-- [ ] Validate handling of `--` and unknown flags.
+- [x] Match BusyBox `-n`, `-e`, `-E` behavior and escape set (\a \b \c \f \n \r \t \v \\).
+- [x] Validate handling of `--` and unknown flags.
 
 ## cat
 - [x] Implement `-n`, `-b`, `-A`, `-e`, `-t`, `-v` and verify line numbering/parsing.
@@ -23,22 +23,22 @@ When going through this checklist, ensure maxiumum code reuse and proper use of 
 - [ ] Remaining: `-s` not supported by BusyBox; ensure usage text parity (done).
 
 ## ls
-- [ ] Implement `-a`, `-A`, `-l`, `-h`, `-F`, `-R`, `-t`, `-S`, `-r`.
-- [ ] Match column formatting and sorting rules (locale/collation considerations).
-- [ ] Ensure symlink targets and file types render correctly in `-l`.
+- [x] Implement `-a`, `-A`, `-l`, `-h`, `-F`, `-R`, `-t`, `-S`, `-r`.
+- [x] Match column formatting and sorting rules (locale/collation considerations).
+- [x] Ensure symlink targets and file types render correctly in `-l`.
 
 ## cp
-- [ ] Implement `-r/-R`, `-a`, `-p`, `-f`, `-i`, `-n`, `-v`.
-- [ ] Handle directory copying semantics, existing targets, and symlink handling.
+- [x] Implement `-r/-R`, `-a`, `-p`, `-f`, `-i`, `-n`, `-v`.
+- [x] Handle directory copying semantics, existing targets, and symlink handling.
 - [ ] Preserve permissions/timestamps when requested.
 
 ## mv
-- [ ] Implement `-f`, `-i`, `-n`, `-v` and overwrite semantics.
+- [x] Implement `-f`, `-i`, `-n`, `-v` and overwrite semantics.
 - [ ] Match cross-device move behavior (copy + remove) and error messages.
 
 ## rm
-- [ ] Implement `-r/-R`, `-f`, `-i`, `-v`.
-- [ ] Match behavior for directories, non-empty dirs, and missing files.
+- [x] Implement `-r/-R`, `-f`, `-i`, `-v`.
+- [x] Match behavior for directories, non-empty dirs, and missing files.
 
 ## head
 - [x] Implement `-c` bytes, `-q/-v`, `-n` (BusyBox rejects +N).
@@ -53,9 +53,9 @@ When going through this checklist, ensure maxiumum code reuse and proper use of 
 - [x] Match multi-file totals output formatting.
 
 ## find
-- [ ] Add predicates: `-name/-iname`, `-type`, `-maxdepth/-mindepth` (confirm edge cases), `-print0`.
-- [ ] Implement `-path`, `-prune`, `-mtime/-atime/-ctime`, `-size`.
-- [ ] Implement actions: `-print`, `-exec`, `-delete` (if permitted in sandbox).
+- [x] Add predicates: `-name/-iname`, `-type`, `-maxdepth/-mindepth` (confirm edge cases), `-print0`.
+- [x] Implement `-path`, `-prune`, `-mtime/-atime/-ctime`, `-size`.
+- [x] Implement actions: `-print`, `-exec`, `-delete` (if permitted in sandbox).
 
 ## mkdir
 - [x] Implement `-p`, `-m`, `-v` and mode parsing.
@@ -68,15 +68,16 @@ When going through this checklist, ensure maxiumum code reuse and proper use of 
 
 ## sort
 - [x] Implement `-r`, `-n`, `-u` and stable sort parity.
-- [ ] Implement `-k`, `-t`, `-o`, `-f` and remaining flags.
+- [x] Implement `-k`, `-t`, `-o`, `-f` and remaining flags.
 - [ ] Match locale/byte order behavior (document deviations).
 
 ## uniq
-- [ ] Implement `-c`, `-d`, `-u`, `-i`, `-f`, `-s` and field/char skipping.
+- [x] Implement `-c`, `-d`, `-u` basics.
+- [x] Implement `-i`, `-f`, `-s` and field/char skipping.
 
 ## cut
-- [ ] Implement `-d`, `-f` with ranges (`1-3,5`), `-c`, `-b`, and `--output-delimiter`.
-- [ ] Match behavior when delimiter missing in line and `-s` (suppress) is set.
+- [x] Implement `-d`, `-f` with ranges (`1-3,5`), `-c`, `-b`, and `--output-delimiter`.
+- [x] Match behavior when delimiter missing in line and `-s` (suppress) is set.
 
 ## grep
 - [x] Implement regex (BRE/ERE), `-E`, `-F`, `-o`, `-r`.
@@ -84,15 +85,14 @@ When going through this checklist, ensure maxiumum code reuse and proper use of 
 - [x] Support multiple files and correct prefixes.
 
 ## sed
-- [ ] Implement `-n`, `-e`, `-f`, address ranges, and more commands (d,p,s,g,i,a,c).
-- [ ] Match basic regex behavior and escape rules.
+- [x] Implement `-n`, `-e`, `-f`, address ranges, and more commands (d,p,s,g,i,a,c).
+- [x] Match basic regex behavior and escape rules.
 
 ## tr
-- [ ] Implement character classes, ranges, complement (`-c`), delete (`-d`), squeeze (`-s`).
-- [ ] Match handling of mismatched set lengths.
+- [x] Implement character classes, ranges, complement (`-c`), delete (`-d`), squeeze (`-s`).
+- [x] Match handling of mismatched set lengths.
 
 ## diff
 - [x] Implement default (unified), unified, and brief outputs (BusyBox unified-only).
 - [x] Support directories (-r), missing files, binary detection, and exit codes (0/1/2) parity.
-- [ ] Support additional BusyBox flags: -a -b -B -d -i -L -N -S -T -t -U -w (if required).
-
+- [x] Support additional BusyBox flags: -a -b -B -d -i -L -N -S -T -t -U -w (if required).

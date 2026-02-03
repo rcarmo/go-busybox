@@ -25,10 +25,12 @@ func TestEcho(t *testing.T) {
 		{Name: "escape_tab", Args: []string{"-e", "hello\\tworld"}, WantCode: core.ExitSuccess, WantOut: "hello\tworld\n"},
 		{Name: "escape_backslash", Args: []string{"-e", "hello\\\\world"}, WantCode: core.ExitSuccess, WantOut: "hello\\world\n"},
 		{Name: "escape_disabled", Args: []string{"-E", "hello\\nworld"}, WantCode: core.ExitSuccess, WantOut: "hello\\nworld\n"},
+		{Name: "escape_bell", Args: []string{"-e", "hi\\a"}, WantCode: core.ExitSuccess, WantOut: "hi\a\n"},
+		{Name: "escape_stop", Args: []string{"-e", "hi\\cbye"}, WantCode: core.ExitSuccess, WantOut: "hi"},
 
 		// Edge cases
 		{Name: "empty_string", Args: []string{""}, WantCode: core.ExitSuccess, WantOut: "\n"},
-		{Name: "double_dash", Args: []string{"--", "-n", "hello"}, WantCode: core.ExitSuccess, WantOut: "-n hello\n"},
+		{Name: "double_dash", Args: []string{"--", "-n", "hello"}, WantCode: core.ExitSuccess, WantOut: "-- -n hello\n"},
 	}
 
 	testutil.RunAppletTests(t, echo.Run, tests)

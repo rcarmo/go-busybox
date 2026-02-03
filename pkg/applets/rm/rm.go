@@ -14,7 +14,6 @@ type Options struct {
 	Recursive   bool // -r, -R: remove directories and their contents
 	Force       bool // -f: ignore nonexistent files, never prompt
 	Interactive bool // -i: prompt before every removal
-	Dir         bool // -d: remove empty directories
 	Verbose     bool // -v: verbose output
 }
 
@@ -39,8 +38,6 @@ func Run(stdio *core.Stdio, args []string) int {
 					opts.Force = true
 				case 'i':
 					opts.Interactive = true
-				case 'd':
-					opts.Dir = true
 				case 'v':
 					opts.Verbose = true
 				default:
@@ -82,25 +79,12 @@ func removePath(stdio *core.Stdio, path string, opts *Options) error {
 	}
 
 	if info.IsDir() {
-		if !opts.Recursive && !opts.Dir {
+		if !opts.Recursive {
 			stdio.Errorf("rm: cannot remove '%s': Is a directory\n", path)
 			return os.ErrInvalid
 		}
 
-		if opts.Recursive {
-			return removeDir(stdio, path, opts)
-		}
-
-		// -d flag: remove empty directory
-		if err := fs.Remove(path); err != nil {
-			stdio.Errorf("rm: cannot remove '%s': %v\n", path, err)
-			return err
-		}
-
-		if opts.Verbose {
-			stdio.Printf("removed directory '%s'\n", path)
-		}
-		return nil
+		return removeDir(stdio, path, opts)
 	}
 
 	// Remove file
@@ -138,7 +122,7 @@ func removeDir(stdio *core.Stdio, path string, opts *Options) error {
 	}
 
 	if opts.Verbose {
-		stdio.Printf("removed directory '%s'\n", path)
+		stdio.Printf("removed directory: '%s'\n", path)
 	}
 
 	return nil

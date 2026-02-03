@@ -15,6 +15,17 @@ type diffOptions struct {
 	brief     bool
 	recursive bool
 	same      bool
+	ignoreSpaceAmount bool
+	ignoreAllSpace    bool
+	ignoreBlank       bool
+	ignoreCase        bool
+	treatAsText       bool
+	expandTabs        bool
+	prefixTabs        bool
+	labelLeft         string
+	labelRight        string
+	allowAbsent       bool
+	startFile         string
 }
 
 type diffLine struct {
@@ -37,12 +48,46 @@ func Run(stdio *core.Stdio, args []string) int {
 			break
 		}
 		switch args[i] {
+		case "-a":
+			opts.treatAsText = true
 		case "-q":
 			opts.brief = true
 		case "-r":
 			opts.recursive = true
 		case "-s":
 			opts.same = true
+		case "-b":
+			opts.ignoreSpaceAmount = true
+		case "-B":
+			opts.ignoreBlank = true
+		case "-d":
+			// no-op in this implementation (uses LCS)
+		case "-i":
+			opts.ignoreCase = true
+		case "-N":
+			opts.allowAbsent = true
+		case "-t":
+			opts.expandTabs = true
+		case "-T":
+			opts.prefixTabs = true
+		case "-w":
+			opts.ignoreAllSpace = true
+		case "-L":
+			if i+1 >= len(args) {
+				return core.UsageError(stdio, "diff", "missing label")
+			}
+			i++
+			if opts.labelLeft == "" {
+				opts.labelLeft = args[i]
+			} else {
+				opts.labelRight = args[i]
+			}
+		case "-S":
+			if i+1 >= len(args) {
+				return core.UsageError(stdio, "diff", "missing start file")
+			}
+			i++
+			opts.startFile = args[i]
 		case "-U":
 			if i+1 >= len(args) {
 				return core.UsageError(stdio, "diff", "missing context lines")
@@ -89,15 +134,30 @@ func parsePositiveInt(val string) (int, error) {
 }
 
 func diffPath(stdio *core.Stdio, left string, right string, opts diffOptions, contextLines int) (bool, int, error) {
-	leftInfo, err := corefs.Stat(left)
-	if err != nil {
-		stdio.Errorf("diff: can't stat '%s': %v\n", left, err)
-		return false, core.ExitUsage, err
-	}
-	rightInfo, err := corefs.Stat(right)
-	if err != nil {
-		stdio.Errorf("diff: can't stat '%s': %v\n", right, err)
-		return false, core.ExitUsage, err
+	leftInfo, leftErr := corefs.Stat(left)
+	rightInfo, rightErr := corefs.Stat(right)
+
+	if leftErr != nil || rightErr != nil {
+		if !opts.allowAbsent {
+			if leftErr != nil {
+				stdio.Errorf("diff: can't stat '%s': %v\n", left, leftErr)
+				return false, core.ExitUsage, leftErr
+			}
+			stdio.Errorf("diff: can't stat '%s': %v\n", right, rightErr)
+			return false, core.ExitUsage, rightErr
+		}
+		leftIsDir := false
+		rightIsDir := false
+		if leftErr == nil {
+			leftIsDir = leftInfo.IsDir()
+		}
+		if rightErr == nil {
+			rightIsDir = rightInfo.IsDir()
+		}
+		if leftIsDir || rightIsDir {
+			return diffDirOrFile(stdio, left, right, leftIsDir, rightIsDir, opts, contextLines)
+		}
+		return diffMissingFile(stdio, left, right, leftErr, rightErr, opts, contextLines)
 	}
 	if leftInfo.IsDir() || rightInfo.IsDir() {
 		return diffDirOrFile(stdio, left, right, leftInfo.IsDir(), rightInfo.IsDir(), opts, contextLines)
@@ -152,6 +212,9 @@ func diffDir(stdio *core.Stdio, left string, right string, opts diffOptions, con
 
 	names := make([]string, 0, len(nameSet))
 	for name := range nameSet {
+		if opts.startFile != "" && name < opts.startFile {
+			continue
+		}
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -229,19 +292,70 @@ func diffFile(stdio *core.Stdio, left string, right string, opts diffOptions, co
 		}
 		return false, core.ExitSuccess, nil
 	}
+	if compareNormalized(leftData, rightData, opts) {
+		if opts.same {
+			stdio.Printf("Files %s and %s are identical\n", left, right)
+		}
+		return false, core.ExitSuccess, nil
+	}
 	if opts.brief {
 		stdio.Printf("Files %s and %s differ\n", left, right)
 		return true, core.ExitSuccess, nil
 	}
-	if isBinary(leftData) || isBinary(rightData) {
+	if !opts.treatAsText && (isBinary(leftData) || isBinary(rightData)) {
 		stdio.Printf("Binary files %s and %s differ\n", left, right)
 		return true, core.ExitSuccess, nil
 	}
+	leftOrig := splitLines(string(leftData))
+	rightOrig := splitLines(string(rightData))
+	leftNorm, leftMap := normalizeLinesWithMap(leftOrig, opts)
+	rightNorm, rightMap := normalizeLinesWithMap(rightOrig, opts)
+	lines := buildDiffLinesWithOriginal(leftOrig, rightOrig, leftNorm, rightNorm, leftMap, rightMap)
+	leftLabel := left
+	rightLabel := right
+	if opts.labelLeft != "" {
+		leftLabel = opts.labelLeft
+	}
+	if opts.labelRight != "" {
+		rightLabel = opts.labelRight
+	}
+	writeUnified(stdio, lines, leftLabel, rightLabel, contextLines, opts)
+	return true, core.ExitSuccess, nil
+}
 
-	leftLines := splitLines(string(leftData))
-	rightLines := splitLines(string(rightData))
-	lines := buildDiffLines(leftLines, rightLines)
-	writeUnified(stdio, lines, left, right, contextLines)
+func diffMissingFile(stdio *core.Stdio, left string, right string, leftErr error, rightErr error, opts diffOptions, contextLines int) (bool, int, error) {
+	var leftLines []string
+	var rightLines []string
+	var err error
+	if leftErr == nil {
+		data, readErr := corefs.ReadFile(left)
+		if readErr != nil {
+			stdio.Errorf("diff: %s: %v\n", left, readErr)
+			return false, core.ExitUsage, readErr
+		}
+		leftLines = splitLines(string(data))
+	} else if rightErr == nil {
+		data, readErr := corefs.ReadFile(right)
+		if readErr != nil {
+			stdio.Errorf("diff: %s: %v\n", right, readErr)
+			return false, core.ExitUsage, readErr
+		}
+		rightLines = splitLines(string(data))
+	} else {
+		return false, core.ExitUsage, err
+	}
+	leftNorm, leftMap := normalizeLinesWithMap(leftLines, opts)
+	rightNorm, rightMap := normalizeLinesWithMap(rightLines, opts)
+	lines := buildDiffLinesWithOriginal(leftLines, rightLines, leftNorm, rightNorm, leftMap, rightMap)
+	leftLabel := left
+	rightLabel := right
+	if opts.labelLeft != "" {
+		leftLabel = opts.labelLeft
+	}
+	if opts.labelRight != "" {
+		rightLabel = opts.labelRight
+	}
+	writeUnified(stdio, lines, leftLabel, rightLabel, contextLines, opts)
 	return true, core.ExitSuccess, nil
 }
 
@@ -262,7 +376,60 @@ func splitLines(s string) []string {
 	return strings.Split(s, "\n")
 }
 
-func buildDiffLines(left []string, right []string) []diffLine {
+func normalizeLines(lines []string, opts diffOptions) []string {
+	norm, _ := normalizeLinesWithMap(lines, opts)
+	return norm
+}
+
+func normalizeLinesWithMap(lines []string, opts diffOptions) ([]string, []int) {
+	if !opts.ignoreSpaceAmount && !opts.ignoreAllSpace && !opts.ignoreBlank && !opts.ignoreCase {
+		idx := make([]int, len(lines))
+		for i := range lines {
+			idx[i] = i
+		}
+		return lines, idx
+	}
+	out := make([]string, 0, len(lines))
+	indexMap := make([]int, 0, len(lines))
+	for i, line := range lines {
+		normalized := line
+		if opts.ignoreBlank && strings.TrimSpace(normalized) == "" {
+			continue
+		}
+		if opts.ignoreAllSpace {
+			normalized = strings.Join(strings.Fields(normalized), "")
+		} else if opts.ignoreSpaceAmount {
+			normalized = strings.Join(strings.Fields(normalized), " ")
+		}
+		if opts.ignoreCase {
+			normalized = strings.ToLower(normalized)
+		}
+		out = append(out, normalized)
+		indexMap = append(indexMap, i)
+	}
+	return out, indexMap
+}
+
+func compareNormalized(leftData []byte, rightData []byte, opts diffOptions) bool {
+	if !opts.ignoreSpaceAmount && !opts.ignoreAllSpace && !opts.ignoreBlank && !opts.ignoreCase {
+		return false
+	}
+	left := splitLines(string(leftData))
+	right := splitLines(string(rightData))
+	leftNorm := normalizeLines(left, opts)
+	rightNorm := normalizeLines(right, opts)
+	if len(leftNorm) != len(rightNorm) {
+		return false
+	}
+	for i := range leftNorm {
+		if leftNorm[i] != rightNorm[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func buildDiffLinesWithOriginal(leftOrig []string, rightOrig []string, left []string, right []string, leftMap []int, rightMap []int) []diffLine {
 	lcs := make([][]int, len(left)+1)
 	for i := range lcs {
 		lcs[i] = make([]int, len(right)+1)
@@ -283,18 +450,18 @@ func buildDiffLines(left []string, right []string) []diffLine {
 	i, j := 0, 0
 	for i < len(left) || j < len(right) {
 		if i < len(left) && j < len(right) && left[i] == right[j] {
-			lines = append(lines, diffLine{tag: ' ', text: left[i]})
+			lines = append(lines, diffLine{tag: ' ', text: leftOrig[leftMap[i]]})
 			i++
 			j++
 			continue
 		}
 		if j < len(right) && (i == len(left) || lcs[i][j+1] >= lcs[i+1][j]) {
-			lines = append(lines, diffLine{tag: '+', text: right[j]})
+			lines = append(lines, diffLine{tag: '+', text: rightOrig[rightMap[j]]})
 			j++
 			continue
 		}
 		if i < len(left) {
-			lines = append(lines, diffLine{tag: '-', text: left[i]})
+			lines = append(lines, diffLine{tag: '-', text: leftOrig[leftMap[i]]})
 			i++
 		}
 	}
@@ -338,7 +505,7 @@ func makeHunks(lines []diffLine, context int) []hunk {
 	return hunks
 }
 
-func writeUnified(stdio *core.Stdio, lines []diffLine, left string, right string, contextLines int) {
+func writeUnified(stdio *core.Stdio, lines []diffLine, left string, right string, contextLines int, opts diffOptions) {
 	hunks := makeHunks(lines, contextLines)
 	if len(hunks) == 0 {
 		return
@@ -371,20 +538,37 @@ func writeUnified(stdio *core.Stdio, lines []diffLine, left string, right string
 		}
 		for _, line := range lines[h.start:h.end] {
 			if line.tag == '-' {
-				stdio.Printf("-%s\n", line.text)
+				stdio.Printf("%s%s\n", formatPrefix("-", opts), formatDiffLine(line.text, opts))
 			}
 		}
 		for _, line := range lines[h.start:h.end] {
 			if line.tag == '+' {
-				stdio.Printf("+%s\n", line.text)
+				stdio.Printf("%s%s\n", formatPrefix("+", opts), formatDiffLine(line.text, opts))
 			}
 		}
 		for _, line := range lines[h.start:h.end] {
 			if line.tag == ' ' {
-				stdio.Printf(" %s\n", line.text)
+				stdio.Printf("%s%s\n", formatPrefix(" ", opts), formatDiffLine(line.text, opts))
 			}
 		}
 	}
+}
+
+func formatDiffLine(line string, opts diffOptions) string {
+	if opts.expandTabs {
+		line = strings.ReplaceAll(line, "\t", "        ")
+	}
+	if opts.prefixTabs {
+		line = "\t" + line
+	}
+	return line
+}
+
+func formatPrefix(prefix string, opts diffOptions) string {
+	if opts.prefixTabs {
+		return "\t" + prefix
+	}
+	return prefix
 }
 
 func computeStart(lines []diffLine, index int, skipTag byte) int {
