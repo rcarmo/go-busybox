@@ -166,6 +166,30 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:   "grep_only_matching",
+			applet: "grep",
+			args:   []string{"-o", "fo+", "input.txt"},
+			files: map[string]string{
+				"input.txt": "foo\nfoooo\nbar\n",
+			},
+		},
+		{
+			name:   "grep_fixed",
+			applet: "grep",
+			args:   []string{"-F", "foo.", "input.txt"},
+			files: map[string]string{
+				"input.txt": "foo.\nfooX\n",
+			},
+		},
+		{
+			name:   "grep_extended",
+			applet: "grep",
+			args:   []string{"-E", "fo+", "input.txt"},
+			files: map[string]string{
+				"input.txt": "fo\nfoo\n",
+			},
+		},
+		{
 			name:   "sed_basic",
 			applet: "sed",
 			args:   []string{"s/foo/bar/", "input.txt"},

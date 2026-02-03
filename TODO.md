@@ -77,7 +77,7 @@ When going through this checklist, ensure maxiumum code reuse and proper use of 
 - [ ] Match behavior when delimiter missing in line and `-s` (suppress) is set.
 
 ## grep
-- [ ] Implement regex (BRE/ERE), `-E`, `-F`, `-o`, `-r`.
+- [x] Implement regex (BRE/ERE), `-E`, `-F`, `-o`, `-r`.
 - [x] Implement `-i`, `-v`, `-c`, `-l`, `-H`, `-h`, `-q` basics (regex via Go).
 - [x] Support multiple files and correct prefixes.
 
