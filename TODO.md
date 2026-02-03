@@ -67,7 +67,8 @@ When going through this checklist, ensure maxiumum code reuse and proper use of 
 - [x] Implement `-p`, `-v` and error wording parity.
 
 ## sort
-- [ ] Implement `-r`, `-n`, `-k`, `-t`, `-u`, `-o`, `-f` and stable sort parity.
+- [x] Implement `-r`, `-n`, `-u` and stable sort parity.
+- [ ] Implement `-k`, `-t`, `-o`, `-f` and remaining flags.
 - [ ] Match locale/byte order behavior (document deviations).
 
 ## uniq

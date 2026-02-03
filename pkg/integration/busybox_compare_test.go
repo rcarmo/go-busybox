@@ -213,6 +213,30 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:   "uniq_count",
+			applet: "uniq",
+			args:   []string{"-c", "input.txt"},
+			files: map[string]string{
+				"input.txt": "a\na\nb\n",
+			},
+		},
+		{
+			name:   "uniq_dup",
+			applet: "uniq",
+			args:   []string{"-d", "input.txt"},
+			files: map[string]string{
+				"input.txt": "a\na\nb\n",
+			},
+		},
+		{
+			name:   "uniq_unique",
+			applet: "uniq",
+			args:   []string{"-u", "input.txt"},
+			files: map[string]string{
+				"input.txt": "a\na\nb\n",
+			},
+		},
+		{
 			name:   "cut_basic",
 			applet: "cut",
 			args:   []string{"-f", "2", "input.txt"},
