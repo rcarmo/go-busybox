@@ -90,6 +90,7 @@ When going through this checklist, ensure maxiumum code reuse and proper use of 
 - [ ] Match handling of mismatched set lengths.
 
 ## diff
-- [ ] Implement default, unified, context, and brief outputs.
-- [ ] Support directories, missing files, binary detection, and exit codes (0/1/2) parity.
+- [x] Implement default (unified), unified, and brief outputs (BusyBox unified-only).
+- [x] Support directories (-r), missing files, binary detection, and exit codes (0/1/2) parity.
+- [ ] Support additional BusyBox flags: -a -b -B -d -i -L -N -S -T -t -U -w (if required).
 

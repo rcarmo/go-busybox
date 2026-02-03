@@ -204,12 +204,23 @@ func TestBusyboxComparisons(t *testing.T) {
 			input:  "hello\n",
 		},
 		{
-			name:   "diff_basic",
+			name:   "diff_brief",
 			applet: "diff",
-			args:   []string{"a.txt", "b.txt"},
+			args:   []string{"-q", "a.txt", "b.txt"},
 			files: map[string]string{
 				"a.txt": "a\n",
 				"b.txt": "b\n",
+			},
+		},
+		{
+			name:   "diff_recursive",
+			applet: "diff",
+			args:   []string{"-r", "left", "right"},
+			files: map[string]string{
+				"left/a.txt":           "a\n",
+				"right/a.txt":          "b\n",
+				"left/only_left.txt":   "x\n",
+				"right/only_right.txt": "y\n",
 			},
 		},
 	}
