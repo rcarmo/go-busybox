@@ -58,7 +58,7 @@ When going through this checklist, ensure maxiumum code reuse and proper use of 
 - [ ] Implement actions: `-print`, `-exec`, `-delete` (if permitted in sandbox).
 
 ## mkdir
-- [ ] Implement `-p`, `-m`, `-v` and mode parsing.
+- [x] Implement `-p`, `-m`, `-v` and mode parsing.
 
 ## pwd
 - [ ] Implement `-L`/`-P` semantics and symlink resolution parity.
