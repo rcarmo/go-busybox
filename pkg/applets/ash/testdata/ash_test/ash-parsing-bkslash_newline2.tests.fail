@@ -1,0 +1,8 @@
+--- bkslash_newline2.xx	2026-02-07 22:52:31.269070705 +0000
++++ bkslash_newline2.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,4 @@
+-ash: fork/exec ./bkslash_newline2.tests: exec format error
++Line with one backslash:
++\
++
++Ok:0

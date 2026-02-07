@@ -1,0 +1,18 @@
+--- getopt_nested.xx	2026-02-07 22:52:30.944113684 +0000
++++ getopt_nested.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,14 @@
+-ash: fork/exec ./getopt_nested.tests: exec format error
++var:a
++var:b
++var:c
++var:a
++var:b
++var:c
++Illegal option -d
++var:?
++Illegal option -e
++var:?
++Illegal option -f
++var:?
++var:a
++End: var:? OPTIND:6

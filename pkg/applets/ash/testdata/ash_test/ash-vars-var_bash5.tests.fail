@@ -1,0 +1,15 @@
+--- var_bash5.xx	2026-02-07 22:52:35.602911124 +0000
++++ var_bash5.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,11 @@
+-ash: fork/exec ./var_bash5.tests: exec format error
++1 a/
++2 a/d
++3 a/e/f
++4 a\
++5 a\d
++6 a\e\f
++7 a\\
++8 a\\d
++9 a\\e\\f
++a ab
++Done: 0

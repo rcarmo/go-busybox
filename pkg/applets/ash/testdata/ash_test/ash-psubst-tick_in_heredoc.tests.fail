@@ -1,0 +1,9 @@
+--- tick_in_heredoc.xx	2026-02-07 22:52:31.358073575 +0000
++++ tick_in_heredoc.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,5 @@
+-ash: fork/exec ./tick_in_heredoc.tests: exec format error
++1
++
++2
++
++3

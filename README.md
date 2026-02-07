@@ -4,7 +4,7 @@
   <img src="docs/icon-256.png" alt="Busybox WASM" width="256" />
 </p>
 
-A WIP sandboxable implementation of busybox utilities in Go, intended for compiling to WebAssembly using TinyGo for use in sandboxed AI agents.
+A WIP sandboxable implementation of busybox utilities in Go, intended for compiling to WebAssembly using TinyGo for use in sandboxed AI agents. It builds a unified `busybox` multi-call binary plus individual applet entry points under `cmd/` for native and WASM targets.
 
 ## Overview
 
@@ -62,6 +62,7 @@ Current parity target: **BusyBox v1.35.0 (Debian 1:1.35.0-4+b7)** as installed o
 | | timeout | 🟢 Complete | Command timeout with signals |
 | | time | 🟢 Complete | Command timing |
 | | xargs | 🟢 Complete | Build command lines from input |
+| | start-stop-daemon | 🟡 Basic | Native-only; `--start`/`--exec` with optional `--pidfile` |
 | **System** | uptime | 🟢 Complete | System uptime display |
 | | free | 🟢 Complete | Memory usage |
 | | nproc | 🟢 Complete | CPU count |
@@ -142,24 +143,11 @@ make test
 
 ## Available Utilities
 
-### Phase 1 (Foundation)
-- `echo` - Display text
-- `cat` - Concatenate files
-- `ls` - List directory contents
-- `cp` - Copy files
-- `mv` - Move/rename files
-- `rm` - Remove files
+All applets listed above are available in the unified `busybox` multi-call binary (`cmd/busybox`) and can also be built as standalone binaries from `cmd/<applet>`.
 
-### Phase 2 (In Progress)
-- File: `head`, `tail`, `wc`
-- Directory: `mkdir`, `rmdir`, `pwd`
-- Planned: `sort`, `uniq`, `cut`, `grep`, `find`, `sed`, `tr`, `diff` (awk parity via goawk)
-
-### Phase 3 (Planned)
-- Shell: `ash` implementation largely complete (job control/traps partial)
-- Process: `ps`, `kill`, `xargs`
-- Archive: `tar` (tar/gzip/gunzip baseline implemented)
-- Network: `wget`, `nc` (sandboxed; wget/nc baseline implemented), `dig`
+Notes:
+- `start-stop-daemon` is native-only (excluded from WASM builds).
+- Network-facing applets (`wget`, `nc`, `dig`, `ss`) require explicit opt-in when running under WASM.
 
 ## Usage
 
@@ -205,7 +193,7 @@ wasmtime --dir=. _build/busybox.wasm ls -la
 ### Project Structure
 
 ```
-busybox-wasm/
+go-busybox/
 ├── cmd/                  # Entry points for each applet
 │   ├── echo/
 │   ├── cat/
@@ -218,7 +206,9 @@ busybox-wasm/
 │   │   └── ...
 │   ├── core/             # Shared functionality
 │   │   └── fs/           # Sandboxed filesystem operations
-│   └── sandbox/          # Sandboxing and capabilities
+│   ├── integration/      # BusyBox comparison tests
+│   ├── sandbox/          # Sandboxing and capabilities
+│   └── testutil/         # Test helpers
 ├── testdata/             # Test fixtures
 ├── _build/               # Build output (gitignored)
 ├── Makefile
@@ -247,7 +237,7 @@ make coverage-html
 When running as WASM, utilities operate within WASI's capability-based security model:
 
 - **Filesystem**: Only pre-opened directories are accessible
-- **Network**: Disabled by default (Phase 3 utilities require explicit opt-in)
+- **Network**: Disabled by default; network-facing applets require explicit opt-in
 - **Memory**: Isolated via WASM linear memory
 - **System calls**: Limited to WASI preview1 interface
 

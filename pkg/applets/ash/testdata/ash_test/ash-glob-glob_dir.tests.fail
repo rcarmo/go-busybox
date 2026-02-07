@@ -1,0 +1,23 @@
+--- glob_dir.xx	2026-02-07 22:52:30.967060968 +0000
++++ glob_dir.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,19 @@
+-ash: fork/exec ./glob_dir.tests: exec format error
++dirtest/z.tmp
++dirtest/z.tmp
++dirtest/z.tmp
++dirtest/z.tmp
++dirtest/z.tmp
++dirtest/z.tmp
++dirtest/z.tmp
++dirtest/z.tmp
++dirtest/z.tmp
++
++*/z.tmp
++*/z.*
++*/?.*
++*/z*p
++d*r*e*t/z*p
++*\/z.tmp
++*/z.*
++*/z*p
++d*r*e*t/z*p

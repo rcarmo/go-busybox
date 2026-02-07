@@ -45,6 +45,9 @@ func ParseHeadTailArgs(stdio *Stdio, applet string, args []string) (*HeadTailOpt
 					}
 					i = nextI
 					if val < 0 {
+						if applet == "head" {
+							return nil, UsageError(stdio, applet, "invalid number: "+strconv.Itoa(val))
+						}
 						opts.From = true
 						val = -val
 					}

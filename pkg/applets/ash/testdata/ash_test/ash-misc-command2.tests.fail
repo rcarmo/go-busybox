@@ -1,0 +1,6 @@
+--- command2.xx	2026-02-07 22:52:31.061063999 +0000
++++ command2.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,2 @@
+-ash: fork/exec ./command2.tests: exec format error
++test1
++./command2.tests: ./test1.sh: line 1: ./test2.sh: Permission denied

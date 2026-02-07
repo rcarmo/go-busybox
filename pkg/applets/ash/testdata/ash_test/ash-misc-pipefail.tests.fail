@@ -1,0 +1,44 @@
+--- pipefail.xx	2026-02-07 22:52:31.219069093 +0000
++++ pipefail.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,40 @@
+-ash: fork/exec ./pipefail.tests: exec format error
++Default:
++true | true:
++0
++1
++true | false:
++1
++0
++false | true:
++0
++1
++exit 2 | exit 3 | exit 4:
++4
++0
++Pipefail on:
++true | true:
++0
++1
++true | false:
++1
++0
++false | true:
++1
++0
++exit 2 | exit 3 | exit 4:
++4
++0
++Pipefail off:
++true | true:
++0
++1
++true | false:
++1
++0
++false | true:
++0
++1
++exit 2 | exit 3 | exit 4:
++4
++0
++Done

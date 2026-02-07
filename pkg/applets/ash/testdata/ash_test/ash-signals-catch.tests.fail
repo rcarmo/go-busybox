@@ -1,0 +1,9 @@
+--- catch.xx	2026-02-07 22:52:31.461076896 +0000
++++ catch.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,5 @@
+-ash: fork/exec ./catch.tests: exec format error
++sending USR2
++caught
++sending USR2
++sending USR2
++User defined signal 2

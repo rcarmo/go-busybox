@@ -1,0 +1,8 @@
+--- source5.xx	2026-02-07 22:52:31.238069706 +0000
++++ source5.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,4 @@
+-ash: fork/exec ./source5.tests: exec format error
++0:arg0 1:arg1 2:arg2
++Ok1:0
++0:arg0 1:q 2:w
++Ok2:0

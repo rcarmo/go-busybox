@@ -1,0 +1,9 @@
+--- var_expand_in_assign.xx	2026-02-07 22:52:35.613210761 +0000
++++ var_expand_in_assign.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,5 @@
+-ash: fork/exec ./var_expand_in_assign.tests: exec format error
++. .
++.abc d e.
++.abc d e.
++.abc d e.
++.abc d e.

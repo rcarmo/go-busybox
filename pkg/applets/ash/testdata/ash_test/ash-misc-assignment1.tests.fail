@@ -1,0 +1,13 @@
+--- assignment1.xx	2026-02-07 22:52:31.036063193 +0000
++++ assignment1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,9 @@
+-ash: fork/exec ./assignment1.tests: exec format error
++if1:0
++while1:0
++until1:0
++if2:0
++while2:0
++until2:0
++if3:0
++while3:0
++until3:0

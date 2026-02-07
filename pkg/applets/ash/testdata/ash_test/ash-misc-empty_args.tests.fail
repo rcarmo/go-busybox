@@ -1,0 +1,10 @@
+--- empty_args.xx	2026-02-07 22:52:31.079064579 +0000
++++ empty_args.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,6 @@
+-ash: fork/exec ./empty_args.tests: exec format error
++Null 0th arg:
++./empty_args.tests: line 2: : Permission denied
++127
++Null 1st arg:
++0
++Null arg in exec:

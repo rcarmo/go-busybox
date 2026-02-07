@@ -1,0 +1,5 @@
+--- var-expand-tilde-in-parameter-expansion.xx	2026-02-07 22:52:35.557167112 +0000
++++ var-expand-tilde-in-parameter-expansion.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1 @@
+-ash: fork/exec ./var-expand-tilde-in-parameter-expansion.tests: exec format error
++:/root

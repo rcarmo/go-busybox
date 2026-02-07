@@ -1,0 +1,6 @@
+--- exitcode1.xx	2026-02-07 22:52:31.116065772 +0000
++++ exitcode1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,2 @@
+-ash: fork/exec ./exitcode1.tests: exec format error
++One:1
++Zero:0

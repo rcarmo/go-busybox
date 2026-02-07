@@ -1,0 +1,13 @@
+--- bash_procsub.xx	2026-02-07 22:52:31.343073091 +0000
++++ bash_procsub.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,9 @@
+-ash: fork/exec ./bash_procsub.tests: exec format error
++hello 1
++hello 2
++hello 3
++<(echo "hello 0")
++hello 4
++HI THERE
++hello error
++hello error
++hello stderr

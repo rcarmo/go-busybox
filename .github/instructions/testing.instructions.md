@@ -41,7 +41,7 @@ func TestApplet(t *testing.T) {
 ## Coverage Requirements
 
 - Run `make coverage` before committing
-- Minimum 70% coverage for new code
+- Minimum 80% coverage for new code
 - Critical paths (sandbox, security) require 100%
 
 ## Duplicate Code

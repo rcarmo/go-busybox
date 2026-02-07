@@ -1,0 +1,6 @@
+--- exitcode_EACCES.xx	2026-02-07 22:52:31.121065934 +0000
++++ exitcode_EACCES.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,2 @@
+-ash: fork/exec ./exitcode_EACCES.tests: exec format error
++./exitcode_EACCES.tests: line 1: ./: Permission denied
++126

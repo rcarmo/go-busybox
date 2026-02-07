@@ -1,0 +1,1 @@
+ash: fork/exec ./var-do-not-collapse-arithmetic-expansion-at-parse-time.tests: exec format error

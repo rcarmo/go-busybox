@@ -1,0 +1,10 @@
+--- shift.xx	2026-02-07 22:52:31.228069383 +0000
++++ shift.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,6 @@
+-ash: fork/exec ./shift.tests: exec format error
++./shift.tests abc d e
++./shift.tests d e 123
++./shift.tests d e 123
++./shift.tests
++./shift.tests
++./shift.tests

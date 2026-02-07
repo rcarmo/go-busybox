@@ -1,0 +1,1 @@
+ash: fork/exec ./exitcode_trap3.tests: exec format error

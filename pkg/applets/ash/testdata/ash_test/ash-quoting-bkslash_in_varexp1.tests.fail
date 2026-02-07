@@ -1,0 +1,9 @@
+--- bkslash_in_varexp1.xx	2026-02-07 22:52:31.366073833 +0000
++++ bkslash_in_varexp1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,5 @@
+-ash: fork/exec ./bkslash_in_varexp1.tests: exec format error
++Nothing:
++Nothing:
++Nothing:
++Nothing:
++Ok:0

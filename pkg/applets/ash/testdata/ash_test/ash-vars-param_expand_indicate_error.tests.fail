@@ -1,0 +1,47 @@
+--- param_expand_indicate_error.xx	2026-02-07 22:52:35.535045268 +0000
++++ param_expand_indicate_error.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,43 @@
+-ash: fork/exec ./param_expand_indicate_error.tests: exec format error
++SHELL: line 0: syntax error: bad substitution
++1
++0
++====
++_
++SHELL: line 0: 1: parameter not set
++SHELL: line 0: 1: parameter not set or null
++SHELL: line 0: 1: message1
++SHELL: line 0: 1: message1
++SHELL: line 0: 1: unset!
++SHELL: line 0: 1: null or unset!
++====
++_aaaa
++_aaaa
++_aaaa
++_aaaa
++_aaaa
++_aaaa
++_aaaa
++====
++_
++SHELL: line 0: f: parameter not set
++SHELL: line 0: f: parameter not set or null
++SHELL: line 0: f: message3
++SHELL: line 0: f: message3
++SHELL: line 0: f: unset!
++SHELL: line 0: f: null or unset!
++====
++_
++_
++SHELL: line 0: f: parameter not set or null
++_
++SHELL: line 0: f: message4
++_
++SHELL: line 0: f: null or unset!
++====
++_fff
++_fff
++_fff
++_fff
++_fff
++_fff
++_fff

@@ -1,0 +1,5 @@
+--- squote_in_varexp3.xx	2026-02-07 22:52:31.394074735 +0000
++++ squote_in_varexp3.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1 @@
+-ash: fork/exec ./squote_in_varexp3.tests: exec format error
++B

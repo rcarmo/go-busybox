@@ -1,0 +1,6 @@
+--- heredoc_after_compound1.xx	2026-02-07 22:52:31.009062323 +0000
++++ heredoc_after_compound1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,2 @@
+-ash: fork/exec ./heredoc_after_compound1.tests: exec format error
++Ok1
++Ok2

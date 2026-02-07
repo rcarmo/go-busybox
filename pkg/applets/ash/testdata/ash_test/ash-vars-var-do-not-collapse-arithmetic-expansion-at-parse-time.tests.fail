@@ -1,0 +1,6 @@
+--- var-do-not-collapse-arithmetic-expansion-at-parse-time.xx	2026-02-07 22:52:35.552028507 +0000
++++ var-do-not-collapse-arithmetic-expansion-at-parse-time.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,2 @@
+-ash: fork/exec ./var-do-not-collapse-arithmetic-expansion-at-parse-time.tests: exec format error
++12
++9

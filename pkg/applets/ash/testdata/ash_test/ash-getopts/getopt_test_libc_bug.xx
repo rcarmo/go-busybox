@@ -1,0 +1,1 @@
+ash: fork/exec ./getopt_test_libc_bug.tests: exec format error

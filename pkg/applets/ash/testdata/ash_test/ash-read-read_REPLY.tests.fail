@@ -1,0 +1,9 @@
+--- read_REPLY.xx	2026-02-07 22:52:31.398074864 +0000
++++ read_REPLY.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,5 @@
+-ash: fork/exec ./read_REPLY.tests: exec format error
++test 1: |  abc1  def  |
++test 2: |  \abc2  d\ef  |
++test 3: |abc3  def|
++test 4: |\abc4  d\ef|
++Done

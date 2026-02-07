@@ -1,0 +1,13 @@
+--- param_expand_default.xx	2026-02-07 22:52:35.532208149 +0000
++++ param_expand_default.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,9 @@
+-ash: fork/exec ./param_expand_default.tests: exec format error
++SHELL: line 0: syntax error: bad substitution
++_0 _0
++_ _ _ _word _word
++_aaaa _aaaa _aaaa _aaaa _aaaa
++_ _ _ _word _word
++_ _ _ _ _word
++_fff _fff _fff _fff _fff
++1:1
++0:0

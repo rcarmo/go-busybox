@@ -1,0 +1,10 @@
+--- glob_and_assign.xx	2026-02-07 22:52:30.964060872 +0000
++++ glob_and_assign.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,6 @@
+-ash: fork/exec ./glob_and_assign.tests: exec format error
++ZVAR=z.tmp ZVAR=*.tmp ZVAR=[z].tmp
++ZVAR=z.tmp ZVAR=*.tmp ZVAR=[z].tmp
++*.tmp
++ZVAR=z.tmp z.tmp
++ZVAR=z.tmp ZVAR=*.tmp ZVAR=[z].tmp
++ZVAR=z.tmp ZVAR=*.tmp ZVAR=[z].tmp

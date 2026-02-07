@@ -1,0 +1,5 @@
+--- var-pattern-replacement-in-parameter-expansion-1.xx	2026-02-07 22:52:35.558841986 +0000
++++ var-pattern-replacement-in-parameter-expansion-1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1 @@
+-ash: fork/exec ./var-pattern-replacement-in-parameter-expansion-1.tests: exec format error
++a_\_z_c

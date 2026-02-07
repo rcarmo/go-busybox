@@ -1,0 +1,9 @@
+--- redir_children_should_not_see_saved_fd_3.xx	2026-02-07 22:52:31.438076154 +0000
++++ redir_children_should_not_see_saved_fd_3.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,5 @@
+-ash: fork/exec ./redir_children_should_not_see_saved_fd_3.tests: exec format error
++/proc/self/fd
++/proc/self/fd/0
++/proc/self/fd/1
++/proc/self/fd/2
++/proc/self/fd/3

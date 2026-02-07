@@ -1,0 +1,73 @@
+--- dollar_altvalue2.xx	2026-02-07 22:52:31.371073994 +0000
++++ dollar_altvalue2.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,69 @@
+-ash: fork/exec ./dollar_altvalue2.tests: exec format error
++Unquoted '':
++start:
++||
++end
++start:
++||
++end
++start:
++||
++end
++start:
++||
++end
++start:
++||
++||
++end
++
++Unquoted "":
++start:
++||
++end
++start:
++||
++end
++start:
++||
++end
++start:
++||
++end
++start:
++||
++||
++end
++
++Quoted '':
++start:
++|''|
++end
++start:
++|'' |
++end
++start:
++| ''|
++end
++start:
++| '' |
++end
++start:
++|'' ''|
++end
++
++Quoted "":
++start:
++||
++end
++start:
++| |
++end
++start:
++| |
++end
++start:
++|  |
++end
++start:
++| |
++end

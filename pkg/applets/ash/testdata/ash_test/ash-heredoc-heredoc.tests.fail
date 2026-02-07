@@ -1,0 +1,25 @@
+--- heredoc.xx	2026-02-07 22:52:30.972061130 +0000
++++ heredoc.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,21 @@
+-ash: fork/exec ./heredoc.tests: exec format error
++there
++one - alpha
++two - beta
++three - gamma
++hi\
++there$a
++stuff
++hi\
++there
++EO\
++F
++hi
++tab 1
++tab 2
++tab 3
++abc
++def ghi
++jkl mno
++fff is a function
++hi
++there

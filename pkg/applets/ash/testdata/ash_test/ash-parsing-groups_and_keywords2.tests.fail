@@ -1,0 +1,7 @@
+--- groups_and_keywords2.xx	2026-02-07 22:52:31.318072285 +0000
++++ groups_and_keywords2.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,3 @@
+-ash: fork/exec ./groups_and_keywords2.tests: exec format error
++./groups_and_keywords2.tests: eval: line 2: syntax error: unexpected ")"
++Fail:2
++./groups_and_keywords2.tests: line 8: syntax error: unexpected ")"

@@ -1,0 +1,8 @@
+--- read_t.xx	2026-02-07 22:52:31.408075187 +0000
++++ read_t.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,4 @@
+-ash: fork/exec ./read_t.tests: exec format error
++><
++><
++>test<
++>test<

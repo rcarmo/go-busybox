@@ -1,0 +1,15 @@
+--- param_expand_len1.xx	2026-02-07 22:52:35.538541251 +0000
++++ param_expand_len1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,11 @@
+-ash: fork/exec ./param_expand_len1.tests: exec format error
++One:1
++Two:2
++Three:3
++
++One:1
++Two:2
++Three:3
++
++Ok ${#$}: 0
++
++Ok ${#!}: 0

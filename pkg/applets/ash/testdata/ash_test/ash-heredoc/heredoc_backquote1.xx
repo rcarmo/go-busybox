@@ -1,0 +1,1 @@
+ash: fork/exec ./heredoc_backquote1.tests: exec format error

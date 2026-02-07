@@ -1,0 +1,16 @@
+--- quote3.xx	2026-02-07 22:52:31.332072736 +0000
++++ quote3.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,12 @@
+-ash: fork/exec ./quote3.tests: exec format error
++Testing: in ""
++..
++Testing: in ''
++..
++Testing: in $empty
++Testing: in $empty""
++..
++Testing: in $empty''
++..
++Testing: in "$empty"
++..
++Finished

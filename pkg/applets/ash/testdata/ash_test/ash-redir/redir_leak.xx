@@ -1,0 +1,1 @@
+ash: fork/exec ./redir_leak.tests: exec format error

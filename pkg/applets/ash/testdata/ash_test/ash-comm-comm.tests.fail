@@ -1,0 +1,10 @@
+--- comm.xx	2026-02-07 22:52:30.941060130 +0000
++++ comm.right	2021-12-26 16:53:26.000000000 +0000
+@@ -1 +1,6 @@
+-ash: fork/exec ./comm.tests: exec format error
++./SCRIPT.sh:
++  /proc/N/comm: SCRIPT.sh
++exec ./SCRIPT.sh:
++  /proc/N/comm: SCRIPT.sh
++sh ./SCRIPT.sh:
++  /proc/N/comm: ash

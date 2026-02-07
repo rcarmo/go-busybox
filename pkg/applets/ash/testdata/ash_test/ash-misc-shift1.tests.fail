@@ -1,0 +1,13 @@
+--- shift1.xx	2026-02-07 22:52:31.231069480 +0000
++++ shift1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,9 @@
+-ash: fork/exec ./shift1.tests: exec format error
++2 3 4
++0: shift: line 0: Illegal number: -1
++1 2 3 4
++2 3 4
++3 4
++4
++
++1 2 3 4
++1 2 3 4

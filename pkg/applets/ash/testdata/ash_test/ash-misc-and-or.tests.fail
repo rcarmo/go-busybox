@@ -1,0 +1,22 @@
+--- and-or.xx	2026-02-07 22:52:31.035063161 +0000
++++ and-or.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,18 @@
+-ash: fork/exec ./and-or.tests: exec format error
++a1
++a4
++b1
++b3
++b4
++b6
++c4
++c5
++c7
++c8
++ff1
++ff3
++ft2
++ft3
++tf2
++tf3
++tt2
++tt4

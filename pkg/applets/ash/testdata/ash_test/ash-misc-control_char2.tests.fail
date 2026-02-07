@@ -1,0 +1,6 @@
+--- control_char2.xx	2026-02-07 22:52:31.071064322 +0000
++++ control_char2.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,2 @@
+-ash: fork/exec ./control_char2.tests: exec format error
++
++Done:0

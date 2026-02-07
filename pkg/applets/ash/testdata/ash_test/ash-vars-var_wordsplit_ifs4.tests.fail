@@ -1,0 +1,9 @@
+--- var_wordsplit_ifs4.xx	2026-02-07 22:52:35.640033298 +0000
++++ var_wordsplit_ifs4.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,5 @@
+-ash: fork/exec ./var_wordsplit_ifs4.tests: exec format error
++|x|
++Ok1:0
++|x|
++||
++Ok2:0

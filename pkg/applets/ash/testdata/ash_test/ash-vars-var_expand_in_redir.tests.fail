@@ -1,0 +1,7 @@
+--- var_expand_in_redir.xx	2026-02-07 22:52:35.616014432 +0000
++++ var_expand_in_redir.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,3 @@
+-ash: fork/exec ./var_expand_in_redir.tests: exec format error
++TEST1
++TEST2
++TEST3

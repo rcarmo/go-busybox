@@ -1,0 +1,7 @@
+--- exitcode_trap5.xx	2026-02-07 22:52:31.133066321 +0000
++++ exitcode_trap5.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,3 @@
+-ash: fork/exec ./exitcode_trap5.tests: exec format error
++TERM
++Nested
++Zero:0

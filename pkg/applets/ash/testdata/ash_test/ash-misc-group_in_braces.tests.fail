@@ -1,0 +1,9 @@
+--- group_in_braces.xx	2026-02-07 22:52:31.174067642 +0000
++++ group_in_braces.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,5 @@
+-ash: fork/exec ./group_in_braces.tests: exec format error
++Zero:0
++Zero:0
++Zero:0
++Zero:0
++Zero:0

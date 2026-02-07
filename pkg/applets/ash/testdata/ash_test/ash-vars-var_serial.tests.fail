@@ -1,0 +1,9 @@
+--- var_serial.xx	2026-02-07 22:52:35.628687416 +0000
++++ var_serial.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,5 @@
+-ash: fork/exec ./var_serial.tests: exec format error
++Assignments only: c=a
++Assignments and a command: c=a
++Assignments and a builtin: c=a
++Assignments and a function: c=a
++Done

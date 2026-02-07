@@ -1,0 +1,44 @@
+--- var_bash4.xx	2026-02-07 22:52:35.600811863 +0000
++++ var_bash4.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,40 @@
+-ash: fork/exec ./var_bash4.tests: exec format error
++Source:        a*b\*c
++Replace str:   _\\_\z_
++Pattern:       single backslash and star: "replace literal star"
++Unquoted:      a_\_z_b\*c
++Unquoted =:    a_\_z_b\*c
++Quoted:        a_\_z_b\*c
++Quoted =:      a_\_z_b\*c
++Pattern:       double backslash and star: "replace backslash and everything after it"
++Unquoted:      a*b_\_z_
++Unquoted =:    a*b_\_z_
++Quoted:        a*b_\_z_
++Quoted =:      a*b_\_z_
++
++Source:        a\bc
++Replace str:   _\\_\z_
++Pattern:       single backslash and b: "replace b"
++Unquoted:      a\_\_z_c
++Unquoted =:    a\_\_z_c
++Quoted:        a\_\_z_c
++Quoted =:      a\_\_z_c
++Pattern:       double backslash and b: "replace backslash and b"
++Unquoted:      a_\_z_c
++Unquoted =:    a_\_z_c
++Quoted:        a_\_z_c
++Quoted =:      a_\_z_c
++
++Source:        a\bc
++Replace str:   _\\_\z_ (as variable $s)
++Pattern:       single backslash and b: "replace b"
++Unquoted:      a\_\\_\z_c
++Unquoted =:    a\_\\_\z_c
++Quoted:        a\_\\_\z_c
++Quoted =:      a\_\\_\z_c
++Pattern:       double backslash and b: "replace backslash and b"
++Unquoted:      a_\\_\z_c
++Unquoted =:    a_\\_\z_c
++Quoted:        a_\\_\z_c
++Quoted =:      a_\\_\z_c
++
++Done: 0

@@ -1,0 +1,8 @@
+--- func3.xx	2026-02-07 22:52:31.154066998 +0000
++++ func3.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,4 @@
+-ash: fork/exec ./func3.tests: exec format error
++One:1
++Zero:0
++One:1
++Five:5

@@ -1,0 +1,1 @@
+ash: fork/exec ./echo_write_error.tests: exec format error

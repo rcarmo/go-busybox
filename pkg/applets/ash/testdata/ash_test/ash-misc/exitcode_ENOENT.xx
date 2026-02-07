@@ -1,0 +1,1 @@
+ash: fork/exec ./exitcode_ENOENT.tests: exec format error

@@ -1,0 +1,25 @@
+--- subshell.xx	2026-02-07 22:52:35.508207375 +0000
++++ subshell.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,21 @@
+-ash: fork/exec ./subshell.tests: exec format error
++trap -- '' HUP
++trap -- '' QUIT
++trap -- '' SYS
++Ok
++trap -- '' HUP
++trap -- '' QUIT
++trap -- '' SYS
++Ok
++trap -- '' HUP
++trap -- '' QUIT
++trap -- '' SYS
++Ok
++trap -- '' HUP
++trap -- '' QUIT
++trap -- '' SYS
++Ok
++trap -- '' HUP
++trap -- '' QUIT
++trap -- '' SYS
++Terminated
++Done

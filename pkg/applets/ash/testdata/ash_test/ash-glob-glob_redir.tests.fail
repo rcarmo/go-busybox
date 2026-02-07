@@ -1,0 +1,6 @@
+--- glob_redir.xx	2026-02-07 22:52:30.969061033 +0000
++++ glob_redir.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,2 @@
+-ash: fork/exec ./glob_redir.tests: exec format error
++z.tmp:
++?.tmp: TEST

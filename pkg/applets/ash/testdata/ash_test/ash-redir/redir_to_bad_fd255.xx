@@ -1,0 +1,1 @@
+ash: fork/exec ./redir_to_bad_fd255.tests: exec format error

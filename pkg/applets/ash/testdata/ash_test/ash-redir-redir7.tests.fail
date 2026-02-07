@@ -1,0 +1,7 @@
+--- redir7.xx	2026-02-07 22:52:31.426075767 +0000
++++ redir7.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,3 @@
+-ash: fork/exec ./redir7.tests: exec format error
++Ok
++Ok
++Done

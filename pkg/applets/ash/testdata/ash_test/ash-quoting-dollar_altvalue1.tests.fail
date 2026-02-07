@@ -1,0 +1,20 @@
+--- dollar_altvalue1.xx	2026-02-07 22:52:31.370140962 +0000
++++ dollar_altvalue1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,16 @@
+-ash: fork/exec ./dollar_altvalue1.tests: exec format error
++Unquoted b c d
++|b|
++|c|
++|d|
++Unquoted 'b c' d
++|b c|
++|d|
++Unquoted "b c" d
++|b c|
++|d|
++Quoted b c d
++|b c d|
++Quoted 'b c' d
++|'b c' d|
++Quoted "b c" d
++|b c d|

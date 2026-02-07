@@ -1,0 +1,14 @@
+--- dollar_squote_bash1.xx	2026-02-07 22:52:31.379074252 +0000
++++ dollar_squote_bash1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,10 @@
+-ash: fork/exec ./dollar_squote_bash1.tests: exec format error
++a	b
++$'a\tb'
++a
++b c
++def
++a'b c"d e\f
++a3b c3b e33f
++a\80b c08b
++a3b c30b
++x	y

@@ -1,0 +1,7 @@
+--- redir_stdin1.xx	2026-02-07 22:52:31.453076638 +0000
++++ redir_stdin1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,3 @@
+-ash: fork/exec ./redir_stdin1.tests: exec format error
++#Testing that stdin redirect is restored
++read2
++Ok:0

@@ -1,0 +1,8 @@
+--- empty_for2.xx	2026-02-07 22:52:31.084064741 +0000
++++ empty_for2.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,4 @@
+-ash: fork/exec ./empty_for2.tests: exec format error
++PARAM:abc
++PARAM:d e
++PARAM:123
++OK: 0

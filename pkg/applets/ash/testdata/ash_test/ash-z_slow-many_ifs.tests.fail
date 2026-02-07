@@ -1,0 +1,5 @@
+--- many_ifs.xx	2026-02-07 22:52:35.643211728 +0000
++++ many_ifs.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1 @@
+-ash: fork/exec ./many_ifs.tests: exec format error
++# tests 6856 passed 6856 failed 0

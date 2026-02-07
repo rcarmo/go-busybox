@@ -3,6 +3,7 @@ package pwd_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/rcarmo/go-busybox/pkg/applets/pwd"
@@ -22,7 +23,7 @@ func TestPwd(t *testing.T) {
 				}
 				out, _, code := testutil.CaptureAndRun(t, pwd.Run, []string{}, "")
 				testutil.AssertExitCode(t, code, core.ExitSuccess)
-				if filepath.Clean(out.String()) == "" {
+				if filepath.Clean(strings.TrimSpace(out.String())) == "" {
 					t.Fatalf("empty output")
 				}
 			},
@@ -44,8 +45,44 @@ func TestPwd(t *testing.T) {
 				}
 				out, _, code := testutil.CaptureAndRun(t, pwd.Run, []string{"-L"}, "")
 				testutil.AssertExitCode(t, code, core.ExitSuccess)
-				if filepath.Clean(out.String()) == "" {
+				if filepath.Clean(strings.TrimSpace(out.String())) == "" {
 					t.Fatalf("empty output")
+				}
+			},
+		},
+		{
+			Name:     "testsuite_parity",
+			Args:     []string{},
+			WantCode: core.ExitSuccess,
+			Check: func(t *testing.T, dir string) {
+				if err := os.Chdir(dir); err != nil {
+					t.Fatal(err)
+				}
+				path, err := os.Executable()
+				if err != nil {
+					t.Fatal(err)
+				}
+				execDir := filepath.Dir(path)
+				if err := os.Chdir(execDir); err != nil {
+					t.Fatal(err)
+				}
+				cmdPwd := filepath.Join(execDir, "pwd")
+				if _, err := os.Stat(cmdPwd); err != nil {
+					cmdPwd = "pwd"
+				}
+				cmd := testutil.Command(cmdPwd)
+				cmd.Dir = execDir
+				out, err := cmd.Output()
+				if err != nil {
+					t.Fatalf("external pwd: %v", err)
+				}
+				stdio, outBuf, _ := testutil.CaptureStdio("")
+				code := pwd.Run(stdio, []string{})
+				if code != core.ExitSuccess {
+					t.Fatalf("pwd exit code = %d", code)
+				}
+				if strings.TrimSpace(outBuf.String()) != strings.TrimSpace(string(out)) {
+					t.Fatalf("pwd mismatch: got %q want %q", strings.TrimSpace(outBuf.String()), strings.TrimSpace(string(out)))
 				}
 			},
 		},

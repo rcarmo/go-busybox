@@ -1,0 +1,8 @@
+--- heredoc_empty2.xx	2026-02-07 22:52:31.023062774 +0000
++++ heredoc_empty2.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,4 @@
+-ash: fork/exec ./heredoc_empty2.tests: exec format error
++OK1
++Ok:0
++OK2
++Ok:0

@@ -1,0 +1,1 @@
+ash: fork/exec ./if_false_exitcode.tests: exec format error

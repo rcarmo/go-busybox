@@ -1,0 +1,44 @@
+--- var_subst_in_for.xx	2026-02-07 22:52:35.629211277 +0000
++++ var_subst_in_for.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,40 @@
+-ash: fork/exec ./var_subst_in_for.tests: exec format error
++Testing: in x y z
++.x.
++.y.
++.z.
++Testing: in u $empty v
++.u.
++.v.
++Testing: in u " $empty" v
++.u.
++. .
++.v.
++Testing: in u $empty $empty$a v
++.u.
++.a.
++.v.
++Testing: in $a_b
++.a.
++.b.
++Testing: in $*
++.abc.
++.d.
++.e.
++Testing: in $@
++.abc.
++.d.
++.e.
++Testing: in -$*-
++.-abc.
++.d.
++.e-.
++Testing: in -$@-
++.-abc.
++.d.
++.e-.
++Testing: in $a_b -$a_b-
++.a.
++.b.
++.-a.
++.b-.
++Finished

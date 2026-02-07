@@ -21,13 +21,22 @@ func TestMkdir(t *testing.T) {
 			},
 		},
 		{
+			Name:     "parents",
+			Args:     []string{"-p", "foo/bar"},
+			WantCode: core.ExitSuccess,
+			Check: func(t *testing.T, dir string) {
+				testutil.AssertFileExists(t, filepath.Join(dir, "foo"))
+				testutil.AssertFileExists(t, filepath.Join(dir, "foo", "bar"))
+			},
+		},
+		{
 			Name:     "parents_verbose",
 			Args:     []string{"-p", "-v", "a/b"},
 			WantCode: core.ExitSuccess,
 			WantOut:  "created directory: 'a'\ncreated directory: 'a/b'\n",
 			Check: func(t *testing.T, dir string) {
 				testutil.AssertFileExists(t, filepath.Join(dir, "a"))
-				testutil.AssertFileExists(t, filepath.Join(dir, "a/b"))
+				testutil.AssertFileExists(t, filepath.Join(dir, "a", "b"))
 			},
 		},
 		{

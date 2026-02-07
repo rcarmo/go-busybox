@@ -1,0 +1,1 @@
+ash: fork/exec ./var_bash_repl_empty_var.tests: exec format error

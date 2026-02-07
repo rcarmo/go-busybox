@@ -1,0 +1,9 @@
+--- func_prio_over_builtins.xx	2026-02-07 22:52:31.169067481 +0000
++++ func_prio_over_builtins.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,5 @@
+-ash: fork/exec ./func_prio_over_builtins.tests: exec format error
++YES
++YES
++YES
++YES
++Ok:YES

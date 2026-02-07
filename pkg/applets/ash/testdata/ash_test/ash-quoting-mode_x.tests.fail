@@ -1,0 +1,14 @@
+--- mode_x.xx	2026-02-07 22:52:31.382074349 +0000
++++ mode_x.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,10 @@
+-ash: fork/exec ./mode_x.tests: exec format error
+++ var1=val
+++ var2='one two'
+++ true '%s\n' one 'two '"'"'three' four
+++ this=command
+++ 'this=command'
++./mode_x.tests: line 10: this=command: not found
+++ true
+++ true
+++ 'if' true
++./mode_x.tests: line 14: if: not found

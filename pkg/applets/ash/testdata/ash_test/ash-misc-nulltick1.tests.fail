@@ -1,0 +1,7 @@
+--- nulltick1.xx	2026-02-07 22:52:31.209068771 +0000
++++ nulltick1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,3 @@
+-ash: fork/exec ./nulltick1.tests: exec format error
++Test 1
++Test 2
++Done

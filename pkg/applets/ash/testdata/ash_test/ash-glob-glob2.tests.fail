@@ -1,0 +1,22 @@
+--- glob2.xx	2026-02-07 22:52:30.958060678 +0000
++++ glob2.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,18 @@
+-ash: fork/exec ./glob2.tests: exec format error
++Expected Actual
++Z\*    : Z\*
++Z*     : Z*
++Z\f    : Z\f
++Z\*    : Z\*
++
++Z\z    : Z\z
++Zz     : Zz
++Z\z    : Z\z
++Z\z    : Z\z
++
++Z\     : Z\
++Z\     : Z\
++
++Z\f Zf : Z\f Zf
++Z\f Zf : Z\f Zf
++
++Done: 0

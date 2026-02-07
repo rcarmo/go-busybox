@@ -1,0 +1,1 @@
+ash: fork/exec ./redir_children_should_not_see_saved_fd_3.tests: exec format error

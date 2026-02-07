@@ -1,0 +1,6 @@
+--- last_amp.xx	2026-02-07 22:52:31.177067739 +0000
++++ last_amp.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,2 @@
+-ash: fork/exec ./last_amp.tests: exec format error
++3
++End

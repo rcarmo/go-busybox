@@ -1,0 +1,1 @@
+ash: fork/exec ./heredoc_backslash1.tests: exec format error

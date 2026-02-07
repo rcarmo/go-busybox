@@ -1,0 +1,15 @@
+--- groups_and_keywords1.xx	2026-02-07 22:52:31.316072221 +0000
++++ groups_and_keywords1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,11 @@
+-ash: fork/exec ./groups_and_keywords1.tests: exec format error
++Semicolons after } can be omitted 1:
++foo
++bar
++Semicolons after } can be omitted 2:
++foo
++bar
++Semicolons after fi can be omitted:
++foo
++bar
++baz
++Done:0

@@ -1,0 +1,8 @@
+--- bkslash_newline4.xx	2026-02-07 22:52:31.274070867 +0000
++++ bkslash_newline4.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,4 @@
+-ash: fork/exec ./bkslash_newline4.tests: exec format error
++1:1
++22:22
++3:3
++Ok:0

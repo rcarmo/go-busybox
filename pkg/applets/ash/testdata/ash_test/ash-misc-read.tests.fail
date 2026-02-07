@@ -1,0 +1,8 @@
+--- read.xx	2026-02-07 22:52:31.221069158 +0000
++++ read.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,4 @@
+-ash: fork/exec ./read.tests: exec format error
++read
++cat
++echo "REPLY=$REPLY"
++REPLY=exec <read.tests

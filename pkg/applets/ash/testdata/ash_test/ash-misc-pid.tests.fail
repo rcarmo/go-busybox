@@ -1,0 +1,5 @@
+--- pid.xx	2026-02-07 22:52:31.216068997 +0000
++++ pid.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1 @@
+-ash: fork/exec ./pid.tests: exec format error
++0

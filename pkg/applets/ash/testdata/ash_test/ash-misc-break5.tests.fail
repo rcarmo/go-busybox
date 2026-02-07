@@ -1,0 +1,17 @@
+--- break5.xx	2026-02-07 22:52:31.052063709 +0000
++++ break5.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,13 @@
+-ash: fork/exec ./break5.tests: exec format error
++A
++B
++0
++A:a
++B
++D
++A:b
++B
++D
++A:c
++B
++D
++0

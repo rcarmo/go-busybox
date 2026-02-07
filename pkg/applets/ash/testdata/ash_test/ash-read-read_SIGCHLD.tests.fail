@@ -1,0 +1,6 @@
+--- read_SIGCHLD.xx	2026-02-07 22:52:31.400074929 +0000
++++ read_SIGCHLD.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,2 @@
+-ash: fork/exec ./read_SIGCHLD.tests: exec format error
++x='Ok'
++exitcode:0

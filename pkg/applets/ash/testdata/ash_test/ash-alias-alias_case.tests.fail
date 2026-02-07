@@ -1,0 +1,5 @@
+--- alias_case.xx	2026-02-07 22:52:30.930059776 +0000
++++ alias_case.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1 @@
+-ash: fork/exec ./alias_case.tests: exec format error
++Ok

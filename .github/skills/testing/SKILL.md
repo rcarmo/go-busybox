@@ -115,7 +115,7 @@ pkg/
 
 ### 5. Coverage Requirements
 
-- **Minimum**: 70% line coverage
+- **Minimum**: 80% line coverage
 - **Target**: 85%+ for core packages
 - **Critical paths**: 100% (sandbox, security)
 
@@ -144,6 +144,7 @@ go tool cover -html=coverage.out
 - Compare output with real busybox binary
 - Fuzz inputs to find divergences
 - Document intentional differences
+- Maintain fuzz target coverage at 80%+ of applets
 
 ```go
 func TestCatVsBusybox(t *testing.T) {

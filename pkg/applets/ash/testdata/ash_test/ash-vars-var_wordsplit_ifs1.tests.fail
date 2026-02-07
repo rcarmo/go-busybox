@@ -1,0 +1,45 @@
+--- var_wordsplit_ifs1.xx	2026-02-07 22:52:35.635124770 +0000
++++ var_wordsplit_ifs1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,41 @@
+-ash: fork/exec ./var_wordsplit_ifs1.tests: exec format error
++Testing: !IFS $*
++.abc.
++.d.
++.e.
++Testing: !IFS $@
++.abc.
++.d.
++.e.
++Testing: !IFS "$*"
++.abc d e.
++Testing: !IFS "$@"
++.abc.
++.d e.
++Testing: IFS="" $*
++.abc.
++.d e.
++Testing: IFS="" $@
++.abc.
++.d e.
++Testing: IFS="" "$*"
++.abcd e.
++Testing: IFS="" "$@"
++.abc.
++.d e.
++Testing: !IFS v=$*
++v='abc d e'
++Testing: !IFS v=$@
++v='abc d e'
++Testing: !IFS v="$*"
++v='abc d e'
++Testing: !IFS v="$@"
++v='abc d e'
++Testing: IFS="" v=$*
++v='abcd e'
++Testing: IFS="" v=$@
++v='abcd e'
++Testing: IFS="" v="$*"
++v='abcd e'
++Testing: IFS="" v="$@"
++v='abcd e'
++Finished

@@ -1,0 +1,11 @@
+--- brace1.xx	2026-02-07 22:52:31.276070931 +0000
++++ brace1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,7 @@
+-ash: fork/exec ./brace1.tests: exec format error
++{abc}
++{
++}
++./brace1.tests: line 4: {cmd: not found
++./brace1.tests: line 5: {: not found
++./brace1.tests: line 6: {: not found
++Done: 127

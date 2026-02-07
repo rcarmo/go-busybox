@@ -33,19 +33,17 @@ func TestCat(t *testing.T) {
 			Name:     "number_nonblank",
 			Args:     []string{"-b", "test.txt"},
 			WantCode: core.ExitSuccess,
-			WantOut:  "     1	a\n\n     2	b\n",
+			WantOut:  "     1\tline 1\n\n     2\tline 3\n",
 			Files: map[string]string{
-				"test.txt": "a\n\nb\n",
+				"test.txt": "line 1\n\nline 3\n",
 			},
 		},
 		{
 			Name:     "show_ends",
-			Args:     []string{"-e", "test.txt"},
+			Args:     []string{"-e"},
+			Input:    "foo\n",
 			WantCode: core.ExitSuccess,
-			WantOut:  "a$\n",
-			Files: map[string]string{
-				"test.txt": "a\n",
-			},
+			WantOut:  "foo$\n",
 		},
 		{
 			Name:     "show_tabs",
@@ -57,6 +55,13 @@ func TestCat(t *testing.T) {
 			},
 		},
 		{
+			Name:     "show_nonprint",
+			Args:     []string{"-v"},
+			Input:    "foo\n",
+			WantCode: core.ExitSuccess,
+			WantOut:  "foo\n",
+		},
+		{
 			Name:     "show_all",
 			Args:     []string{"-A", "test.txt"},
 			WantCode: core.ExitSuccess,
@@ -66,13 +71,11 @@ func TestCat(t *testing.T) {
 			},
 		},
 		{
-			Name:       "number_lines",
-			Args:       []string{"-n", "test.txt"},
-			WantCode:   core.ExitSuccess,
-			WantOutSub: "1\t",
-			Files: map[string]string{
-				"test.txt": "a\nb\nc\n",
-			},
+			Name:     "number_lines",
+			Args:     []string{"-n"},
+			Input:    "line 1\n\nline 3\n",
+			WantCode: core.ExitSuccess,
+			WantOut:  "     1\tline 1\n     2\t\n     3\tline 3\n",
 		},
 		{
 			Name:     "stdin",

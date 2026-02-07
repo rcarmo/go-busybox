@@ -1,0 +1,6 @@
+--- glob3.xx	2026-02-07 22:52:30.960060743 +0000
++++ glob3.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,2 @@
+-ash: fork/exec ./glob3.tests: exec format error
++glob3.tests
++./glob3.tests

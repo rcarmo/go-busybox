@@ -1,0 +1,16 @@
+--- var_wordsplit_ifs3.xx	2026-02-07 22:52:35.637211535 +0000
++++ var_wordsplit_ifs3.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,12 @@
+-ash: fork/exec ./var_wordsplit_ifs3.tests: exec format error
++Unquoted%:<q>
++Unquoted%:<w>
++Unquoted%:<e>
++Unquoted%:<r>
++Unquoted%:<t>
++Unquoted#:<w>
++Unquoted#:<e>
++Unquoted#:<r>
++Unquoted#:<t>
++Unquoted#:<y>
++Quoted%:<q w e r t >
++Quoted#:< w e r t y>

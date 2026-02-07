@@ -1,0 +1,10 @@
+--- func1.xx	2026-02-07 22:52:31.148066804 +0000
++++ func1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,6 @@
+-ash: fork/exec ./func1.tests: exec format error
++Hello
++Zero: 0
++One: 1 Param1: World
++Zero: 0 Param1: Restored
++Multi line function
++One: 1

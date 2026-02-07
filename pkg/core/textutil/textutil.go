@@ -78,6 +78,9 @@ func BuildFieldFunc(ranges []Range, delimiter rune, outputDelimiter string, supp
 		if suppress && len(fields) <= 1 {
 			return "", false
 		}
+		if !suppress && len(fields) <= 1 {
+			return line, true
+		}
 		selected := make([]string, 0, len(fields))
 		for _, r := range ranges {
 			start := r.Start
@@ -95,9 +98,6 @@ func BuildFieldFunc(ranges []Range, delimiter rune, outputDelimiter string, supp
 				selected = append(selected, fields[i-1])
 			}
 		}
-		if len(selected) == 0 && suppress {
-			return "", false
-		}
 		if outputDelimiter == "" {
 			outputDelimiter = string(delimiter)
 		}
@@ -110,6 +110,7 @@ func BuildCharFunc(ranges []Range) func(line string) string {
 	return func(line string) string {
 		var out strings.Builder
 		runes := []rune(line)
+		seen := make([]bool, len(runes)+1)
 		for _, r := range ranges {
 			start := r.Start
 			end := r.End
@@ -123,6 +124,10 @@ func BuildCharFunc(ranges []Range) func(line string) string {
 				continue
 			}
 			for i := start; i <= end; i++ {
+				if seen[i] {
+					continue
+				}
+				seen[i] = true
 				out.WriteRune(runes[i-1])
 			}
 		}

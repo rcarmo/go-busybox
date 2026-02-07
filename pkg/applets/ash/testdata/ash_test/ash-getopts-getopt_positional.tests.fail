@@ -1,0 +1,10 @@
+--- getopt_positional.xx	2026-02-07 22:52:30.947060324 +0000
++++ getopt_positional.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,6 @@
+-ash: fork/exec ./getopt_positional.tests: exec format error
++*** no OPTIND, optstring:'we' args:-q -w -e r -t -y
++Illegal option -q
++var:'?' OPTIND:2
++var:'w' OPTIND:3
++var:'e' OPTIND:4
++exited: var:'?' OPTIND:4

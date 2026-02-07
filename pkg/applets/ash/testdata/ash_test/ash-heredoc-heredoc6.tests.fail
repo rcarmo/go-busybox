@@ -1,0 +1,6 @@
+--- heredoc6.xx	2026-02-07 22:52:30.983061484 +0000
++++ heredoc6.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,2 @@
+-ash: fork/exec ./heredoc6.tests: exec format error
++test
++OK:0

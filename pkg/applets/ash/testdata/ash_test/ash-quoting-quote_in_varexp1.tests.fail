@@ -1,0 +1,6 @@
+--- quote_in_varexp1.xx	2026-02-07 22:52:31.386074478 +0000
++++ quote_in_varexp1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,2 @@
+-ash: fork/exec ./quote_in_varexp1.tests: exec format error
++''
++Ok:0

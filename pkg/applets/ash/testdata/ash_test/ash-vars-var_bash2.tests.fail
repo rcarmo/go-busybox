@@ -1,0 +1,14 @@
+--- var_bash2.xx	2026-02-07 22:52:35.597696706 +0000
++++ var_bash2.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,10 @@
+-ash: fork/exec ./var_bash2.tests: exec format error
++abc123xcba123
++abx123dcba123
++abx123dxba123
++abcx23dcba123
++abcxxxdcbaxxx
++abx
++xba123
++abx23
++abc23dcba123
++abcdcba

@@ -1,0 +1,18 @@
+--- func_local2.xx	2026-02-07 22:52:31.167067417 +0000
++++ func_local2.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,14 @@
+-ash: fork/exec ./func_local2.tests: exec format error
++1
++2
++1
++2
++1
++1
++2
++2
++3
++2
++2
++3
++1
++Done

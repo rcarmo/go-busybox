@@ -1,0 +1,10 @@
+--- getopt_silent.xx	2026-02-07 22:52:30.949060388 +0000
++++ getopt_silent.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,6 @@
+-ash: fork/exec ./getopt_silent.tests: exec format error
++*** optstring:':ac' args:-a -b -c
++1 rc:0 var:'a' OPTIND:2 OPTARG:''
++2 rc:0 var:'?' OPTIND:3 OPTARG:'b'
++3 rc:0 var:'c' OPTIND:4 OPTARG:''
++4 rc:1 var:'?' OPTIND:4 OPTARG:''
++5 rc:1 var:'?' OPTIND:4 OPTARG:''

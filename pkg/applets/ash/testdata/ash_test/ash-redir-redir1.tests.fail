@@ -1,0 +1,16 @@
+--- redir1.xx	2026-02-07 22:52:31.415075412 +0000
++++ redir1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,12 @@
+-ash: fork/exec ./redir1.tests: exec format error
++Test 0:  var:ok
++File created:ok
++Test 1:  var:ok
++File created:ok
++Test 2:  var:ok
++File created:ok
++Test 3:  var:ok
++File created:ok
++Test 4:  var:ok
++File created:ok
++Test 5:  var:ok
++File created:ok

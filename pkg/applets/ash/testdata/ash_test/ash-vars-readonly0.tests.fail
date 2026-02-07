@@ -1,0 +1,17 @@
+--- readonly0.xx	2026-02-07 22:52:35.544208536 +0000
++++ readonly0.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,13 @@
+-ash: fork/exec ./readonly0.tests: exec format error
++readonly a='A'
++readonly b='B'
++Ok:0
++
++./readonly0.tests: line 19: a: is read only
++Fail:2
++./readonly0.tests: readonly: line 21: a: is read only
++Fail:2
++
++./readonly0.tests: export: line 27: a: is read only
++Fail:2
++
++./readonly0.tests: unset: line 44: a: is read only

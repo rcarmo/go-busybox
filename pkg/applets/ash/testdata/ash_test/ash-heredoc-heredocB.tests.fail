@@ -1,0 +1,7 @@
+--- heredocB.xx	2026-02-07 22:52:31.007062258 +0000
++++ heredocB.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,3 @@
+-ash: fork/exec ./heredocB.tests: exec format error
++one - alpha
++two - beta
++three - gamma

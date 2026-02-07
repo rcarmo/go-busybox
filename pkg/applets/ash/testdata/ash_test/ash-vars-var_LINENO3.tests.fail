@@ -1,0 +1,6 @@
+--- var_LINENO3.xx	2026-02-07 22:52:35.588911074 +0000
++++ var_LINENO3.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,2 @@
+-ash: fork/exec ./var_LINENO3.tests: exec format error
++LINENO starts from 0 in -c
++and increments on next line: 1

@@ -110,6 +110,11 @@ test-short: check-toolchain ## Run short tests only
 coverage: check-toolchain ## Run tests with coverage
 	@go test -v -race -coverprofile=$(COVERAGE_FILE) -covermode=atomic ./...
 	@go tool cover -func=$(COVERAGE_FILE)
+	@COVERAGE=$$(go tool cover -func=$(COVERAGE_FILE) | grep total | awk '{print $$3}' | tr -d '%'); \
+	if [ $$(printf "%.0f" $$COVERAGE) -lt 80 ]; then \
+		echo "Coverage $$COVERAGE% is below 80%"; \
+		exit 1; \
+	fi
 
 .PHONY: coverage-html
 coverage-html: coverage ## Generate HTML coverage report
@@ -123,11 +128,16 @@ dupl: ## Find duplicate code
 	@find ./pkg -name '*.go' -not -name '*_test.go' | xargs dupl -t 50 || true
 
 .PHONY: test-quality
-test-quality: coverage dupl ## Check test quality metrics
+test-quality: coverage fuzz-coverage dupl ## Check test quality metrics
 	@echo ""
 	@echo "=== Test Summary ==="
 	@echo "Coverage: $$(go tool cover -func=$(COVERAGE_FILE) | grep total | awk '{print $$3}')"
 	@echo "Test count: $$(go test -v ./... 2>&1 | grep -c '=== RUN' || echo 0)"
+	@echo "Fuzz target coverage: $$(./scripts/fuzz_coverage.sh)"
+
+.PHONY: fuzz-coverage
+fuzz-coverage: ## Ensure fuzz tests cover at least 80% of applets
+	@./scripts/fuzz_coverage.sh --enforce 80
 
 # =============================================================================
 # Build

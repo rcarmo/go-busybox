@@ -1,0 +1,45 @@
+--- var_posix1.xx	2026-02-07 22:52:35.627097743 +0000
++++ var_posix1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,41 @@
+-ash: fork/exec ./var_posix1.tests: exec format error
++Empty:
++Empty:
++Empty:
++Empty:
++Empty:
++Empty:
++Empty:
++Empty:
++Empty:
++Empty:
++Empty:
++Empty:
++Empty:
++Empty:
++Empty:
++Empty:
++abcdcd
++abcdcd
++abcdcd
++cdcd
++babcdcd
++babcdcd
++ababcdcd
++Empty:
++ababcdcd}_tail
++ababcdcd_tail
++ababcd
++ababcd
++ababcd
++abab
++ababcdc
++ababcdc
++ababcdcd
++Empty:
++ababcdcd}_tail
++ababcdcd_tail
++ababcdcd
++ab
++ab
++ab
++End

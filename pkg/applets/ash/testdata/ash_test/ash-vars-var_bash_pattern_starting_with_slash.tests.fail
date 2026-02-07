@@ -1,0 +1,6 @@
+--- var_bash_pattern_starting_with_slash.xx	2026-02-07 22:52:35.607210567 +0000
++++ var_bash_pattern_starting_with_slash.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,2 @@
+-ash: fork/exec ./var_bash_pattern_starting_with_slash.tests: exec format error
++-dev-ram
++/dev-am

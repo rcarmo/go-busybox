@@ -1,0 +1,8 @@
+--- param_expand_alt2.xx	2026-02-07 22:52:35.528406244 +0000
++++ param_expand_alt2.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,4 @@
+-ash: fork/exec ./param_expand_alt2.tests: exec format error
++Unquoted: H H
++Quoted: H
++H
++Ok:0

@@ -1,0 +1,6 @@
+--- negative_arith.xx	2026-02-07 22:52:31.384074413 +0000
++++ negative_arith.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,2 @@
+-ash: fork/exec ./negative_arith.tests: exec format error
++tempfile0.tmp tempfile9.tmp
++tempfile0.tmp tempfile1.tmp tempfile9.tmp

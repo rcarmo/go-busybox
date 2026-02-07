@@ -1,0 +1,13 @@
+--- heredoc3.xx	2026-02-07 22:52:30.977061291 +0000
++++ heredoc3.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,9 @@
+-ash: fork/exec ./heredoc3.tests: exec format error
++exit EOF-f
++"
++echo $f
++echo `echo Hello World`
++moo	 
++ EOF-f
++EOF-f   f
++EOF-f 
++Ok

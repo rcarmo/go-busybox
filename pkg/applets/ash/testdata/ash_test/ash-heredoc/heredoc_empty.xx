@@ -1,0 +1,1 @@
+ash: fork/exec ./heredoc_empty.tests: exec format error

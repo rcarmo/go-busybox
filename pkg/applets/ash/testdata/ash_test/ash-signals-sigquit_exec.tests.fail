@@ -1,0 +1,6 @@
+--- sigquit_exec.xx	2026-02-07 22:52:35.506207311 +0000
++++ sigquit_exec.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,2 @@
+-ash: fork/exec ./sigquit_exec.tests: exec format error
++SigIgn:	0000000000000000
++SigIgn:	0000000000000000

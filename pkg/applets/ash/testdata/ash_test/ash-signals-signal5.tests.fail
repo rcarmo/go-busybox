@@ -1,0 +1,16 @@
+--- signal5.xx	2026-02-07 22:52:35.492206860 +0000
++++ signal5.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,12 @@
+-ash: fork/exec ./signal5.tests: exec format error
++Sleeping
++Sleeping
++Waiting
++2 sec passed, sending USR1 to parent
++USR1 received
++Wait exit code: 138
++Waiting
++3 sec passed, sending USR1 to parent
++USR1 received
++Wait exit code: 138
++Waiting
++Wait returned 0

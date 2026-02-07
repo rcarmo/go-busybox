@@ -1,0 +1,18 @@
+--- dollar_repl_bash1.xx	2026-02-07 22:52:31.374074091 +0000
++++ dollar_repl_bash1.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,14 @@
+-ash: fork/exec ./dollar_repl_bash1.tests: exec format error
++|y|
++|zx|
++|y|
++|zx|
++|y zx|
++|y zx|
++|y|
++|zy|
++|z|
++|y|
++|zy|
++|z|
++|y zy z|
++|y zy z|

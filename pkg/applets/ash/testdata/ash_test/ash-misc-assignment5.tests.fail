@@ -1,0 +1,9 @@
+--- assignment5.xx	2026-02-07 22:52:31.043063419 +0000
++++ assignment5.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,5 @@
+-ash: fork/exec ./assignment5.tests: exec format error
++Zero1:0
++Zero2:0
++Zero3:0
++Zero4:0 x:1 y:1
++Three:3 x:1 y:1

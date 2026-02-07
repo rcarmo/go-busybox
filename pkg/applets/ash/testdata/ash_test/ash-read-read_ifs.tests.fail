@@ -1,0 +1,14 @@
+--- read_ifs.xx	2026-02-07 22:52:31.403075026 +0000
++++ read_ifs.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,10 @@
+-ash: fork/exec ./read_ifs.tests: exec format error
++test 1: .a. .b. .c.
++test 2: .a. .b. .c.
++test 3: .a. .. .b,c.
++test 4: .a. .. .b,c.
++test 5: .a. .. .c.
++test 6: .a. .. .c. .d.
++test 7: .a. .. .b,c,d  ,  ,.
++test 8: .. .a. .b. .c.
++test 9: .a. .b. .c. ..
++test A: .. .a. .. .b. .c.

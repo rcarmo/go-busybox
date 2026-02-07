@@ -1,0 +1,9 @@
+--- nommu2.xx	2026-02-07 22:52:31.184067965 +0000
++++ nommu2.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,5 @@
+-ash: fork/exec ./nommu2.tests: exec format error
++Ok
++Ok
++Ok
++Ok
++Done

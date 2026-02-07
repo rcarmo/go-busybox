@@ -1,0 +1,5 @@
+--- command.xx	2026-02-07 22:52:31.059063935 +0000
++++ command.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1 @@
+-ash: fork/exec ./command.tests: exec format error
++recho: not found

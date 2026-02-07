@@ -1,0 +1,8 @@
+--- noexec_gets_no_env.xx	2026-02-07 22:52:35.513207537 +0000
++++ noexec_gets_no_env.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,4 @@
+-ash: fork/exec ./noexec_gets_no_env.tests: exec format error
++VAR7=VAL
++0
++VAR8=VAL
++0

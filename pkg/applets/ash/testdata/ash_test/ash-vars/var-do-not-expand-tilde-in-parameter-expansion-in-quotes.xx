@@ -1,0 +1,1 @@
+ash: fork/exec ./var-do-not-expand-tilde-in-parameter-expansion-in-quotes.tests: exec format error

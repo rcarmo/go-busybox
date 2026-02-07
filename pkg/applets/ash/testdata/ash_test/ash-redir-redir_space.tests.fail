@@ -1,0 +1,7 @@
+--- redir_space.xx	2026-02-07 22:52:31.451076573 +0000
++++ redir_space.right	2021-12-26 16:53:21.000000000 +0000
+@@ -1 +1,3 @@
+-ash: fork/exec ./redir_space.tests: exec format error
++z1.tmp: 1
++z2.tmp: 1
++"z1.tmp z2.tmp": TEST 0
