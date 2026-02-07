@@ -1,5 +1,9 @@
 # Busybox WASM
 
+<p align="center">
+  <img src="docs/icon-256.png" alt="Busybox WASM" width="256" />
+</p>
+
 A sandboxable implementation of busybox utilities in Go, compiled to WebAssembly using TinyGo.
 
 ## Overview

@@ -21,8 +21,10 @@ func Run(stdio *core.Stdio, args []string) int {
 		return core.UsageError(stdio, "ash", "missing command")
 	}
 	shell := &runner{
-		stdio: stdio,
-		vars:  map[string]string{},
+		stdio:    stdio,
+		vars:     map[string]string{},
+		exported: map[string]bool{},
+		funcs:    map[string]string{},
 	}
 	if args[0] == "-c" {
 		if len(args) < 2 {
@@ -37,9 +39,12 @@ func Run(stdio *core.Stdio, args []string) int {
 type runner struct {
 	stdio        *core.Stdio
 	vars         map[string]string
+	exported     map[string]bool
+	funcs        map[string]string
 	breakFlag    bool
 	continueFlag bool
 	bg           []chan int
+	lastStatus   int
 }
 
 // safeWriter wraps a WriteCloser and enforces a write timeout to avoid blocking.
@@ -69,6 +74,10 @@ func (s safeWriter) Write(p []byte) (int, error) {
 
 func (r *runner) runScript(script string) int {
 	script = strings.TrimSpace(script)
+	// Try structured statements first
+	if code, ok := r.runFuncDef(script); ok {
+		return code
+	}
 	if code, ok := r.runIfScript(script); ok {
 		return code
 	}
@@ -78,6 +87,9 @@ func (r *runner) runScript(script string) int {
 	if code, ok := r.runForScript(script); ok {
 		return code
 	}
+	if code, ok := r.runCaseScript(script); ok {
+		return code
+	}
 	commands := splitCommands(script)
 	status := core.ExitSuccess
 	for _, cmd := range commands {
@@ -85,6 +97,7 @@ func (r *runner) runScript(script string) int {
 			continue
 		}
 		code, exit := r.runCommand(cmd)
+		r.lastStatus = code
 		if exit {
 			return code
 		}
@@ -204,6 +217,140 @@ func (r *runner) runForScript(script string) (int, bool) {
 		}
 	}
 	return status, true
+}
+
+// runFuncDef handles function definitions: name() { body }
+func (r *runner) runFuncDef(script string) (int, bool) {
+	tokens := tokenizeScript(script)
+	if len(tokens) < 3 {
+		return 0, false
+	}
+	// Check for pattern: name() { ... } where name() is a single token
+	firstTok := tokens[0]
+	if !strings.HasSuffix(firstTok, "()") {
+		return 0, false
+	}
+	name := strings.TrimSuffix(firstTok, "()")
+	if !isName(name) {
+		return 0, false
+	}
+	// Find the braces
+	braceStart := -1
+	for i, t := range tokens {
+		if t == "{" {
+			braceStart = i
+			break
+		}
+	}
+	if braceStart == -1 {
+		return 0, false
+	}
+	braceEnd := -1
+	depth := 0
+	for i := braceStart; i < len(tokens); i++ {
+		if tokens[i] == "{" {
+			depth++
+		} else if tokens[i] == "}" {
+			depth--
+			if depth == 0 {
+				braceEnd = i
+				break
+			}
+		}
+	}
+	if braceEnd == -1 {
+		return 0, false
+	}
+	body := tokensToScript(tokens[braceStart+1 : braceEnd])
+	r.funcs[name] = body
+	// If there's more after the }, run it
+	if braceEnd+1 < len(tokens) {
+		// Skip the ; after }
+		rest := tokens[braceEnd+1:]
+		if len(rest) > 0 && rest[0] == ";" {
+			rest = rest[1:]
+		}
+		if len(rest) > 0 {
+			return r.runScript(tokensToScript(rest)), true
+		}
+	}
+	return core.ExitSuccess, true
+}
+
+// runCaseScript handles case/esac statements
+func (r *runner) runCaseScript(script string) (int, bool) {
+	tokens := tokenizeScript(script)
+	if len(tokens) == 0 || tokens[0] != "case" {
+		return 0, false
+	}
+	inIdx := indexToken(tokens, "in")
+	esacIdx := indexToken(tokens, "esac")
+	if inIdx == -1 || esacIdx == -1 || inIdx >= esacIdx {
+		return 0, false
+	}
+	if inIdx < 2 {
+		return 0, false
+	}
+	word := expandVars(tokens[1], r.vars)
+	// Parse patterns and bodies between 'in' and 'esac'
+	body := tokens[inIdx+1 : esacIdx]
+	status := core.ExitSuccess
+	i := 0
+	for i < len(body) {
+		// Find pattern ending with )
+		patEnd := -1
+		for j := i; j < len(body); j++ {
+			if strings.HasSuffix(body[j], ")") {
+				patEnd = j
+				break
+			}
+		}
+		if patEnd == -1 {
+			break
+		}
+		// Build pattern string
+		patParts := body[i : patEnd+1]
+		pattern := strings.Join(patParts, " ")
+		pattern = strings.TrimSuffix(pattern, ")")
+		pattern = strings.TrimSpace(pattern)
+		// Find ;; terminator
+		cmdStart := patEnd + 1
+		cmdEnd := cmdStart
+		for cmdEnd < len(body) && body[cmdEnd] != ";;" {
+			cmdEnd++
+		}
+		cmdScript := tokensToScript(body[cmdStart:cmdEnd])
+		// Check if pattern matches word (simple glob: * matches all)
+		if matchPattern(word, pattern) {
+			status = r.runScript(cmdScript)
+			break
+		}
+		i = cmdEnd + 1
+	}
+	return status, true
+}
+
+func matchPattern(word, pattern string) bool {
+	if pattern == "*" {
+		return true
+	}
+	// Simple prefix/suffix glob
+	if strings.HasPrefix(pattern, "*") && strings.HasSuffix(pattern, "*") {
+		return strings.Contains(word, pattern[1:len(pattern)-1])
+	}
+	if strings.HasPrefix(pattern, "*") {
+		return strings.HasSuffix(word, pattern[1:])
+	}
+	if strings.HasSuffix(pattern, "*") {
+		return strings.HasPrefix(word, pattern[:len(pattern)-1])
+	}
+	// Support | for alternation
+	for _, alt := range strings.Split(pattern, "|") {
+		if strings.TrimSpace(alt) == word {
+			return true
+		}
+	}
+	return pattern == word
 }
 
 func (r *runner) runCommand(cmd string) (int, bool) {
@@ -345,6 +492,78 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		}
 		r.bg = nil
 		return status, false
+	case "export":
+		for _, arg := range cmdSpec.args[1:] {
+			if name, val, ok := parseAssignment(arg); ok {
+				r.vars[name] = val
+				r.exported[name] = true
+			} else if isName(arg) {
+				r.exported[arg] = true
+			}
+		}
+		return core.ExitSuccess, false
+	case "unset":
+		for _, arg := range cmdSpec.args[1:] {
+			delete(r.vars, arg)
+			delete(r.exported, arg)
+			delete(r.funcs, arg)
+		}
+		return core.ExitSuccess, false
+	case "read":
+		varName := "REPLY"
+		if len(cmdSpec.args) > 1 {
+			varName = cmdSpec.args[1]
+		}
+		reader := bufio.NewReader(stdin)
+		line, _ := reader.ReadString('\n')
+		line = strings.TrimSuffix(line, "\n")
+		r.vars[varName] = line
+		return core.ExitSuccess, false
+	case "local":
+		// local just sets variables in current scope (simplified)
+		for _, arg := range cmdSpec.args[1:] {
+			if name, val, ok := parseAssignment(arg); ok {
+				r.vars[name] = val
+			}
+		}
+		return core.ExitSuccess, false
+	case "return":
+		code := core.ExitSuccess
+		if len(cmdSpec.args) > 1 {
+			if v, err := strconv.Atoi(cmdSpec.args[1]); err == nil {
+				code = v
+			}
+		}
+		return code, false
+	case "set":
+		// Simplified set - just handle -e, -x, etc. as no-ops for now
+		return core.ExitSuccess, false
+	case "shift":
+		// shift positional parameters (simplified - no-op without $1, $2, etc.)
+		return core.ExitSuccess, false
+	case "source", ".":
+		if len(cmdSpec.args) < 2 {
+			return core.ExitFailure, false
+		}
+		data, err := os.ReadFile(cmdSpec.args[1])
+		if err != nil {
+			r.stdio.Errorf("ash: %v\n", err)
+			return core.ExitFailure, false
+		}
+		return r.runScript(string(data)), false
+	case ":":
+		return core.ExitSuccess, false
+	case "eval":
+		if len(cmdSpec.args) < 2 {
+			return core.ExitSuccess, false
+		}
+		evalScript := strings.Join(cmdSpec.args[1:], " ")
+		return r.runScript(evalScript), false
+	}
+	// Check if it's a user-defined function
+	if body, ok := r.funcs[cmdSpec.args[0]]; ok {
+		// Save and set positional parameters (simplified)
+		return r.runScript(body), false
 	}
 	cmdArgs := append([]string{}, cmdSpec.args[1:]...)
 	command := exec.Command(cmdSpec.args[0], cmdArgs...)
@@ -514,7 +733,9 @@ func isBuiltinSegment(cmd string) bool {
 		return false
 	}
 	switch tokens[0] {
-	case "echo", "true", "false", "pwd", "cd", "exit", "test", "[":
+	case "echo", "true", "false", "pwd", "cd", "exit", "test", "[",
+		"export", "unset", "read", "local", "return", "set", "shift",
+		"source", ".", ":", "eval", "break", "continue", "wait":
 		return true
 	default:
 		return false
@@ -640,6 +861,13 @@ func tokenizeScript(script string) []string {
 			inDouble = !inDouble
 			continue
 		}
+		// Handle ;; as a single token (for case/esac)
+		if !inSingle && !inDouble && c == ';' && i+1 < len(script) && script[i+1] == ';' {
+			flush()
+			tokens = append(tokens, ";;")
+			i++
+			continue
+		}
 		if !inSingle && !inDouble && (c == ';' || c == '\n') {
 			flush()
 			tokens = append(tokens, string(c))
@@ -727,6 +955,8 @@ func splitTokens(cmd string) []string {
 	var buf strings.Builder
 	var inSingle bool
 	var inDouble bool
+	var inCmdSub int    // depth of $(...) nesting
+	var inBacktick bool // inside `...`
 	escape := false
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
@@ -736,18 +966,43 @@ func splitTokens(cmd string) []string {
 			continue
 		}
 		if c == '\\' {
+			buf.WriteByte(c)
 			escape = true
 			continue
 		}
-		if c == '\'' && !inDouble {
+		// Track $( command substitution
+		if c == '$' && i+1 < len(cmd) && cmd[i+1] == '(' && !inSingle {
+			buf.WriteByte(c)
+			buf.WriteByte('(')
+			inCmdSub++
+			i++
+			continue
+		}
+		if c == '(' && inCmdSub > 0 {
+			buf.WriteByte(c)
+			inCmdSub++
+			continue
+		}
+		if c == ')' && inCmdSub > 0 {
+			buf.WriteByte(c)
+			inCmdSub--
+			continue
+		}
+		// Track backticks
+		if c == '`' && !inSingle {
+			buf.WriteByte(c)
+			inBacktick = !inBacktick
+			continue
+		}
+		if c == '\'' && !inDouble && inCmdSub == 0 && !inBacktick {
 			inSingle = !inSingle
 			continue
 		}
-		if c == '"' && !inSingle {
+		if c == '"' && !inSingle && inCmdSub == 0 && !inBacktick {
 			inDouble = !inDouble
 			continue
 		}
-		if unicode.IsSpace(rune(c)) && !inSingle && !inDouble {
+		if unicode.IsSpace(rune(c)) && !inSingle && !inDouble && inCmdSub == 0 && !inBacktick {
 			if buf.Len() > 0 {
 				tokens = append(tokens, buf.String())
 				buf.Reset()
@@ -775,6 +1030,8 @@ func parseAssignment(tok string) (string, string, bool) {
 }
 
 func expandVars(tok string, vars map[string]string) string {
+	// First expand command substitutions
+	tok = expandCommandSubs(tok, vars)
 	if !strings.Contains(tok, "$") {
 		return tok
 	}
@@ -789,7 +1046,218 @@ func expandVars(tok string, vars map[string]string) string {
 			i++
 			continue
 		}
+		if tok[i+1] == '?' {
+			buf.WriteString(vars["?"])
+			i++
+			continue
+		}
+		if tok[i+1] == '#' {
+			buf.WriteString(vars["#"])
+			i++
+			continue
+		}
 		if tok[i+1] == '{' {
+			end := strings.IndexByte(tok[i+2:], '}')
+			if end >= 0 {
+				inner := tok[i+2 : i+2+end]
+				// Handle ${VAR:-default}, ${VAR:=default}, ${VAR##pattern}, etc.
+				expanded := expandBraceExpr(inner, vars)
+				buf.WriteString(expanded)
+				i += end + 2
+				continue
+			}
+		}
+		j := i + 1
+		for j < len(tok) && (unicode.IsLetter(rune(tok[j])) || unicode.IsDigit(rune(tok[j])) || tok[j] == '_') {
+			j++
+		}
+		if j == i+1 {
+			buf.WriteByte(tok[i])
+			continue
+		}
+		name := tok[i+1 : j]
+		buf.WriteString(vars[name])
+		i = j - 1
+	}
+	return buf.String()
+}
+
+// expandBraceExpr handles ${VAR:-default}, ${VAR:+alt}, ${VAR##pattern}, etc.
+func expandBraceExpr(expr string, vars map[string]string) string {
+	// ${VAR:-default}
+	if idx := strings.Index(expr, ":-"); idx > 0 {
+		name := expr[:idx]
+		defVal := expr[idx+2:]
+		if val, ok := vars[name]; ok && val != "" {
+			return val
+		}
+		return defVal
+	}
+	// ${VAR:=default}
+	if idx := strings.Index(expr, ":="); idx > 0 {
+		name := expr[:idx]
+		defVal := expr[idx+2:]
+		if val, ok := vars[name]; ok && val != "" {
+			return val
+		}
+		vars[name] = defVal
+		return defVal
+	}
+	// ${VAR:+alt}
+	if idx := strings.Index(expr, ":+"); idx > 0 {
+		name := expr[:idx]
+		alt := expr[idx+2:]
+		if val, ok := vars[name]; ok && val != "" {
+			return alt
+		}
+		return ""
+	}
+	// ${#VAR} - length
+	if strings.HasPrefix(expr, "#") {
+		name := expr[1:]
+		return strconv.Itoa(len(vars[name]))
+	}
+	// ${VAR##pattern} - remove longest prefix
+	if idx := strings.Index(expr, "##"); idx > 0 {
+		name := expr[:idx]
+		pattern := expr[idx+2:]
+		val := vars[name]
+		if pattern == "*" {
+			return ""
+		}
+		if strings.HasSuffix(pattern, "*") {
+			prefix := pattern[:len(pattern)-1]
+			if i := strings.LastIndex(val, prefix); i >= 0 {
+				return val[i+len(prefix):]
+			}
+		}
+		return strings.TrimPrefix(val, pattern)
+	}
+	// ${VAR#pattern} - remove shortest prefix
+	if idx := strings.Index(expr, "#"); idx > 0 {
+		name := expr[:idx]
+		pattern := expr[idx+1:]
+		val := vars[name]
+		return strings.TrimPrefix(val, pattern)
+	}
+	// ${VAR%%pattern} - remove longest suffix
+	if idx := strings.Index(expr, "%%"); idx > 0 {
+		name := expr[:idx]
+		pattern := expr[idx+2:]
+		val := vars[name]
+		if pattern == "*" {
+			return ""
+		}
+		if strings.HasPrefix(pattern, "*") {
+			suffix := pattern[1:]
+			if i := strings.Index(val, suffix); i >= 0 {
+				return val[:i]
+			}
+		}
+		return strings.TrimSuffix(val, pattern)
+	}
+	// ${VAR%pattern} - remove shortest suffix
+	if idx := strings.Index(expr, "%"); idx > 0 {
+		name := expr[:idx]
+		pattern := expr[idx+1:]
+		val := vars[name]
+		return strings.TrimSuffix(val, pattern)
+	}
+	// Simple ${VAR}
+	return vars[expr]
+}
+
+// expandCommandSubs expands $(...) and `...` command substitutions
+func expandCommandSubs(tok string, vars map[string]string) string {
+	// Handle $(...) first
+	for {
+		start := strings.Index(tok, "$(")
+		if start == -1 {
+			break
+		}
+		// Find matching )
+		depth := 1
+		end := start + 2
+		for end < len(tok) && depth > 0 {
+			if tok[end] == '(' {
+				depth++
+			} else if tok[end] == ')' {
+				depth--
+			}
+			end++
+		}
+		if depth != 0 {
+			break
+		}
+		cmdStr := tok[start+2 : end-1]
+		output := runCommandSub(cmdStr, vars)
+		tok = tok[:start] + output + tok[end:]
+	}
+	// Handle backticks
+	for {
+		start := strings.IndexByte(tok, '`')
+		if start == -1 {
+			break
+		}
+		end := strings.IndexByte(tok[start+1:], '`')
+		if end == -1 {
+			break
+		}
+		end += start + 1
+		cmdStr := tok[start+1 : end]
+		output := runCommandSub(cmdStr, vars)
+		tok = tok[:start] + output + tok[end+1:]
+	}
+	return tok
+}
+
+func runCommandSub(cmdStr string, vars map[string]string) string {
+	cmdStr = strings.TrimSpace(cmdStr)
+	if cmdStr == "" {
+		return ""
+	}
+	tokens := splitTokens(cmdStr)
+	if len(tokens) == 0 {
+		return ""
+	}
+	// Only expand simple $VAR (no nested command subs to avoid recursion)
+	for i, t := range tokens {
+		tokens[i] = expandSimpleVars(t, vars)
+	}
+	cmd := exec.Command(tokens[0], tokens[1:]...)
+	cmd.Env = buildEnv(vars)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	// Trim trailing newline
+	result := strings.TrimSuffix(string(out), "\n")
+	return result
+}
+
+// expandSimpleVars expands only $VAR and ${VAR} without command substitution
+func expandSimpleVars(tok string, vars map[string]string) string {
+	if !strings.Contains(tok, "$") {
+		return tok
+	}
+	var buf strings.Builder
+	for i := 0; i < len(tok); i++ {
+		if tok[i] != '$' || i+1 >= len(tok) {
+			buf.WriteByte(tok[i])
+			continue
+		}
+		next := tok[i+1]
+		if next == '$' {
+			buf.WriteString(strconv.Itoa(os.Getpid()))
+			i++
+			continue
+		}
+		if next == '(' || next == '`' {
+			// Skip command substitution markers
+			buf.WriteByte(tok[i])
+			continue
+		}
+		if next == '{' {
 			end := strings.IndexByte(tok[i+2:], '}')
 			if end >= 0 {
 				name := tok[i+2 : i+2+end]
@@ -840,6 +1308,34 @@ func evalTest(args []string) (bool, error) {
 			return args[1] == "", nil
 		case "-n":
 			return args[1] != "", nil
+		case "-e":
+			_, err := os.Stat(args[1])
+			return err == nil, nil
+		case "-f":
+			fi, err := os.Stat(args[1])
+			return err == nil && fi.Mode().IsRegular(), nil
+		case "-d":
+			fi, err := os.Stat(args[1])
+			return err == nil && fi.IsDir(), nil
+		case "-r":
+			_, err := os.Open(args[1])
+			return err == nil, nil
+		case "-w":
+			f, err := os.OpenFile(args[1], os.O_WRONLY, 0)
+			if err == nil {
+				f.Close()
+				return true, nil
+			}
+			return false, nil
+		case "-x":
+			fi, err := os.Stat(args[1])
+			return err == nil && fi.Mode()&0111 != 0, nil
+		case "-s":
+			fi, err := os.Stat(args[1])
+			return err == nil && fi.Size() > 0, nil
+		case "-L", "-h":
+			fi, err := os.Lstat(args[1])
+			return err == nil && fi.Mode()&os.ModeSymlink != 0, nil
 		default:
 			return false, nil
 		}

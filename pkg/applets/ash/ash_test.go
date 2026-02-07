@@ -72,6 +72,78 @@ func TestAsh(t *testing.T) {
 			WantCode: core.ExitSuccess,
 			WantOut:  "ok\n",
 		},
+		{
+			Name:     "command_sub",
+			Args:     []string{"-c", "echo $(echo hello)"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "hello\n",
+		},
+		{
+			Name:     "backtick_sub",
+			Args:     []string{"-c", "echo `echo world`"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "world\n",
+		},
+		{
+			Name:     "export_var",
+			Args:     []string{"-c", "export FOO=bar; echo $FOO"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "bar\n",
+		},
+		{
+			Name:     "unset_var",
+			Args:     []string{"-c", "FOO=bar; unset FOO; echo ${FOO:-empty}"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "empty\n",
+		},
+		{
+			Name:     "param_default",
+			Args:     []string{"-c", "echo ${UNSET:-default}"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "default\n",
+		},
+		{
+			Name:     "param_length",
+			Args:     []string{"-c", "VAR=hello; echo ${#VAR}"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "5\n",
+		},
+		{
+			Name:     "case_esac",
+			Args:     []string{"-c", "case foo in bar) echo no;; foo) echo yes;; esac"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "yes\n",
+		},
+		{
+			Name:     "case_wildcard",
+			Args:     []string{"-c", "case anything in *) echo matched;; esac"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "matched\n",
+		},
+		{
+			Name:     "function_def",
+			Args:     []string{"-c", "greet() { echo hello; }; greet"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "hello\n",
+		},
+		{
+			Name:     "test_file_exists",
+			Args:     []string{"-c", "if [ -e /etc/passwd ]; then echo yes; fi"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "yes\n",
+		},
+		{
+			Name:     "colon_noop",
+			Args:     []string{"-c", ":; echo ok"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "ok\n",
+		},
+		{
+			Name:     "eval_builtin",
+			Args:     []string{"-c", "CMD=test; eval echo $CMD"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "test\n",
+		},
 	}
 	testutil.RunAppletTests(t, ash.Run, tests)
 }
