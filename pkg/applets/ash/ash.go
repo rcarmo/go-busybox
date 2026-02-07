@@ -21,14 +21,23 @@ func Run(stdio *core.Stdio, args []string) int {
 		return core.UsageError(stdio, "ash", "missing command")
 	}
 	shell := &runner{
-		stdio:    stdio,
-		vars:     map[string]string{},
-		exported: map[string]bool{},
-		funcs:    map[string]string{},
+		stdio:      stdio,
+		vars:       map[string]string{},
+		exported:   map[string]bool{},
+		funcs:      map[string]string{},
+		positional: []string{},
+		scriptName: "ash",
 	}
 	if args[0] == "-c" {
 		if len(args) < 2 {
 			return core.UsageError(stdio, "ash", "missing command")
+		}
+		// Additional args after -c "script" become positional params
+		if len(args) > 2 {
+			shell.scriptName = args[2]
+			if len(args) > 3 {
+				shell.positional = args[3:]
+			}
 		}
 		return shell.runScript(args[1])
 	}
@@ -41,10 +50,16 @@ type runner struct {
 	vars         map[string]string
 	exported     map[string]bool
 	funcs        map[string]string
+	positional   []string // $1, $2, etc.
+	scriptName   string   // $0
 	breakFlag    bool
 	continueFlag bool
+	returnFlag   bool
+	returnCode   int
 	bg           []chan int
+	bgPids       []int
 	lastStatus   int
+	lastBgPid    int
 }
 
 // safeWriter wraps a WriteCloser and enforces a write timeout to avoid blocking.
@@ -376,7 +391,7 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 	if len(tokens) == 0 {
 		return core.ExitSuccess, false
 	}
-	cmdSpec, err := parseCommandSpec(tokens, r.vars)
+	cmdSpec, err := r.parseCommandSpecWithRunner(tokens)
 	if err != nil {
 		r.stdio.Errorf("ash: %v\n", err)
 		return core.ExitFailure, false
@@ -539,7 +554,90 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		// Simplified set - just handle -e, -x, etc. as no-ops for now
 		return core.ExitSuccess, false
 	case "shift":
-		// shift positional parameters (simplified - no-op without $1, $2, etc.)
+		// shift positional parameters
+		n := 1
+		if len(cmdSpec.args) > 1 {
+			if v, err := strconv.Atoi(cmdSpec.args[1]); err == nil {
+				n = v
+			}
+		}
+		if n > 0 && n <= len(r.positional) {
+			r.positional = r.positional[n:]
+		} else if n > len(r.positional) {
+			r.positional = []string{}
+		}
+		return core.ExitSuccess, false
+	case "jobs":
+		// List background jobs
+		for i, pid := range r.bgPids {
+			fmt.Fprintf(stdout, "[%d] %d\n", i+1, pid)
+		}
+		return core.ExitSuccess, false
+	case "fg":
+		// Bring last background job to foreground (simplified - just wait for it)
+		if len(r.bg) > 0 {
+			ch := r.bg[len(r.bg)-1]
+			if ch != nil {
+				code := <-ch
+				r.bg = r.bg[:len(r.bg)-1]
+				if len(r.bgPids) > 0 {
+					r.bgPids = r.bgPids[:len(r.bgPids)-1]
+				}
+				return code, false
+			}
+		}
+		return core.ExitSuccess, false
+	case "bg":
+		// Continue a stopped job in background (no-op in this simplified impl)
+		return core.ExitSuccess, false
+	case "trap":
+		// Signal handling (simplified - no-op for now)
+		return core.ExitSuccess, false
+	case "type":
+		// Describe command type
+		if len(cmdSpec.args) < 2 {
+			return core.ExitFailure, false
+		}
+		name := cmdSpec.args[1]
+		if _, ok := r.funcs[name]; ok {
+			fmt.Fprintf(stdout, "%s is a function\n", name)
+			return core.ExitSuccess, false
+		}
+		if isBuiltinSegment(name) {
+			fmt.Fprintf(stdout, "%s is a shell builtin\n", name)
+			return core.ExitSuccess, false
+		}
+		path, err := exec.LookPath(name)
+		if err == nil {
+			fmt.Fprintf(stdout, "%s is %s\n", name, path)
+			return core.ExitSuccess, false
+		}
+		fmt.Fprintf(stderr, "ash: type: %s: not found\n", name)
+		return core.ExitFailure, false
+	case "alias":
+		// Aliases (simplified - no-op)
+		return core.ExitSuccess, false
+	case "unalias":
+		return core.ExitSuccess, false
+	case "hash":
+		return core.ExitSuccess, false
+	case "getopts":
+		// Option parsing (simplified)
+		return core.ExitFailure, false
+	case "printf":
+		// printf builtin
+		if len(cmdSpec.args) < 2 {
+			return core.ExitSuccess, false
+		}
+		format := cmdSpec.args[1]
+		fmtArgs := make([]interface{}, len(cmdSpec.args)-2)
+		for i, arg := range cmdSpec.args[2:] {
+			fmtArgs[i] = arg
+		}
+		// Simple printf - convert %s, %d patterns
+		format = strings.ReplaceAll(format, "\\n", "\n")
+		format = strings.ReplaceAll(format, "\\t", "\t")
+		fmt.Fprintf(stdout, format, fmtArgs...)
 		return core.ExitSuccess, false
 	case "source", ".":
 		if len(cmdSpec.args) < 2 {
@@ -562,8 +660,17 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 	}
 	// Check if it's a user-defined function
 	if body, ok := r.funcs[cmdSpec.args[0]]; ok {
-		// Save and set positional parameters (simplified)
-		return r.runScript(body), false
+		// Save and set positional parameters
+		savedPositional := r.positional
+		r.positional = cmdSpec.args[1:]
+		code := r.runScript(body)
+		r.positional = savedPositional
+		return code, false
+	}
+	// Check for subshell (...)
+	if len(cmdSpec.args) == 1 && strings.HasPrefix(cmdSpec.args[0], "(") && strings.HasSuffix(cmdSpec.args[0], ")") {
+		inner := cmdSpec.args[0][1 : len(cmdSpec.args[0])-1]
+		return r.runScript(inner), false
 	}
 	cmdArgs := append([]string{}, cmdSpec.args[1:]...)
 	command := exec.Command(cmdSpec.args[0], cmdArgs...)
@@ -735,7 +842,9 @@ func isBuiltinSegment(cmd string) bool {
 	switch tokens[0] {
 	case "echo", "true", "false", "pwd", "cd", "exit", "test", "[",
 		"export", "unset", "read", "local", "return", "set", "shift",
-		"source", ".", ":", "eval", "break", "continue", "wait":
+		"source", ".", ":", "eval", "break", "continue", "wait",
+		"jobs", "fg", "bg", "trap", "type", "alias", "unalias", "hash",
+		"getopts", "printf":
 		return true
 	default:
 		return false
@@ -749,6 +858,62 @@ type commandSpec struct {
 	redirOutAppend bool
 	redirErr       string
 	redirErrAppend bool
+	hereDoc        string // content for <<EOF
+}
+
+func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error) {
+	spec := commandSpec{}
+	args := []string{}
+	for i := 0; i < len(tokens); i++ {
+		tok := tokens[i]
+		// Handle here-document <<EOF or <<'EOF' or <<-EOF
+		if strings.HasPrefix(tok, "<<") {
+			marker := strings.TrimPrefix(tok, "<<")
+			marker = strings.TrimPrefix(marker, "-") // <<- strips leading tabs
+			marker = strings.Trim(marker, "'\"")
+			if marker == "" && i+1 < len(tokens) {
+				marker = strings.Trim(tokens[i+1], "'\"")
+				i++
+			}
+			// Here-doc content should be in subsequent tokens until marker
+			// For now, store marker and handle in execution
+			spec.hereDoc = marker
+			continue
+		}
+		switch tok {
+		case "<", ">", ">>", "2>", "2>>":
+			if i+1 >= len(tokens) {
+				return spec, fmt.Errorf("missing redirection target")
+			}
+			target := r.expandVarsWithRunner(tokens[i+1])
+			switch tok {
+			case "<":
+				spec.redirIn = target
+			case ">":
+				spec.redirOut = target
+				spec.redirOutAppend = false
+			case ">>":
+				spec.redirOut = target
+				spec.redirOutAppend = true
+			case "2>":
+				spec.redirErr = target
+				spec.redirErrAppend = false
+			case "2>>":
+				spec.redirErr = target
+				spec.redirErrAppend = true
+			}
+			i++
+			continue
+		default:
+			if name, val, ok := parseAssignment(tok); ok {
+				r.vars[name] = val
+				continue
+			}
+			args = append(args, r.expandVarsWithRunner(tok))
+		}
+	}
+	spec.args = args
+	return spec, nil
 }
 
 func parseCommandSpec(tokens []string, vars map[string]string) (commandSpec, error) {
@@ -923,18 +1088,25 @@ func splitCommands(script string) []string {
 				escape = false
 				continue
 			}
-			if c == '\\' {
+			// Backslash: preserve it and mark escape
+			if c == '\\' && !inSingle {
+				buf.WriteByte(c)
 				escape = true
 				continue
 			}
+			// Track single quotes (preserve the quote char)
 			if c == '\'' && !inDouble {
 				inSingle = !inSingle
+				buf.WriteByte(c)
 				continue
 			}
+			// Track double quotes (preserve the quote char)
 			if c == '"' && !inSingle {
 				inDouble = !inDouble
+				buf.WriteByte(c)
 				continue
 			}
+			// Split on semicolons outside quotes
 			if c == ';' && !inSingle && !inDouble {
 				cmds = append(cmds, strings.TrimSpace(buf.String()))
 				buf.Reset()
@@ -1027,6 +1199,360 @@ func parseAssignment(tok string) (string, string, bool) {
 		return "", "", false
 	}
 	return name, tok[eq+1:], true
+}
+
+// expandVarsWithRunner expands variables including positional parameters
+func (r *runner) expandVarsWithRunner(tok string) string {
+	// First expand arithmetic $((...))
+	tok = expandArithmetic(tok, r.vars)
+	// Then expand command substitutions
+	tok = expandCommandSubs(tok, r.vars)
+	if !strings.Contains(tok, "$") {
+		return tok
+	}
+	var buf strings.Builder
+	for i := 0; i < len(tok); i++ {
+		if tok[i] != '$' || i+1 >= len(tok) {
+			buf.WriteByte(tok[i])
+			continue
+		}
+		next := tok[i+1]
+		// $$
+		if next == '$' {
+			buf.WriteString(strconv.Itoa(os.Getpid()))
+			i++
+			continue
+		}
+		// $?
+		if next == '?' {
+			buf.WriteString(strconv.Itoa(r.lastStatus))
+			i++
+			continue
+		}
+		// $#
+		if next == '#' {
+			buf.WriteString(strconv.Itoa(len(r.positional)))
+			i++
+			continue
+		}
+		// $!
+		if next == '!' {
+			buf.WriteString(strconv.Itoa(r.lastBgPid))
+			i++
+			continue
+		}
+		// $0
+		if next == '0' {
+			buf.WriteString(r.scriptName)
+			i++
+			continue
+		}
+		// $1-$9
+		if next >= '1' && next <= '9' {
+			idx := int(next - '1')
+			if idx < len(r.positional) {
+				buf.WriteString(r.positional[idx])
+			}
+			i++
+			continue
+		}
+		// $@ - all positional params as separate words
+		if next == '@' {
+			buf.WriteString(strings.Join(r.positional, " "))
+			i++
+			continue
+		}
+		// $* - all positional params as single string
+		if next == '*' {
+			buf.WriteString(strings.Join(r.positional, " "))
+			i++
+			continue
+		}
+		// ${...}
+		if next == '{' {
+			end := strings.IndexByte(tok[i+2:], '}')
+			if end >= 0 {
+				inner := tok[i+2 : i+2+end]
+				expanded := r.expandBraceExprWithRunner(inner)
+				buf.WriteString(expanded)
+				i += end + 2
+				continue
+			}
+		}
+		// $VAR
+		j := i + 1
+		for j < len(tok) && (unicode.IsLetter(rune(tok[j])) || unicode.IsDigit(rune(tok[j])) || tok[j] == '_') {
+			j++
+		}
+		if j == i+1 {
+			buf.WriteByte(tok[i])
+			continue
+		}
+		name := tok[i+1 : j]
+		buf.WriteString(r.vars[name])
+		i = j - 1
+	}
+	return buf.String()
+}
+
+// expandBraceExprWithRunner handles ${VAR:-default} etc with positional param support
+func (r *runner) expandBraceExprWithRunner(expr string) string {
+	// Handle positional params ${1}, ${10}, etc.
+	if len(expr) > 0 && expr[0] >= '0' && expr[0] <= '9' {
+		idx, err := strconv.Atoi(expr)
+		if err == nil {
+			if idx == 0 {
+				return r.scriptName
+			}
+			if idx-1 < len(r.positional) {
+				return r.positional[idx-1]
+			}
+			return ""
+		}
+	}
+	// ${@} ${*}
+	if expr == "@" || expr == "*" {
+		return strings.Join(r.positional, " ")
+	}
+	// ${#}
+	if expr == "#" {
+		return strconv.Itoa(len(r.positional))
+	}
+	// Delegate to expandBraceExpr for other cases
+	return expandBraceExpr(expr, r.vars)
+}
+
+// expandArithmetic expands $((...)) arithmetic expressions
+func expandArithmetic(tok string, vars map[string]string) string {
+	for {
+		start := strings.Index(tok, "$((")
+		if start == -1 {
+			break
+		}
+		// Find matching ))
+		depth := 1
+		end := start + 3
+		for end < len(tok)-1 && depth > 0 {
+			if tok[end] == '(' && tok[end+1] == '(' {
+				depth++
+				end++
+			} else if tok[end] == ')' && tok[end+1] == ')' {
+				depth--
+				if depth == 0 {
+					break
+				}
+				end++
+			}
+			end++
+		}
+		if depth != 0 || end >= len(tok)-1 {
+			break
+		}
+		expr := tok[start+3 : end]
+		result := evalArithmetic(expr, vars)
+		tok = tok[:start] + strconv.FormatInt(result, 10) + tok[end+2:]
+	}
+	return tok
+}
+
+// evalArithmetic evaluates simple arithmetic expressions
+func evalArithmetic(expr string, vars map[string]string) int64 {
+	// First expand $VAR style variables
+	expanded := expandSimpleVars(expr, vars)
+	// Then expand bare variable names (for arithmetic, X means $X)
+	expanded = expandBareVars(expanded, vars)
+	// Simple tokenizer and evaluator for basic arithmetic
+	return parseArithExpr(expanded)
+}
+
+// expandBareVars expands bare variable names in arithmetic expressions
+func expandBareVars(expr string, vars map[string]string) string {
+	var buf strings.Builder
+	i := 0
+	for i < len(expr) {
+		c := expr[i]
+		// Skip if it's an operator or digit
+		if c >= '0' && c <= '9' {
+			// Read the whole number
+			j := i
+			for j < len(expr) && expr[j] >= '0' && expr[j] <= '9' {
+				j++
+			}
+			buf.WriteString(expr[i:j])
+			i = j
+			continue
+		}
+		if c == '+' || c == '-' || c == '*' || c == '/' || c == '%' ||
+			c == '(' || c == ')' || c == '<' || c == '>' || c == '=' ||
+			c == '!' || c == '&' || c == '|' || c == '?' || c == ':' ||
+			c == ' ' || c == '\t' {
+			buf.WriteByte(c)
+			i++
+			continue
+		}
+		// Must be a variable name
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' {
+			j := i
+			for j < len(expr) && ((expr[j] >= 'a' && expr[j] <= 'z') ||
+				(expr[j] >= 'A' && expr[j] <= 'Z') ||
+				(expr[j] >= '0' && expr[j] <= '9') || expr[j] == '_') {
+				j++
+			}
+			varName := expr[i:j]
+			if val, ok := vars[varName]; ok {
+				buf.WriteString(val)
+			} else {
+				buf.WriteString("0")
+			}
+			i = j
+			continue
+		}
+		buf.WriteByte(c)
+		i++
+	}
+	return buf.String()
+}
+
+// parseArithExpr parses and evaluates arithmetic expressions
+func parseArithExpr(expr string) int64 {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return 0
+	}
+	// Handle parentheses first
+	for strings.Contains(expr, "(") {
+		start := strings.LastIndex(expr, "(")
+		end := strings.Index(expr[start:], ")")
+		if end == -1 {
+			break
+		}
+		end += start
+		inner := expr[start+1 : end]
+		result := parseArithExpr(inner)
+		expr = expr[:start] + strconv.FormatInt(result, 10) + expr[end+1:]
+	}
+	// Handle operators in order of precedence (low to high)
+	// Ternary ?:
+	if idx := strings.Index(expr, "?"); idx > 0 {
+		cond := parseArithExpr(expr[:idx])
+		rest := expr[idx+1:]
+		colonIdx := strings.Index(rest, ":")
+		if colonIdx > 0 {
+			if cond != 0 {
+				return parseArithExpr(rest[:colonIdx])
+			}
+			return parseArithExpr(rest[colonIdx+1:])
+		}
+	}
+	// Logical OR ||
+	if idx := strings.LastIndex(expr, "||"); idx > 0 {
+		left := parseArithExpr(expr[:idx])
+		right := parseArithExpr(expr[idx+2:])
+		if left != 0 || right != 0 {
+			return 1
+		}
+		return 0
+	}
+	// Logical AND &&
+	if idx := strings.LastIndex(expr, "&&"); idx > 0 {
+		left := parseArithExpr(expr[:idx])
+		right := parseArithExpr(expr[idx+2:])
+		if left != 0 && right != 0 {
+			return 1
+		}
+		return 0
+	}
+	// Comparison ==, !=, <, >, <=, >=
+	for _, op := range []string{"==", "!=", "<=", ">=", "<", ">"} {
+		if idx := strings.LastIndex(expr, op); idx > 0 {
+			left := parseArithExpr(expr[:idx])
+			right := parseArithExpr(expr[idx+len(op):])
+			switch op {
+			case "==":
+				if left == right {
+					return 1
+				}
+				return 0
+			case "!=":
+				if left != right {
+					return 1
+				}
+				return 0
+			case "<":
+				if left < right {
+					return 1
+				}
+				return 0
+			case ">":
+				if left > right {
+					return 1
+				}
+				return 0
+			case "<=":
+				if left <= right {
+					return 1
+				}
+				return 0
+			case ">=":
+				if left >= right {
+					return 1
+				}
+				return 0
+			}
+		}
+	}
+	// Addition and subtraction (right to left for proper precedence)
+	for i := len(expr) - 1; i >= 0; i-- {
+		c := expr[i]
+		if (c == '+' || c == '-') && i > 0 {
+			// Make sure this isn't part of a number or another operator
+			prev := expr[i-1]
+			if prev != '*' && prev != '/' && prev != '%' && prev != '+' && prev != '-' {
+				left := parseArithExpr(expr[:i])
+				right := parseArithExpr(expr[i+1:])
+				if c == '+' {
+					return left + right
+				}
+				return left - right
+			}
+		}
+	}
+	// Multiplication, division, modulo
+	for i := len(expr) - 1; i >= 0; i-- {
+		c := expr[i]
+		if c == '*' || c == '/' || c == '%' {
+			left := parseArithExpr(expr[:i])
+			right := parseArithExpr(expr[i+1:])
+			switch c {
+			case '*':
+				return left * right
+			case '/':
+				if right == 0 {
+					return 0
+				}
+				return left / right
+			case '%':
+				if right == 0 {
+					return 0
+				}
+				return left % right
+			}
+		}
+	}
+	// Unary minus/plus
+	expr = strings.TrimSpace(expr)
+	if len(expr) > 0 && expr[0] == '-' {
+		return -parseArithExpr(expr[1:])
+	}
+	if len(expr) > 0 && expr[0] == '+' {
+		return parseArithExpr(expr[1:])
+	}
+	// Parse number
+	val, err := strconv.ParseInt(expr, 0, 64)
+	if err != nil {
+		return 0
+	}
+	return val
 }
 
 func expandVars(tok string, vars map[string]string) string {

@@ -144,6 +144,66 @@ func TestAsh(t *testing.T) {
 			WantCode: core.ExitSuccess,
 			WantOut:  "test\n",
 		},
+		{
+			Name:     "arithmetic_basic",
+			Args:     []string{"-c", "echo $((2 + 3))"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "5\n",
+		},
+		{
+			Name:     "arithmetic_mult",
+			Args:     []string{"-c", "echo $((4 * 5))"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "20\n",
+		},
+		{
+			Name:     "arithmetic_var",
+			Args:     []string{"-c", "X=10; echo $((X + 5))"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "15\n",
+		},
+		{
+			Name:     "positional_params",
+			Args:     []string{"-c", "echo $1 $2", "ash", "hello", "world"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "hello world\n",
+		},
+		{
+			Name:     "positional_count",
+			Args:     []string{"-c", "echo $#", "ash", "a", "b", "c"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "3\n",
+		},
+		{
+			Name:     "positional_all",
+			Args:     []string{"-c", "echo $@", "ash", "x", "y"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "x y\n",
+		},
+		{
+			Name:     "function_with_args",
+			Args:     []string{"-c", "greet() { echo Hello $1; }; greet World"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "Hello World\n",
+		},
+		{
+			Name:     "shift_builtin",
+			Args:     []string{"-c", "echo $1; shift; echo $1", "ash", "first", "second"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "first\nsecond\n",
+		},
+		{
+			Name:     "type_builtin",
+			Args:     []string{"-c", "type echo"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "echo is a shell builtin\n",
+		},
+		{
+			Name:     "printf_builtin",
+			Args:     []string{"-c", "printf 'Hello %s\\n' World"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "Hello World\n",
+		},
 	}
 	testutil.RunAppletTests(t, ash.Run, tests)
 }
