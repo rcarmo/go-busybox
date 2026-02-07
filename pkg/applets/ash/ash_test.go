@@ -204,6 +204,53 @@ func TestAsh(t *testing.T) {
 			WantCode: core.ExitSuccess,
 			WantOut:  "Hello World\n",
 		},
+		{
+			Name:     "alias_builtin",
+			Args:     []string{"-c", "alias ll='echo'; ll ok"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "ok\n",
+		},
+		{
+			Name:     "unalias_builtin",
+			Args:     []string{"-c", "alias ll='echo'; unalias ll; ll ok"},
+			WantCode: core.ExitFailure,
+		},
+		{
+			Name:     "exec_builtin",
+			Args:     []string{"-c", "exec echo ok"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "ok\n",
+		},
+		{
+			Name:     "getopts_builtin",
+			Args:     []string{"-c", "OPTIND=1; getopts ab opt -a; echo $opt"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "a\n",
+		},
+		{
+			Name:     "trap_builtin",
+			Args:     []string{"-c", "trap 'echo ok' INT; trap -p"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "trap -- 'echo ok' INT\n",
+		},
+		{
+			Name:     "set_x_builtin",
+			Args:     []string{"-c", "set -x; echo ok"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "ok\n",
+			WantErr:  "+ echo ok",
+		},
+		{
+			Name:     "export_p_builtin",
+			Args:     []string{"-c", "export FOO=bar; export -p"},
+			WantCode: core.ExitSuccess,
+			WantOut:  "export FOO=bar\n",
+		},
+		{
+			Name:     "return_builtin",
+			Args:     []string{"-c", "f() { return 3; }; f"},
+			WantCode: 3,
+		},
 	}
 	testutil.RunAppletTests(t, ash.Run, tests)
 }

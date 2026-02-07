@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -25,8 +26,11 @@ func Run(stdio *core.Stdio, args []string) int {
 		vars:       map[string]string{},
 		exported:   map[string]bool{},
 		funcs:      map[string]string{},
+		aliases:    map[string]string{},
+		traps:      map[string]string{},
 		positional: []string{},
 		scriptName: "ash",
+		options:    map[string]bool{},
 	}
 	if args[0] == "-c" {
 		if len(args) < 2 {
@@ -50,12 +54,16 @@ type runner struct {
 	vars         map[string]string
 	exported     map[string]bool
 	funcs        map[string]string
+	aliases      map[string]string
+	traps        map[string]string
 	positional   []string // $1, $2, etc.
 	scriptName   string   // $0
 	breakFlag    bool
 	continueFlag bool
 	returnFlag   bool
 	returnCode   int
+	options      map[string]bool
+	restricted   bool
 	bg           []chan int
 	bgPids       []int
 	lastStatus   int
@@ -89,6 +97,16 @@ func (s safeWriter) Write(p []byte) (int, error) {
 
 func (r *runner) runScript(script string) int {
 	script = strings.TrimSpace(script)
+	isTop := !r.options["__trap_exit"]
+	if isTop {
+		r.options["__trap_exit"] = true
+		if action, ok := r.traps["EXIT"]; ok && action != "" {
+			defer func() {
+				_ = r.runScript(action)
+				r.options["__trap_exit"] = false
+			}()
+		}
+	}
 	// Try structured statements first
 	if code, ok := r.runFuncDef(script); ok {
 		return code
@@ -112,6 +130,12 @@ func (r *runner) runScript(script string) int {
 			continue
 		}
 		code, exit := r.runCommand(cmd)
+		if r.returnFlag {
+			return r.returnCode
+		}
+		if r.options["e"] && code != core.ExitSuccess {
+			return code
+		}
 		r.lastStatus = code
 		if exit {
 			return code
@@ -369,21 +393,133 @@ func matchPattern(word, pattern string) bool {
 }
 
 func (r *runner) runCommand(cmd string) (int, bool) {
+	cmd = strings.TrimSpace(cmd)
+	background := false
+	if strings.HasSuffix(cmd, "&") {
+		background = true
+		cmd = strings.TrimSpace(strings.TrimSuffix(cmd, "&"))
+	}
 	segments := splitPipelines(cmd)
+	if background {
+		return r.startBackground(cmd), false
+	}
 	if len(segments) > 1 {
-		return r.runPipeline(segments), false
+		code := r.runPipeline(segments)
+		return code, false
 	}
 	return r.runSimpleCommand(cmd, r.stdio.In, r.stdio.Out, r.stdio.Err)
 }
 
-func (r *runner) startBackground(cmd string) {
+func (r *runner) startBackground(cmd string) int {
+	segments := splitPipelines(cmd)
+	if len(segments) > 1 {
+		return r.startPipelineBackground(segments)
+	}
 	ch := make(chan int, 1)
 	r.bg = append(r.bg, ch)
+	tokens := splitTokens(cmd)
+	cmdSpec, err := r.parseCommandSpecWithRunner(tokens)
+	if err != nil {
+		r.stdio.Errorf("ash: %v\n", err)
+		return core.ExitFailure
+	}
+	if len(cmdSpec.args) == 0 {
+		return core.ExitSuccess
+	}
+	cmdArgs := append([]string{}, cmdSpec.args[1:]...)
+	if r.restricted && strings.Contains(cmdSpec.args[0], "/") {
+		r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.args[0])
+		return core.ExitFailure
+	}
+	command := exec.Command(cmdSpec.args[0], cmdArgs...) // #nosec G204 -- ash executes user command
+	command.Stdout = r.stdio.Out
+	command.Stderr = r.stdio.Err
+	command.Stdin = r.stdio.In
+	command.Env = buildEnv(r.vars)
+	if err := command.Start(); err != nil {
+		r.stdio.Errorf("ash: %v\n", err)
+		return core.ExitFailure
+	}
+	r.lastBgPid = command.Process.Pid
+	r.bgPids = append(r.bgPids, command.Process.Pid)
 	go func() {
-		code, _ := r.runCommand(cmd)
-		ch <- code
+		err := command.Wait()
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				ch <- exitErr.ExitCode()
+			} else {
+				ch <- core.ExitFailure
+			}
+		} else {
+			ch <- core.ExitSuccess
+		}
 		close(ch)
 	}()
+	return core.ExitSuccess
+}
+
+func (r *runner) startPipelineBackground(segments []string) int {
+	ch := make(chan int, 1)
+	r.bg = append(r.bg, ch)
+	var cmds []*exec.Cmd
+	var prevReader io.Reader = r.stdio.In
+	var lastCmd *exec.Cmd
+	for i, seg := range segments {
+		cmdTokens := splitTokens(seg)
+		cmdSpec, err := r.parseCommandSpecWithRunner(cmdTokens)
+		if err != nil {
+			r.stdio.Errorf("ash: %v\n", err)
+			return core.ExitFailure
+		}
+		if len(cmdSpec.args) == 0 {
+			continue
+		}
+		cmdArgs := append([]string{}, cmdSpec.args[1:]...)
+		if r.restricted && strings.Contains(cmdSpec.args[0], "/") {
+			r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.args[0])
+			return core.ExitFailure
+		}
+		command := exec.Command(cmdSpec.args[0], cmdArgs...) // #nosec G204 -- ash executes user command
+		command.Stdin = prevReader
+		if i == len(segments)-1 {
+			command.Stdout = r.stdio.Out
+		} else {
+			pr, pw := io.Pipe()
+			command.Stdout = pw
+			prevReader = pr
+		}
+		command.Stderr = r.stdio.Err
+		command.Env = buildEnv(r.vars)
+		if r.options["x"] {
+			fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args, " "))
+		}
+		if err := command.Start(); err != nil {
+			r.stdio.Errorf("ash: %v\n", err)
+			return core.ExitFailure
+		}
+		lastCmd = command
+		cmds = append(cmds, command)
+	}
+	if lastCmd != nil {
+		r.lastBgPid = lastCmd.Process.Pid
+		r.bgPids = append(r.bgPids, lastCmd.Process.Pid)
+	}
+	go func() {
+		status := core.ExitSuccess
+		for _, cmd := range cmds {
+			err := cmd.Wait()
+			if err != nil {
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					status = exitErr.ExitCode()
+				} else {
+					status = core.ExitFailure
+				}
+			}
+		}
+		ch <- status
+		close(ch)
+	}()
+	return core.ExitSuccess
 }
 
 func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer, stderr io.Writer) (int, bool) {
@@ -399,6 +535,14 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 	if len(cmdSpec.args) == 0 {
 		return core.ExitSuccess, false
 	}
+	// Apply alias expansion (first token only)
+	if alias, ok := r.aliases[cmdSpec.args[0]]; ok {
+		expanded := strings.TrimSpace(alias + " " + strings.Join(cmdSpec.args[1:], " "))
+		return r.runSimpleCommand(expanded, stdin, stdout, stderr)
+	}
+	if r.options["x"] {
+		fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args, " "))
+	}
 	if cmdSpec.redirIn != "" {
 		file, err := os.Open(cmdSpec.redirIn)
 		if err != nil {
@@ -409,13 +553,17 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		stdin = file
 	}
 	if cmdSpec.redirOut != "" {
+		if r.restricted && strings.Contains(cmdSpec.redirOut, "/") {
+			r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.redirOut)
+			return core.ExitFailure, false
+		}
 		flags := os.O_CREATE | os.O_WRONLY
 		if cmdSpec.redirOutAppend {
 			flags |= os.O_APPEND
 		} else {
 			flags |= os.O_TRUNC
 		}
-		file, err := os.OpenFile(cmdSpec.redirOut, flags, 0644)
+		file, err := os.OpenFile(cmdSpec.redirOut, flags, 0600) // #nosec G304 -- shell redirection uses user path
 		if err != nil {
 			r.stdio.Errorf("ash: %v\n", err)
 			return core.ExitFailure, false
@@ -424,13 +572,17 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		stdout = file
 	}
 	if cmdSpec.redirErr != "" {
+		if r.restricted && strings.Contains(cmdSpec.redirErr, "/") {
+			r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.redirErr)
+			return core.ExitFailure, false
+		}
 		flags := os.O_CREATE | os.O_WRONLY
 		if cmdSpec.redirErrAppend {
 			flags |= os.O_APPEND
 		} else {
 			flags |= os.O_TRUNC
 		}
-		file, err := os.OpenFile(cmdSpec.redirErr, flags, 0644)
+		file, err := os.OpenFile(cmdSpec.redirErr, flags, 0600) // #nosec G304 -- shell redirection uses user path
 		if err != nil {
 			r.stdio.Errorf("ash: %v\n", err)
 			return core.ExitFailure, false
@@ -467,6 +619,31 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 			}
 		}
 		return code, true
+	case "exec":
+		if len(cmdSpec.args) < 2 {
+			return core.ExitSuccess, true
+		}
+		cmdArgs := append([]string{}, cmdSpec.args[2:]...)
+		if r.restricted && strings.Contains(cmdSpec.args[1], "/") {
+			r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.args[1])
+			return core.ExitFailure, true
+		}
+		command := exec.Command(cmdSpec.args[1], cmdArgs...) // #nosec G204 -- ash executes user command
+		command.Stdout = stdout
+		command.Stderr = stderr
+		command.Stdin = stdin
+		command.Env = buildEnv(r.vars)
+		if r.options["x"] {
+			fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args[1:], " "))
+		}
+		if err := command.Run(); err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				return exitErr.ExitCode(), true
+			}
+			r.stdio.Errorf("ash: %v\n", err)
+			return core.ExitFailure, true
+		}
+		return core.ExitSuccess, true
 	case "true":
 		return core.ExitSuccess, false
 	case "false":
@@ -482,6 +659,10 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		if target == "" {
 			target = "."
 		}
+		if r.restricted && (strings.Contains(target, "/") || strings.Contains(target, "..")) {
+			r.stdio.Errorf("ash: restricted: %s\n", target)
+			return core.ExitFailure, false
+		}
 		if err := os.Chdir(target); err != nil {
 			r.stdio.Errorf("ash: %v\n", err)
 			return core.ExitFailure, false
@@ -492,6 +673,11 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		if err != nil {
 			r.stdio.Errorf("ash: %v\n", err)
 			return core.ExitFailure, false
+		}
+		if r.options["P"] {
+			if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+				dir = resolved
+			}
 		}
 		fmt.Fprintf(stdout, "%s\n", dir)
 		return core.ExitSuccess, false
@@ -506,8 +692,15 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 			status = code
 		}
 		r.bg = nil
+		r.bgPids = nil
 		return status, false
 	case "export":
+		if len(cmdSpec.args) > 1 && cmdSpec.args[1] == "-p" {
+			for name := range r.exported {
+				fmt.Fprintf(stdout, "export %s=%s\n", name, r.vars[name])
+			}
+			return core.ExitSuccess, false
+		}
 		for _, arg := range cmdSpec.args[1:] {
 			if name, val, ok := parseAssignment(arg); ok {
 				r.vars[name] = val
@@ -516,12 +709,22 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 				r.exported[arg] = true
 			}
 		}
+		for name := range r.exported {
+			if val, ok := r.vars[name]; ok {
+				_ = os.Setenv(name, val)
+			}
+		}
 		return core.ExitSuccess, false
 	case "unset":
+		if len(cmdSpec.args) > 1 && strings.HasPrefix(cmdSpec.args[1], "-") {
+			cmdSpec.args = append([]string{cmdSpec.args[0]}, cmdSpec.args[2:]...)
+		}
 		for _, arg := range cmdSpec.args[1:] {
 			delete(r.vars, arg)
 			delete(r.exported, arg)
 			delete(r.funcs, arg)
+			delete(r.aliases, arg)
+			_ = os.Unsetenv(arg)
 		}
 		return core.ExitSuccess, false
 	case "read":
@@ -530,12 +733,14 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 			varName = cmdSpec.args[1]
 		}
 		reader := bufio.NewReader(stdin)
-		line, _ := reader.ReadString('\n')
+		line, err := reader.ReadString('\n')
+		if err != nil && line == "" {
+			return core.ExitFailure, false
+		}
 		line = strings.TrimSuffix(line, "\n")
 		r.vars[varName] = line
 		return core.ExitSuccess, false
 	case "local":
-		// local just sets variables in current scope (simplified)
 		for _, arg := range cmdSpec.args[1:] {
 			if name, val, ok := parseAssignment(arg); ok {
 				r.vars[name] = val
@@ -549,9 +754,40 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 				code = v
 			}
 		}
-		return code, false
+		r.returnFlag = true
+		r.returnCode = code
+		return code, true
 	case "set":
-		// Simplified set - just handle -e, -x, etc. as no-ops for now
+		if len(cmdSpec.args) == 1 {
+			for name, val := range r.vars {
+				fmt.Fprintf(stdout, "%s=%s\n", name, val)
+			}
+			return core.ExitSuccess, false
+		}
+		start := 1
+		if cmdSpec.args[1] == "--" {
+			r.positional = cmdSpec.args[2:]
+			return core.ExitSuccess, false
+		}
+		for i := start; i < len(cmdSpec.args); i++ {
+			arg := cmdSpec.args[i]
+			if !strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "+") {
+				r.positional = cmdSpec.args[i:]
+				return core.ExitSuccess, false
+			}
+			enable := strings.HasPrefix(arg, "-")
+			flags := strings.TrimLeft(arg, "+-")
+			for _, flag := range flags {
+				switch flag {
+				case 'e', 'x', 'u', 'n', 'P':
+					r.options[string(flag)] = enable
+				case 'r':
+					r.restricted = enable
+				default:
+					continue
+				}
+			}
+		}
 		return core.ExitSuccess, false
 	case "shift":
 		// shift positional parameters
@@ -588,10 +824,36 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		}
 		return core.ExitSuccess, false
 	case "bg":
-		// Continue a stopped job in background (no-op in this simplified impl)
+		// Continue a stopped job in background (no job control; no-op)
 		return core.ExitSuccess, false
 	case "trap":
-		// Signal handling (simplified - no-op for now)
+		// Record trap actions for display; execution is not wired to signals.
+		if len(cmdSpec.args) == 1 {
+			for sig, action := range r.traps {
+				fmt.Fprintf(stdout, "trap -- '%s' %s\n", action, sig)
+			}
+			return core.ExitSuccess, false
+		}
+		if cmdSpec.args[1] == "-p" {
+			for sig, action := range r.traps {
+				fmt.Fprintf(stdout, "trap -- '%s' %s\n", action, sig)
+			}
+			return core.ExitSuccess, false
+		}
+		if len(cmdSpec.args) < 3 {
+			return core.ExitFailure, false
+		}
+		action := cmdSpec.args[1]
+		if action == "0" {
+			action = "EXIT"
+		}
+		for _, sig := range cmdSpec.args[2:] {
+			if action == "-" {
+				delete(r.traps, sig)
+				continue
+			}
+			r.traps[sig] = action
+		}
 		return core.ExitSuccess, false
 	case "type":
 		// Describe command type
@@ -615,15 +877,105 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		fmt.Fprintf(stderr, "ash: type: %s: not found\n", name)
 		return core.ExitFailure, false
 	case "alias":
-		// Aliases (simplified - no-op)
-		return core.ExitSuccess, false
+		if len(cmdSpec.args) == 1 {
+			for name, val := range r.aliases {
+				fmt.Fprintf(stdout, "alias %s='%s'\n", name, val)
+			}
+			return core.ExitSuccess, false
+		}
+		if cmdSpec.args[1] == "-p" {
+			for name, val := range r.aliases {
+				fmt.Fprintf(stdout, "alias %s='%s'\n", name, val)
+			}
+			return core.ExitSuccess, false
+		}
+		status := core.ExitSuccess
+		for _, arg := range cmdSpec.args[1:] {
+			if name, val, ok := parseAssignment(arg); ok {
+				r.aliases[name] = val
+				continue
+			}
+			if val, ok := r.aliases[arg]; ok {
+				fmt.Fprintf(stdout, "alias %s='%s'\n", arg, val)
+				continue
+			}
+			status = core.ExitFailure
+		}
+		return status, false
 	case "unalias":
-		return core.ExitSuccess, false
+		if len(cmdSpec.args) < 2 {
+			return core.ExitFailure, false
+		}
+		if cmdSpec.args[1] == "-a" {
+			r.aliases = map[string]string{}
+			return core.ExitSuccess, false
+		}
+		status := core.ExitSuccess
+		for _, name := range cmdSpec.args[1:] {
+			if _, ok := r.aliases[name]; ok {
+				delete(r.aliases, name)
+				continue
+			}
+			status = core.ExitFailure
+		}
+		return status, false
 	case "hash":
-		return core.ExitSuccess, false
+		// Minimal hash builtin: validate command lookup.
+		if len(cmdSpec.args) < 2 {
+			return core.ExitSuccess, false
+		}
+		if cmdSpec.args[1] == "-r" {
+			return core.ExitSuccess, false
+		}
+		status := core.ExitSuccess
+		for _, name := range cmdSpec.args[1:] {
+			if _, err := exec.LookPath(name); err != nil {
+				fmt.Fprintf(stderr, "ash: hash: %s: not found\n", name)
+				status = core.ExitFailure
+			}
+		}
+		return status, false
 	case "getopts":
-		// Option parsing (simplified)
-		return core.ExitFailure, false
+		// Basic getopts: getopts optstring name [args...]
+		if len(cmdSpec.args) < 3 {
+			return core.ExitFailure, false
+		}
+		optStr := cmdSpec.args[1]
+		name := cmdSpec.args[2]
+		argsList := cmdSpec.args[3:]
+		if len(argsList) == 0 {
+			argsList = r.positional
+		}
+		index := 1
+		if v := r.vars["OPTIND"]; v != "" {
+			if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+				index = parsed
+			}
+		}
+		if index > len(argsList) {
+			r.vars[name] = "?"
+			return core.ExitFailure, false
+		}
+		arg := argsList[index-1]
+		if !strings.HasPrefix(arg, "-") || arg == "-" || arg == "--" {
+			r.vars[name] = "?"
+			return core.ExitFailure, false
+		}
+		opt := string(arg[1])
+		r.vars["OPTIND"] = strconv.Itoa(index + 1)
+		r.vars[name] = opt
+		if strings.Contains(optStr, opt+":") {
+			if index >= len(argsList) {
+				r.vars["OPTARG"] = ""
+				r.vars[name] = "?"
+				return core.ExitFailure, false
+			}
+			r.vars["OPTARG"] = argsList[index]
+			r.vars["OPTIND"] = strconv.Itoa(index + 2)
+		} else {
+			delete(r.vars, "OPTARG")
+		}
+		return core.ExitSuccess, false
 	case "printf":
 		// printf builtin
 		if len(cmdSpec.args) < 2 {
@@ -643,7 +995,7 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		if len(cmdSpec.args) < 2 {
 			return core.ExitFailure, false
 		}
-		data, err := os.ReadFile(cmdSpec.args[1])
+		data, err := os.ReadFile(cmdSpec.args[1]) // #nosec G304 -- ash sources user-provided file
 		if err != nil {
 			r.stdio.Errorf("ash: %v\n", err)
 			return core.ExitFailure, false
@@ -662,9 +1014,18 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 	if body, ok := r.funcs[cmdSpec.args[0]]; ok {
 		// Save and set positional parameters
 		savedPositional := r.positional
+		savedReturn := r.returnFlag
+		savedReturnCode := r.returnCode
 		r.positional = cmdSpec.args[1:]
+		r.returnFlag = false
+		r.returnCode = core.ExitSuccess
 		code := r.runScript(body)
+		if r.returnFlag {
+			code = r.returnCode
+		}
 		r.positional = savedPositional
+		r.returnFlag = savedReturn
+		r.returnCode = savedReturnCode
 		return code, false
 	}
 	// Check for subshell (...)
@@ -673,11 +1034,18 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		return r.runScript(inner), false
 	}
 	cmdArgs := append([]string{}, cmdSpec.args[1:]...)
-	command := exec.Command(cmdSpec.args[0], cmdArgs...)
+	if r.restricted && strings.Contains(cmdSpec.args[0], "/") {
+		r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.args[0])
+		return core.ExitFailure, false
+	}
+	command := exec.Command(cmdSpec.args[0], cmdArgs...) // #nosec G204 -- ash executes user command
 	command.Stdout = stdout
 	command.Stderr = stderr
 	command.Stdin = stdin
 	command.Env = buildEnv(r.vars)
+	if r.options["x"] {
+		fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args, " "))
+	}
 	if err := command.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return exitErr.ExitCode(), false
@@ -777,11 +1145,14 @@ func (r *runner) runPipeline(segments []string) int {
 				done <- core.ExitFailure
 				return
 			}
-			command := exec.CommandContext(ctx, path, cmdArgs...)
+			command := exec.CommandContext(ctx, path, cmdArgs...) // #nosec G204 -- ash executes user command
 			command.Stdin = s.prevReader
 			command.Stdout = stdout
 			command.Stderr = r.stdio.Err
 			command.Env = buildEnv(r.vars)
+			if r.options["x"] {
+				fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args, " "))
+			}
 			err := command.Run()
 			if s.writer != nil {
 				_ = s.writer.Close()
@@ -864,6 +1235,7 @@ type commandSpec struct {
 func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error) {
 	spec := commandSpec{}
 	args := []string{}
+	seenCmd := false
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
 		// Handle here-document <<EOF or <<'EOF' or <<-EOF
@@ -905,11 +1277,14 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 			i++
 			continue
 		default:
-			if name, val, ok := parseAssignment(tok); ok {
+			if name, val, ok := parseAssignment(tok); ok && !seenCmd {
 				r.vars[name] = val
 				continue
 			}
-			args = append(args, r.expandVarsWithRunner(tok))
+			expanded := r.expandVarsWithRunner(tok)
+			expanded = strings.Trim(expanded, "'\"")
+			args = append(args, expanded)
+			seenCmd = true
 		}
 	}
 	spec.args = args
@@ -919,6 +1294,7 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 func parseCommandSpec(tokens []string, vars map[string]string) (commandSpec, error) {
 	spec := commandSpec{}
 	args := []string{}
+	seenCmd := false
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
 		switch tok {
@@ -946,11 +1322,12 @@ func parseCommandSpec(tokens []string, vars map[string]string) (commandSpec, err
 			i++
 			continue
 		default:
-			if name, val, ok := parseAssignment(tok); ok {
+			if name, val, ok := parseAssignment(tok); ok && !seenCmd {
 				vars[name] = val
 				continue
 			}
 			args = append(args, expandVars(tok, vars))
+			seenCmd = true
 		}
 	}
 	spec.args = args
@@ -1750,7 +2127,7 @@ func runCommandSub(cmdStr string, vars map[string]string) string {
 	for i, t := range tokens {
 		tokens[i] = expandSimpleVars(t, vars)
 	}
-	cmd := exec.Command(tokens[0], tokens[1:]...)
+	cmd := exec.Command(tokens[0], tokens[1:]...) // #nosec G204 -- ash command substitution executes user command
 	cmd.Env = buildEnv(vars)
 	out, err := cmd.Output()
 	if err != nil {
@@ -1835,32 +2212,32 @@ func evalTest(args []string) (bool, error) {
 		case "-n":
 			return args[1] != "", nil
 		case "-e":
-			_, err := os.Stat(args[1])
+			_, err := os.Stat(args[1]) // #nosec G304 -- test checks user-supplied path
 			return err == nil, nil
 		case "-f":
-			fi, err := os.Stat(args[1])
+			fi, err := os.Stat(args[1]) // #nosec G304 -- test checks user-supplied path
 			return err == nil && fi.Mode().IsRegular(), nil
 		case "-d":
-			fi, err := os.Stat(args[1])
+			fi, err := os.Stat(args[1]) // #nosec G304 -- test checks user-supplied path
 			return err == nil && fi.IsDir(), nil
 		case "-r":
-			_, err := os.Open(args[1])
+			_, err := os.Open(args[1]) // #nosec G304 -- test checks user-supplied path
 			return err == nil, nil
 		case "-w":
-			f, err := os.OpenFile(args[1], os.O_WRONLY, 0)
+			f, err := os.OpenFile(args[1], os.O_WRONLY, 0) // #nosec G304 -- test checks user-supplied path
 			if err == nil {
-				f.Close()
+				_ = f.Close()
 				return true, nil
 			}
 			return false, nil
 		case "-x":
-			fi, err := os.Stat(args[1])
+			fi, err := os.Stat(args[1]) // #nosec G304 -- test checks user-supplied path
 			return err == nil && fi.Mode()&0111 != 0, nil
 		case "-s":
-			fi, err := os.Stat(args[1])
+			fi, err := os.Stat(args[1]) // #nosec G304 -- test checks user-supplied path
 			return err == nil && fi.Size() > 0, nil
 		case "-L", "-h":
-			fi, err := os.Lstat(args[1])
+			fi, err := os.Lstat(args[1]) // #nosec G304 -- test checks user-supplied path
 			return err == nil && fi.Mode()&os.ModeSymlink != 0, nil
 		default:
 			return false, nil
