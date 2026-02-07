@@ -24,7 +24,7 @@ func Run(stdio *core.Stdio, args []string) int {
 		return core.ExitFailure
 	}
 	cmdArgs := append(args, words...)
-	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...) // #nosec G204 -- xargs runs user-provided command
 	cmd.Stdout = stdio.Out
 	cmd.Stderr = stdio.Err
 	cmd.Stdin = stdio.In

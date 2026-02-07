@@ -2,11 +2,11 @@
 package dig
 
 import (
+	crand "crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"os"
 	"strconv"
@@ -238,7 +238,10 @@ func defaultServer() (string, error) {
 }
 
 func lookup(opts options) (*dnsMessage, error) {
-	msg := buildQuery(opts)
+	msg, err := buildQuery(opts)
+	if err != nil {
+		return nil, err
+	}
 	req, err := packMessage(msg)
 	if err != nil {
 		return nil, err
@@ -292,8 +295,11 @@ func exchangeTCP(network, addr string, req []byte) (*dnsMessage, error) {
 		return nil, err
 	}
 
+	if len(req) > int(^uint16(0)) {
+		return nil, fmt.Errorf("dig: request too large")
+	}
 	length := make([]byte, 2)
-	binary.BigEndian.PutUint16(length, uint16(len(req)))
+	binary.BigEndian.PutUint16(length, uint16(len(req))) // #nosec G115 -- length checked above
 	if _, err := conn.Write(append(length, req...)); err != nil {
 		return nil, err
 	}
@@ -320,13 +326,24 @@ func networkSuffix(network string) string {
 	return ""
 }
 
-func buildQuery(opts options) *dnsMessage {
-	id := uint16(rand.Intn(65535))
+func buildQuery(opts options) (*dnsMessage, error) {
+	id, err := randomUint16()
+	if err != nil {
+		return nil, err
+	}
 	flags := uint16(0x0100)
 	return &dnsMessage{
 		header:    dnsHeader{id: id, flags: flags, qdcount: 1},
 		questions: []dnsQuestion{{name: opts.qname, qtype: opts.qtype, qclass: dnsClassIN}},
+	}, nil
+}
+
+func randomUint16() (uint16, error) {
+	var buf [2]byte
+	if _, err := crand.Read(buf[:]); err != nil {
+		return 0, err
 	}
+	return binary.BigEndian.Uint16(buf[:]), nil
 }
 
 func packMessage(msg *dnsMessage) ([]byte, error) {
@@ -640,8 +657,4 @@ func reverseName(ip net.IP) string {
 		parts = append(parts, fmt.Sprintf("%x", (b>>4)&0x0f))
 	}
 	return strings.Join(parts, ".") + ".ip6.arpa"
-}
-
-func init() {
-	rand.Seed(time.Now().UnixNano())
 }

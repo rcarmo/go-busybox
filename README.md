@@ -286,6 +286,7 @@ MIT
 1. Fork the repository
 2. Create a feature branch
 3. Run `make check` before committing
-4. Submit a pull request
+4. Run `make security` after vetting and linting (gosec must follow `make check`)
+5. Submit a pull request
 
 See [SPEC.md](SPEC.md) for detailed implementation requirements.

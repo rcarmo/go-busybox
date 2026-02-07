@@ -15,7 +15,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	if len(args) == 0 {
 		return core.UsageError(stdio, "setsid", "missing command")
 	}
-	cmd := exec.Command(args[0], args[1:]...)
+	cmd := exec.Command(args[0], args[1:]...) // #nosec G204 -- setsid runs user-provided command
 	cmd.Stdout = stdio.Out
 	cmd.Stderr = stdio.Err
 	cmd.Stdin = stdio.In

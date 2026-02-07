@@ -58,7 +58,7 @@ func RunBusyboxInDir(t *testing.T, applet string, args []string, input string, d
 		return "", "", 0, false
 	}
 	cmdArgs := append([]string{applet}, args...)
-	cmd := exec.Command(busyboxPath, cmdArgs...)
+	cmd := exec.Command(busyboxPath, cmdArgs...) // #nosec G204 -- test helper runs busybox with fuzzed args
 	cmd.Dir = dir
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)

@@ -22,7 +22,7 @@ func Run(stdio *core.Stdio, args []string) int {
 		return core.ExitFailure
 	}
 	defer out.Close()
-	cmd := exec.Command(args[0], args[1:]...)
+	cmd := exec.Command(args[0], args[1:]...) // #nosec G204 -- nohup runs user-provided command
 	cmd.Stdout = out
 	cmd.Stderr = out
 	cmd.Stdin = stdio.In

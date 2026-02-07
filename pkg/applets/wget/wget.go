@@ -38,7 +38,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	if out == "" {
 		out = outputName(url)
 	}
-	file, err := corefs.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	file, err := corefs.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		stdio.Errorf("wget: %v\n", err)
 		return core.ExitFailure

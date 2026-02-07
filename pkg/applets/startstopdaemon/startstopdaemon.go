@@ -37,7 +37,7 @@ func Run(stdio *core.Stdio, args []string) int {
 		}
 		i++
 	}
-	cmd := exec.Command(binary, cmdArgs...)
+	cmd := exec.Command(binary, cmdArgs...) // #nosec G204 -- start-stop-daemon runs provided executable
 	cmd.Stdout = stdio.Out
 	cmd.Stderr = stdio.Err
 	cmd.Stdin = stdio.In

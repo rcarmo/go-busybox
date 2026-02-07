@@ -21,7 +21,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	if err != nil {
 		return core.UsageError(stdio, "timeout", "invalid duration")
 	}
-	cmd := exec.Command(args[1], args[2:]...)
+	cmd := exec.Command(args[1], args[2:]...) // #nosec G204 -- timeout runs user-provided command
 	cmd.Stdout = stdio.Out
 	cmd.Stderr = stdio.Err
 	cmd.Stdin = stdio.In

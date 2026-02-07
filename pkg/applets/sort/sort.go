@@ -160,7 +160,7 @@ func Run(stdio *core.Stdio, args []string) int {
 		output = append(output, l)
 	}
 	if opts.outFile != "" {
-		if err := fs.WriteFile(opts.outFile, []byte(strings.Join(output, "\n")+"\n"), 0644); err != nil {
+		if err := fs.WriteFile(opts.outFile, []byte(strings.Join(output, "\n")+"\n"), 0600); err != nil {
 			stdio.Errorf("sort: %v\n", err)
 			return core.ExitFailure
 		}

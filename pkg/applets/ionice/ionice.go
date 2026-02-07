@@ -42,7 +42,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	if len(args) < 3 {
 		return core.UsageError(stdio, "ionice", "missing command")
 	}
-	cmd := exec.Command(args[2], args[3:]...)
+	cmd := exec.Command(args[2], args[3:]...) // #nosec G204 -- ionice runs user-provided command
 	cmd.Stdout = stdio.Out
 	cmd.Stderr = stdio.Err
 	cmd.Stdin = stdio.In

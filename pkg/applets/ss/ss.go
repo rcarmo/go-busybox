@@ -113,7 +113,10 @@ func collectEntries(opts options, userMap map[string]string) ([]socketEntry, sum
 }
 
 func readProcNet(path string, netid string, opts options, userMap map[string]string) []socketEntry {
-	file, err := os.Open(path)
+	if !strings.HasPrefix(path, "/proc/") {
+		return nil
+	}
+	file, err := os.Open(path) // #nosec G304 -- reads fixed /proc paths
 	if err != nil {
 		return nil
 	}

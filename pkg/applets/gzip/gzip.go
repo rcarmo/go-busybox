@@ -30,7 +30,7 @@ func gzipFile(path string, stdio *core.Stdio) error {
 	}
 	defer in.Close()
 	outPath := path + ".gz"
-	out, err := corefs.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	out, err := corefs.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}

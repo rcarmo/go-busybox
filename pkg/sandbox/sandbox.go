@@ -160,7 +160,7 @@ func Open(path string) (*os.File, error) {
 	if err := checkAccess(path, PermRead); err != nil {
 		return nil, err
 	}
-	return os.Open(path)
+	return os.Open(path) // #nosec G304 -- sandbox checkAccess enforces allowed paths
 }
 
 // Create creates a file within the sandbox.
@@ -168,7 +168,7 @@ func Create(path string) (*os.File, error) {
 	if err := checkAccess(path, PermWrite); err != nil {
 		return nil, err
 	}
-	return os.Create(path)
+	return os.Create(path) // #nosec G304 -- sandbox checkAccess enforces allowed paths
 }
 
 // OpenFile opens a file with the given flags within the sandbox.
@@ -180,7 +180,7 @@ func OpenFile(path string, flag int, perm os.FileMode) (*os.File, error) {
 	if err := checkAccess(path, required); err != nil {
 		return nil, err
 	}
-	return os.OpenFile(path, flag, perm)
+	return os.OpenFile(path, flag, perm) // #nosec G304 -- sandbox checkAccess enforces allowed paths
 }
 
 // ReadFile reads a file within the sandbox.
@@ -188,7 +188,7 @@ func ReadFile(path string) ([]byte, error) {
 	if err := checkAccess(path, PermRead); err != nil {
 		return nil, err
 	}
-	return os.ReadFile(path)
+	return os.ReadFile(path) // #nosec G304 -- sandbox checkAccess enforces allowed paths
 }
 
 // WriteFile writes data to a file within the sandbox.
@@ -275,7 +275,7 @@ func Copy(src, dst string) error {
 		return err
 	}
 
-	srcFile, err := os.Open(src)
+	srcFile, err := os.Open(src) // #nosec G304 -- sandbox checkAccess enforces allowed paths
 	if err != nil {
 		return err
 	}
@@ -286,7 +286,7 @@ func Copy(src, dst string) error {
 		return err
 	}
 
-	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, srcInfo.Mode())
+	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, srcInfo.Mode()) // #nosec G304 -- sandbox checkAccess enforces allowed paths
 	if err != nil {
 		return err
 	}

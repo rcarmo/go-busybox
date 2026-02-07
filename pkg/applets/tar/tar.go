@@ -3,6 +3,7 @@ package tar
 
 import (
 	"archive/tar"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 	corefs "github.com/rcarmo/go-busybox/pkg/core/fs"
 )
+
+const maxArchiveBytes = int64(64 << 20)
 
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) < 2 {
@@ -40,7 +43,7 @@ func Run(stdio *core.Stdio, args []string) int {
 }
 
 func createArchive(archive string, paths []string) error {
-	out, err := corefs.OpenFile(archive, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	out, err := corefs.OpenFile(archive, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
@@ -109,6 +112,7 @@ func extractArchive(archive string) error {
 	}
 	defer in.Close()
 	tr := tar.NewReader(in)
+	var totalBytes int64
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -117,6 +121,13 @@ func extractArchive(archive string) error {
 		if err != nil {
 			return err
 		}
+		if hdr.Size < 0 {
+			return errors.New("tar: invalid entry size")
+		}
+		totalBytes += hdr.Size
+		if totalBytes > maxArchiveBytes {
+			return errors.New("tar: archive too large")
+		}
 		target := hdr.Name
 		if hdr.FileInfo().IsDir() {
 			if err := corefs.MkdirAll(target, hdr.FileInfo().Mode()); err != nil {
@@ -124,17 +135,19 @@ func extractArchive(archive string) error {
 			}
 			continue
 		}
-		if err := corefs.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		if err := corefs.MkdirAll(filepath.Dir(target), 0750); err != nil {
 			return err
 		}
-		out, err := corefs.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, hdr.FileInfo().Mode())
+		out, err := corefs.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, hdr.FileInfo().Mode()&0600)
 		if err != nil {
 			return err
 		}
-		if _, err := io.Copy(out, tr); err != nil {
-			out.Close()
+		if _, err := io.Copy(out, io.LimitReader(tr, hdr.Size)); err != nil {
+			_ = out.Close()
 			return err
 		}
-		out.Close()
+		if err := out.Close(); err != nil {
+			return err
+		}
 	}
 }

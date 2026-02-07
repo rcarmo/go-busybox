@@ -156,7 +156,7 @@ func LookupUser(uid string) string {
 	if uid == "" {
 		return ""
 	}
-	data, err := os.ReadFile("/etc/passwd")
+	data, err := os.ReadFile("/etc/passwd") // #nosec G304 -- fixed system file
 	if err != nil {
 		return uid
 	}
@@ -173,7 +173,7 @@ func LookupUser(uid string) string {
 }
 
 func ReadFirstLine(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- caller provides /proc path
 	if err != nil {
 		return "", err
 	}

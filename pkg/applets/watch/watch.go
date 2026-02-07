@@ -32,7 +32,7 @@ func Run(stdio *core.Stdio, args []string) int {
 		return core.UsageError(stdio, "watch", "missing command")
 	}
 	cmdStr := strings.Join(args, " ")
-	cmd := exec.Command("sh", "-c", cmdStr)
+	cmd := exec.Command("sh", "-c", cmdStr) // #nosec G204 -- watch executes user-provided shell command
 	cmd.Stdout = stdio.Out
 	cmd.Stderr = stdio.Err
 	cmd.Stdin = stdio.In

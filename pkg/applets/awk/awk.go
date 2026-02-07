@@ -161,7 +161,7 @@ func executePrint(stdio *core.Stdio, program string, files []string, vars map[st
 		arrays:  map[string]map[string]string{},
 		fs:      fs,
 		ofs:     ofs,
-		rng:     rand.New(rand.NewSource(time.Now().UnixNano())),
+		rng:     rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404 -- awk rand() uses math/rand by spec
 		files:   map[string]*os.File{},
 		readers: map[string]*bufio.Reader{},
 		procs:   map[string]*exec.Cmd{},
@@ -644,7 +644,7 @@ func evalStatement(stmt statement, state *awkState) ([]string, error) {
 					} else {
 						flags |= os.O_TRUNC
 					}
-					file, err := os.OpenFile(item.redir, flags, 0644)
+					file, err := os.OpenFile(item.redir, flags, 0600) // #nosec G304 -- awk redirection uses user-supplied path
 					if err != nil {
 						return nil, err
 					}
@@ -2280,7 +2280,7 @@ func evalFunc(e *expr, state *awkState) (string, float64) {
 		return strVal[start:], parseNumber(strVal[start:])
 	case "rand":
 		if state.rng == nil {
-			state.rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+			state.rng = rand.New(rand.NewSource(time.Now().UnixNano())) // #nosec G404 -- awk rand() uses math/rand by spec
 		}
 		val := state.rng.Float64()
 		return formatNumber(val)
@@ -2290,7 +2290,7 @@ func evalFunc(e *expr, state *awkState) (string, float64) {
 			_, num := evalExpr(e.args[0], state)
 			seed = int64(num)
 		}
-		state.rng = rand.New(rand.NewSource(seed))
+		state.rng = rand.New(rand.NewSource(seed)) // #nosec G404 -- awk srand() uses math/rand by spec
 		return formatNumber(float64(seed))
 	case "tolower":
 		if len(e.args) == 0 {
@@ -2867,7 +2867,7 @@ func evalFunc(e *expr, state *awkState) (string, float64) {
 				if len(parts) == 0 {
 					return "0", 0
 				}
-				cmd := exec.Command(parts[0], parts[1:]...)
+				cmd := exec.Command(parts[0], parts[1:]...) // #nosec G204 -- awk getline pipe executes user command
 				stdout, err := cmd.StdoutPipe()
 				if err != nil {
 					return "0", 0
@@ -2912,7 +2912,7 @@ func evalFunc(e *expr, state *awkState) (string, float64) {
 					return "1", 1
 				}
 				// try opening
-				f, err := corefs.Open(path)
+				f, err := corefs.Open(path) // #nosec G304 -- awk getline uses user-supplied path
 				if err != nil {
 					return "0", 0
 				}
@@ -2996,7 +2996,7 @@ func evalFunc(e *expr, state *awkState) (string, float64) {
 		if len(parts) == 0 {
 			return "0", 0
 		}
-		cmd := exec.Command(parts[0], parts[1:]...)
+		cmd := exec.Command(parts[0], parts[1:]...) // #nosec G204 -- awk system executes user command
 		err := cmd.Run()
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {

@@ -151,7 +151,7 @@ func readComm(pid int) string {
 }
 
 func readCommAt(path string) string {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is /proc-derived
 	if err != nil {
 		return ""
 	}
@@ -167,7 +167,7 @@ func readUser(pid int) string {
 }
 
 func readStatus(pid int) (string, string, string) {
-	status, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status"))
+	status, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status")) // #nosec G304 -- /proc read
 	if err != nil {
 		return "", "", ""
 	}
@@ -196,7 +196,7 @@ func readStatus(pid int) (string, string, string) {
 }
 
 func lookupGroup(gid string) string {
-	data, err := os.ReadFile("/etc/group")
+	data, err := os.ReadFile("/etc/group") // #nosec G304 -- fixed system file
 	if err != nil {
 		return gid
 	}
@@ -213,7 +213,7 @@ func lookupGroup(gid string) string {
 }
 
 func readStat(pid int) (int, int, int, int, string, int, int, int) {
-	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat")) // #nosec G304 -- /proc read
 	if err != nil {
 		return 0, 0, 0, 0, "", 0, 0, 0
 	}
@@ -252,10 +252,10 @@ func parseInt(value string) int {
 }
 
 func formatTTY(ttyNr int) string {
-	if ttyNr == 0 {
+	if ttyNr <= 0 {
 		return "?"
 	}
-	dev := uint64(ttyNr)
+	dev := int64(ttyNr)
 	major := (dev >> 8) & 0xfff
 	minor := (dev & 0xff) | ((dev >> 12) & 0xfff00)
 	return fmt.Sprintf("%d,%d", major, minor)

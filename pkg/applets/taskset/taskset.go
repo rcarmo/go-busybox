@@ -26,11 +26,11 @@ func Run(stdio *core.Stdio, args []string) int {
 	var set unix.CPUSet
 	set.Zero()
 	for cpu := 0; cpu < 64; cpu++ {
-		if mask&(1<<uint(cpu)) != 0 {
+		if mask&(1<<cpu) != 0 {
 			set.Set(cpu)
 		}
 	}
-	cmd := exec.Command(args[1], args[2:]...)
+	cmd := exec.Command(args[1], args[2:]...) // #nosec G204 -- taskset executes requested command
 	cmd.Stdout = stdio.Out
 	cmd.Stderr = stdio.Err
 	cmd.Stdin = stdio.In

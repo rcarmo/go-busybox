@@ -15,7 +15,7 @@ import (
 func TempFile(t *testing.T, name, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -25,10 +25,10 @@ func TempFile(t *testing.T, name, content string) string {
 func TempFileIn(t *testing.T, dir, name, content string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -41,10 +41,10 @@ func TempDirWithFiles(t *testing.T, files map[string]string) string {
 	dir := t.TempDir()
 	for name, content := range files {
 		path := filepath.Join(dir, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -127,7 +127,7 @@ func AssertFileNotExists(t *testing.T, path string) {
 // AssertFileContent checks that a file contains expected content.
 func AssertFileContent(t *testing.T, path, want string) {
 	t.Helper()
-	got, err := os.ReadFile(path)
+	got, err := os.ReadFile(path) // #nosec G304 -- test helper reads requested file
 	if err != nil {
 		t.Fatalf("failed to read file %s: %v", path, err)
 	}
