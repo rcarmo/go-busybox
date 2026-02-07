@@ -1,20 +1,20 @@
-# Busybox WASM
+# go-busybox
 
 <p align="center">
   <img src="docs/icon-256.png" alt="Busybox WASM" width="256" />
 </p>
 
-A sandboxable implementation of busybox utilities in Go, compiled to WebAssembly using TinyGo.
+A WIP sandboxable implementation of busybox utilities in Go, intended for compiling to WebAssembly using TinyGo for use in sandboxed AI agents.
 
 ## Overview
 
-This project ports common busybox utilities to Go, targeting WebAssembly (WASI) for secure, sandboxed execution. It provides:
+This project ports common busybox utilities to Go, targeting WebAssembly (WASI) for secure, sandboxed execution. It aims to provide:
 
 - **Capability-based sandboxing** via WASM's memory isolation
 - **POSIX-compatible utilities** for shell scripting
 - **Comparative testing** against the original C busybox binary
 - **Small binary sizes** (<100KB per applet, <2MB combined)
-- **Envisioned dual use**: a WASM sandboxing tool and a way to extend GoKrazy on embedded devices
+- **Envisioned dual use**: a WASM sandboxing tool and a way to extend [GoKrazy](https://gokrazy.org) on embedded devices
 
 ## Reference BusyBox
 
