@@ -28,7 +28,7 @@ func TestFoo(t *testing.T) {
 For busybox-wasm applet tests, use the `pkg/testutil` helpers:
 
 ```go
-import "github.com/rcarmo/busybox-wasm/pkg/testutil"
+import "github.com/rcarmo/go-busybox/pkg/testutil"
 
 func TestApplet(t *testing.T) {
     tests := []testutil.AppletTestCase{

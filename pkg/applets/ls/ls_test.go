@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rcarmo/busybox-wasm/pkg/applets/ls"
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	"github.com/rcarmo/busybox-wasm/pkg/testutil"
+	"github.com/rcarmo/go-busybox/pkg/applets/ls"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/testutil"
 )
 
 func TestLs(t *testing.T) {
@@ -32,8 +32,7 @@ func TestLs(t *testing.T) {
 				"visible": "",
 			},
 			Check: func(t *testing.T, dir string) {
-				stdio, out, _ := testutil.CaptureStdioNoInput()
-				code := ls.Run(stdio, []string{dir})
+				out, _, code := testutil.CaptureAndRun(t, ls.Run, []string{dir}, "")
 				testutil.AssertExitCode(t, code, core.ExitSuccess)
 				if strings.Contains(out.String(), ".hidden") {
 					t.Error("hidden file should not be shown without -a")
@@ -58,8 +57,7 @@ func TestLs(t *testing.T) {
 				"test.txt": "content",
 			},
 			Check: func(t *testing.T, dir string) {
-				stdio, out, _ := testutil.CaptureStdioNoInput()
-				code := ls.Run(stdio, []string{"-l", dir})
+				out, _, code := testutil.CaptureAndRun(t, ls.Run, []string{"-l", dir}, "")
 				testutil.AssertExitCode(t, code, core.ExitSuccess)
 				if !strings.Contains(out.String(), "-rw") {
 					t.Errorf("long format should show permissions, got %q", out.String())
@@ -76,8 +74,7 @@ func TestLs(t *testing.T) {
 				}
 			},
 			Check: func(t *testing.T, dir string) {
-				stdio, out, _ := testutil.CaptureStdioNoInput()
-				code := ls.Run(stdio, []string{"-F", dir})
+				out, _, code := testutil.CaptureAndRun(t, ls.Run, []string{"-F", dir}, "")
 				testutil.AssertExitCode(t, code, core.ExitSuccess)
 				if !strings.Contains(out.String(), "subdir/") {
 					t.Errorf("expected directory suffix, got %q", out.String())
@@ -94,8 +91,7 @@ func TestLs(t *testing.T) {
 				}
 			},
 			Check: func(t *testing.T, dir string) {
-				stdio, out, _ := testutil.CaptureStdioNoInput()
-				code := ls.Run(stdio, []string{"-p", dir})
+				out, _, code := testutil.CaptureAndRun(t, ls.Run, []string{"-p", dir}, "")
 				testutil.AssertExitCode(t, code, core.ExitSuccess)
 				if !strings.Contains(out.String(), "subdir/") {
 					t.Errorf("expected directory slash, got %q", out.String())
@@ -114,8 +110,7 @@ func TestLs(t *testing.T) {
 				}
 			},
 			Check: func(t *testing.T, dir string) {
-				stdio, out, _ := testutil.CaptureStdioNoInput()
-				code := ls.Run(stdio, []string{"-l", dir})
+				out, _, code := testutil.CaptureAndRun(t, ls.Run, []string{"-l", dir}, "")
 				testutil.AssertExitCode(t, code, core.ExitSuccess)
 				if !strings.Contains(out.String(), "link ->") {
 					t.Errorf("expected symlink target, got %q", out.String())
@@ -131,8 +126,7 @@ func TestLs(t *testing.T) {
 				"b.txt": "",
 			},
 			Check: func(t *testing.T, dir string) {
-				stdio, out, _ := testutil.CaptureStdioNoInput()
-				code := ls.Run(stdio, []string{"-1", dir})
+				out, _, code := testutil.CaptureAndRun(t, ls.Run, []string{"-1", dir}, "")
 				testutil.AssertExitCode(t, code, core.ExitSuccess)
 				lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 				if len(lines) != 2 {

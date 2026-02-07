@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rcarmo/busybox-wasm/pkg/applets/mkdir"
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	"github.com/rcarmo/busybox-wasm/pkg/testutil"
+	"github.com/rcarmo/go-busybox/pkg/applets/mkdir"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/testutil"
 )
 
 func TestMkdir(t *testing.T) {

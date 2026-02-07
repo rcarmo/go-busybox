@@ -6,26 +6,27 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	"github.com/rcarmo/busybox-wasm/pkg/core/fs"
-	"github.com/rcarmo/busybox-wasm/pkg/core/textutil"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/core/fs"
+	"github.com/rcarmo/go-busybox/pkg/core/textutil"
 )
 
 type options struct {
-	reverse bool
-	numeric bool
-	unique  bool
-	ignore  bool
-	sep     string
-	key     string
+	reverse  bool
+	numeric  bool
+	unique   bool
+	ignore   bool
+	sep      string
+	key      string
 	keyField int
 	keyChar  int
-	outFile string
+	outFile  string
 }
 
 func Run(stdio *core.Stdio, args []string) int {
 	opts := options{}
 	files := []string{}
+	// BusyBox uses byte/locale order; this implementation uses Go's Unicode string order.
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]

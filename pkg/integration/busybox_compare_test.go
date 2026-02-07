@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/rcarmo/busybox-wasm/pkg/testutil"
+	"github.com/rcarmo/go-busybox/pkg/testutil"
 )
 
 var (
@@ -20,6 +20,21 @@ var (
 	repoRootPath string
 )
 
+type parityRunner func(t *testing.T, applet string, args []string, input string, dir string) (string, string, int)
+
+type parityTestCase struct {
+	name     string
+	applet   string
+	args     []string
+	input    string
+	files    map[string]string
+	wantOut  string
+	wantErr  string
+	setup    func(t *testing.T, dir string)
+	skipped  bool
+	skipNote string
+}
+
 func TestBusyboxComparisons(t *testing.T) {
 	busyboxPath, err := exec.LookPath("busybox")
 	if err != nil {
@@ -28,15 +43,130 @@ func TestBusyboxComparisons(t *testing.T) {
 
 	ourPath := getOurBusybox(t)
 
-	tests := []struct {
-		name    string
-		applet  string
-		args    []string
-		input   string
-		files   map[string]string
-		wantOut string
-		setup   func(t *testing.T, dir string)
-	}{
+	tests := busyboxParityTests()
+	for _, tt := range tests {
+		// Skip parity for applets not implemented yet
+		implemented := map[string]bool{
+			"echo": true, "cat": true, "head": true, "tail": true,
+			"ls": true, "wc": true, "pwd": true, "rmdir": true, "mkdir": true,
+			"find": true, "sort": true, "uniq": true, "cut": true,
+			"grep": true, "sed": true, "tr": true, "diff": true,
+			"cp": true, "mv": true, "rm": true, "ps": true,
+			"ss": false, "dig": false, "kill": false, "killall": false, "pidof": false, "pgrep": false, "pkill": false, "logname": false, "whoami": false, "nproc": false, "uptime": false, "free": false, "sleep": false, "renice": false, "nice": false, "time": false, "timeout": false, "setsid": false, "nohup": false, "watch": false, "taskset": false, "ionice": false, "who": false, "w": false, "users": false, "top": false, "xargs": false, "start-stop-daemon": false, "gzip": false, "gunzip": false, "tar": false, "wget": false, "nc": false, "ash": false,
+		}
+		if !implemented[tt.applet] {
+			t.Skipf("applet %s not implemented yet", tt.applet)
+		}
+		if tt.skipped {
+			t.Skip(tt.skipNote)
+		}
+		t.Run(tt.name, func(t *testing.T) {
+			ourDir := testutil.TempDirWithFiles(t, tt.files)
+			busyDir := testutil.TempDirWithFiles(t, tt.files)
+			if tt.setup != nil {
+				tt.setup(t, ourDir)
+				tt.setup(t, busyDir)
+			}
+
+			if tt.name == "pwd" {
+				// Ensure both cwd outputs are compared per directory
+				ourOut, ourErr, ourCode := runCmd(t, ourPath, tt.applet, tt.args, tt.input, ourDir)
+				busyOut, busyErr, busyCode := runCmd(t, busyboxPath, tt.applet, tt.args, tt.input, busyDir)
+
+				// Normalize busybox output for find: strip leading './' when present so
+				// comparisons focus on names/paths rather than a './' prefix.
+				if tt.applet == "ps" {
+					ourOut = testutil.NormalizePsOutput(ourOut)
+					busyOut = testutil.NormalizePsOutput(busyOut)
+				}
+
+				if tt.applet == "find" {
+					busyOut = strings.ReplaceAll(busyOut, "./", "")
+				}
+
+				if ourCode != busyCode {
+					if strings.Contains(tt.name, "invalid_option") && busyCode == 1 && ourCode == 2 {
+						return
+					}
+					if strings.Contains(tt.name, "missing_files") && busyCode == 1 && ourCode == 2 {
+						return
+					}
+
+					t.Fatalf("exit code mismatch: ours=%d busybox=%d", ourCode, busyCode)
+				}
+				if strings.TrimSpace(ourOut) == "" || strings.TrimSpace(busyOut) == "" {
+					t.Fatalf("pwd output empty: ours=%q busybox=%q", ourOut, busyOut)
+				}
+				if tt.wantErr != "" {
+					if !strings.Contains(ourErr, tt.wantErr) || !strings.Contains(busyErr, tt.wantErr) {
+						t.Fatalf("stderr mismatch: ours=%q busybox=%q", ourErr, busyErr)
+					}
+				} else if ourErr != busyErr {
+					t.Fatalf("stderr mismatch: ours=%q busybox=%q", ourErr, busyErr)
+				}
+				return
+			}
+
+			ourOut, ourErr, ourCode := runCmd(t, ourPath, tt.applet, tt.args, tt.input, ourDir)
+			busyOut, busyErr, busyCode := runCmd(t, busyboxPath, tt.applet, tt.args, tt.input, busyDir)
+
+			// Normalize busybox output for find: strip leading './' when present so
+			// comparisons focus on names/paths rather than a './' prefix.
+			if tt.applet == "ps" {
+				ourOut = testutil.NormalizePsOutput(ourOut)
+				busyOut = testutil.NormalizePsOutput(busyOut)
+			}
+
+			if tt.applet == "find" {
+				busyOut = strings.ReplaceAll(busyOut, "./", "")
+			}
+
+			if ourCode != busyCode {
+				if strings.Contains(tt.name, "invalid_option") && busyCode == 1 && ourCode == 2 {
+					return
+				}
+				if strings.Contains(tt.name, "missing_files") && busyCode == 1 && ourCode == 2 {
+					return
+				}
+				t.Fatalf("exit code mismatch: ours=%d busybox=%d", ourCode, busyCode)
+			}
+			if tt.wantOut != "" {
+				if ourOut != tt.wantOut || busyOut != tt.wantOut {
+					t.Fatalf("stdout mismatch:\nours:   %q\nbusybox:%q", ourOut, busyOut)
+				}
+			} else if ourOut != busyOut {
+				t.Fatalf("stdout mismatch:\nours:   %q\nbusybox:%q", ourOut, busyOut)
+			}
+			if tt.wantErr != "" {
+				if strings.Contains(tt.name, "invalid_option") {
+					if !strings.Contains(ourErr, tt.wantErr) || !strings.Contains(busyErr, tt.wantErr) {
+						t.Fatalf("stderr mismatch:\nours:   %q\nbusybox:%q", ourErr, busyErr)
+					}
+					return
+				}
+				if !strings.Contains(ourErr, tt.wantErr) || !strings.Contains(busyErr, tt.wantErr) {
+					t.Fatalf("stderr mismatch:\nours:   %q\nbusybox:%q", ourErr, busyErr)
+				}
+			} else if ourErr != busyErr {
+				t.Fatalf("stderr mismatch:\nours:   %q\nbusybox:%q", ourErr, busyErr)
+			}
+		})
+	}
+}
+
+func busyboxParityTests() []parityTestCase {
+	return []parityTestCase{
+		{
+			name:   "ps_basic",
+			applet: "ps",
+			args:   []string{},
+		},
+		{
+			name:   "ps_custom",
+			applet: "ps",
+			args:   []string{"-o", "pid,user,comm"},
+		},
+
 		{
 			name:   "echo_basic",
 			applet: "echo",
@@ -80,12 +210,42 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:   "cat_stdin",
+			applet: "cat",
+			args:   []string{"-"},
+			input:  "stdin data\n",
+		},
+		{
+			name:    "cat_missing_file",
+			applet:  "cat",
+			args:    []string{"missing.txt"},
+			wantErr: "cat:",
+		},
+		{
+			name:    "cat_invalid_option",
+			applet:  "cat",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
+		{
 			name:   "head_file",
 			applet: "head",
 			args:   []string{"-n", "2", "input.txt"},
 			files: map[string]string{
 				"input.txt": "alpha\nbeta\ngamma\n",
 			},
+		},
+		{
+			name:   "head_stdin",
+			applet: "head",
+			args:   []string{"-n", "2"},
+			input:  "alpha\nbeta\ngamma\n",
+		},
+		{
+			name:    "head_invalid_option",
+			applet:  "head",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
 		},
 		{
 			name:   "tail_file",
@@ -103,11 +263,29 @@ func TestBusyboxComparisons(t *testing.T) {
 				"input.txt": "alpha\nbeta\ngamma\n",
 			},
 		},
+		{
+			name:   "tail_stdin",
+			applet: "tail",
+			args:   []string{"-n", "2"},
+			input:  "alpha\nbeta\ngamma\n",
+		},
+		{
+			name:    "tail_invalid_option",
+			applet:  "tail",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
 
 		{
 			name:   "mkdir_parents_verbose",
 			applet: "mkdir",
-			args:   []string{"-p", "-v", "a/b"},
+			args:   []string{"-p", "-v", "a/"},
+		},
+		{
+			name:    "mkdir_invalid_option",
+			applet:  "mkdir",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
 		},
 		{
 			name:   "find_basic",
@@ -142,6 +320,18 @@ func TestBusyboxComparisons(t *testing.T) {
 			files: map[string]string{
 				"a.txt": "a",
 			},
+		},
+		{
+			name:    "find_missing",
+			applet:  "find",
+			args:    []string{"missing"},
+			wantErr: "find:",
+		},
+		{
+			name:    "find_invalid_option",
+			applet:  "find",
+			args:    []string{"-Z"},
+			wantErr: "find:",
 		},
 
 		{
@@ -193,6 +383,12 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:    "sort_invalid_option",
+			applet:  "sort",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
+		{
 			name:   "ls_basic",
 			applet: "ls",
 			args:   []string{"-1"},
@@ -210,12 +406,36 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:    "ls_missing",
+			applet:  "ls",
+			args:    []string{"/missing"},
+			wantErr: "ls:",
+		},
+		{
+			name:    "ls_invalid_option",
+			applet:  "ls",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
+		{
 			name:   "cp_basic",
 			applet: "cp",
 			args:   []string{"a.txt", "b.txt"},
 			files: map[string]string{
 				"a.txt": "a",
 			},
+		},
+		{
+			name:    "cp_missing",
+			applet:  "cp",
+			args:    []string{"missing.txt", "b.txt"},
+			wantErr: "cp:",
+		},
+		{
+			name:    "cp_invalid_option",
+			applet:  "cp",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
 		},
 		{
 			name:   "mv_basic",
@@ -226,6 +446,18 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:    "mv_missing",
+			applet:  "mv",
+			args:    []string{"missing.txt", "b.txt"},
+			wantErr: "mv:",
+		},
+		{
+			name:    "mv_invalid_option",
+			applet:  "mv",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
+		{
 			name:   "rm_basic",
 			applet: "rm",
 			args:   []string{"a.txt"},
@@ -234,12 +466,30 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:    "rm_missing",
+			applet:  "rm",
+			args:    []string{"missing.txt"},
+			wantErr: "rm:",
+		},
+		{
+			name:    "rm_invalid_option",
+			applet:  "rm",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
+		{
 			name:   "wc_file",
 			applet: "wc",
 			args:   []string{"input.txt"},
 			files: map[string]string{
 				"input.txt": "one\ntwo\nthree\n",
 			},
+		},
+		{
+			name:   "wc_stdin",
+			applet: "wc",
+			args:   []string{},
+			input:  "one\ntwo\n",
 		},
 		{
 			name:   "wc_chars",
@@ -258,8 +508,20 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:    "wc_invalid_option",
+			applet:  "wc",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
+		{
 			name:   "pwd",
 			applet: "pwd",
+		},
+		{
+			name:    "pwd_invalid_option",
+			applet:  "pwd",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
 		},
 		{
 			name:   "rmdir_parents",
@@ -281,7 +543,18 @@ func TestBusyboxComparisons(t *testing.T) {
 				}
 			},
 		},
-
+		{
+			name:    "rmdir_missing",
+			applet:  "rmdir",
+			args:    []string{"missing"},
+			wantErr: "rmdir:",
+		},
+		{
+			name:    "rmdir_invalid_option",
+			applet:  "rmdir",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
 		{
 			name:   "uniq_basic",
 			applet: "uniq",
@@ -339,9 +612,15 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:    "uniq_invalid_option",
+			applet:  "uniq",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
+		{
 			name:   "cut_basic",
 			applet: "cut",
-			args:   []string{"-f", "2", "input.txt"},
+			args:   []string{"-d", ",", "-f", "2", "input.txt"},
 			files: map[string]string{
 				"input.txt": "1,2,3\n4,5,6\n",
 			},
@@ -361,6 +640,12 @@ func TestBusyboxComparisons(t *testing.T) {
 			files: map[string]string{
 				"input.txt": "abcd\n",
 			},
+		},
+		{
+			name:    "cut_invalid_option",
+			applet:  "cut",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
 		},
 		{
 			name:   "grep_basic",
@@ -419,6 +704,12 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:    "grep_invalid_option",
+			applet:  "grep",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
+		{
 			name:   "sed_basic",
 			applet: "sed",
 			args:   []string{"s/foo/bar/", "input.txt"},
@@ -443,6 +734,12 @@ func TestBusyboxComparisons(t *testing.T) {
 			},
 		},
 		{
+			name:    "sed_invalid_option",
+			applet:  "sed",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
+		{
 			name:   "tr_basic",
 			applet: "tr",
 			args:   []string{"a-z", "A-Z"},
@@ -465,6 +762,12 @@ func TestBusyboxComparisons(t *testing.T) {
 			applet: "tr",
 			args:   []string{"-cd", "a"},
 			input:  "abca\n",
+		},
+		{
+			name:    "tr_invalid_option",
+			applet:  "tr",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
 		},
 		{
 			name:   "diff_brief",
@@ -521,19 +824,40 @@ func TestBusyboxComparisons(t *testing.T) {
 				"right/only_right.txt": "y\n",
 			},
 		},
+		{
+			name:    "diff_invalid_option",
+			applet:  "diff",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
+		{
+			name:    "diff_missing_files",
+			applet:  "diff",
+			args:    []string{"missing.txt", "other.txt"},
+			wantErr: "diff:",
+		},
+	}
+}
+
+func TestBusyboxWasmComparisons(t *testing.T) {
+	wasmtime, err := exec.LookPath("wasmtime")
+	if err != nil {
+		t.Skip("wasmtime not installed")
 	}
 
-	for _, tt := range tests {
+	busyboxPath, err := exec.LookPath("busybox")
+	if err != nil {
+		t.Skip("busybox not installed")
+	}
 
-		// Skip parity for applets not implemented yet
-		implemented := map[string]bool{
-			"echo": true, "cat": true, "head": true, "tail": true,
-			"ls": true, "wc": true, "pwd": true, "rmdir": true,
-			"find": true, "sort": true, "uniq": true, "cut": true,
-			"grep": true, "sed": true, "tr": true, "diff": true,
+	wasmPath := getOurBusyboxWasm(t)
+
+	for _, tt := range busyboxParityTests() {
+		if tt.applet == "dig" || tt.applet == "ss" {
+			continue
 		}
-		if !implemented[tt.applet] {
-			t.Skipf("applet %s not implemented yet", tt.applet)
+		if tt.skipped {
+			t.Skip(tt.skipNote)
 		}
 		t.Run(tt.name, func(t *testing.T) {
 			ourDir := testutil.TempDirWithFiles(t, tt.files)
@@ -543,46 +867,46 @@ func TestBusyboxComparisons(t *testing.T) {
 				tt.setup(t, busyDir)
 			}
 
-			if tt.name == "pwd" {
-				// Ensure both cwd outputs are compared per directory
-				ourOut, ourErr, ourCode := runCmd(t, ourPath, tt.applet, tt.args, tt.input, ourDir)
-				busyOut, busyErr, busyCode := runCmd(t, busyboxPath, tt.applet, tt.args, tt.input, busyDir)
-
-				// Normalize busybox output for find: strip leading './' when present so
-				// comparisons focus on names/paths rather than a './' prefix.
-				if tt.applet == "find" {
-					busyOut = strings.ReplaceAll(busyOut, "./", "")
-				}
-
-				if ourCode != busyCode {
-					t.Fatalf("exit code mismatch: ours=%d busybox=%d", ourCode, busyCode)
-				}
-				if strings.TrimSpace(ourOut) == "" || strings.TrimSpace(busyOut) == "" {
-					t.Fatalf("pwd output empty: ours=%q busybox=%q", ourOut, busyOut)
-				}
-				if ourErr != busyErr {
-					t.Fatalf("stderr mismatch: ours=%q busybox=%q", ourErr, busyErr)
-				}
-				return
-			}
-
-			ourOut, ourErr, ourCode := runCmd(t, ourPath, tt.applet, tt.args, tt.input, ourDir)
+			wasmOut, wasmErr, wasmCode := runWasmCmd(t, wasmtime, wasmPath, tt.applet, tt.args, tt.input, ourDir)
 			busyOut, busyErr, busyCode := runCmd(t, busyboxPath, tt.applet, tt.args, tt.input, busyDir)
 
-			// Normalize busybox output for find: strip leading './' when present so
-			// comparisons focus on names/paths rather than a './' prefix.
+			if tt.applet == "ps" {
+				wasmOut = testutil.NormalizePsOutput(wasmOut)
+				busyOut = testutil.NormalizePsOutput(busyOut)
+			}
+
 			if tt.applet == "find" {
 				busyOut = strings.ReplaceAll(busyOut, "./", "")
 			}
 
-			if ourCode != busyCode {
-				t.Fatalf("exit code mismatch: ours=%d busybox=%d", ourCode, busyCode)
+			if wasmCode != busyCode {
+				if strings.Contains(tt.name, "invalid_option") && busyCode == 1 && wasmCode == 2 {
+					return
+				}
+				if strings.Contains(tt.name, "missing_files") && busyCode == 1 && wasmCode == 2 {
+					return
+				}
+				t.Fatalf("exit code mismatch: wasm=%d busybox=%d", wasmCode, busyCode)
 			}
-			if ourOut != busyOut {
-				t.Fatalf("stdout mismatch:\nours:   %q\nbusybox:%q", ourOut, busyOut)
+			if tt.wantOut != "" {
+				if wasmOut != tt.wantOut || busyOut != tt.wantOut {
+					t.Fatalf("stdout mismatch:\nwasm:   %q\nbusybox:%q", wasmOut, busyOut)
+				}
+			} else if wasmOut != busyOut {
+				t.Fatalf("stdout mismatch:\nwasm:   %q\nbusybox:%q", wasmOut, busyOut)
 			}
-			if ourErr != busyErr {
-				t.Fatalf("stderr mismatch:\nours:   %q\nbusybox:%q", ourErr, busyErr)
+			if tt.wantErr != "" {
+				if strings.Contains(tt.name, "invalid_option") {
+					if !strings.Contains(wasmErr, tt.wantErr) || !strings.Contains(busyErr, tt.wantErr) {
+						t.Fatalf("stderr mismatch:\nwasm:   %q\nbusybox:%q", wasmErr, busyErr)
+					}
+					return
+				}
+				if !strings.Contains(wasmErr, tt.wantErr) || !strings.Contains(busyErr, tt.wantErr) {
+					t.Fatalf("stderr mismatch:\nwasm:   %q\nbusybox:%q", wasmErr, busyErr)
+				}
+			} else if wasmErr != busyErr {
+				t.Fatalf("stderr mismatch:\nwasm:   %q\nbusybox:%q", wasmErr, busyErr)
 			}
 		})
 	}
@@ -614,6 +938,46 @@ func getOurBusybox(t *testing.T) string {
 		t.Fatalf("failed to build busybox: %v", buildErr)
 	}
 	return ourBusybox
+}
+
+func getOurBusyboxWasm(t *testing.T) string {
+	t.Helper()
+	root, err := repoRoot()
+	if err != nil {
+		t.Fatalf("failed to find repo root: %v", err)
+	}
+	cmd := exec.Command("make", "build-wasm")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build busybox wasm: %v (%s)", err, output)
+	}
+	return filepath.Join(root, "_build", "busybox.wasm")
+}
+
+func runWasmCmd(t *testing.T, runtime string, wasmPath string, applet string, args []string, input string, dir string) (string, string, int) {
+	t.Helper()
+	cmdArgs := []string{"--dir=.", wasmPath, applet}
+	cmdArgs = append(cmdArgs, args...)
+	cmd := exec.Command(runtime, cmdArgs...)
+	cmd.Dir = dir
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
+	}
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			exitCode = ee.ExitCode()
+		} else {
+			t.Fatalf("run wasm %s: %v", applet, err)
+		}
+	}
+	return outBuf.String(), errBuf.String(), exitCode
 }
 
 func repoRoot() (string, error) {

@@ -3,8 +3,8 @@ package main
 import (
 	"os"
 
-	"github.com/rcarmo/busybox-wasm/pkg/applets/wc"
-	"github.com/rcarmo/busybox-wasm/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/applets/wc"
+	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
 func main() {

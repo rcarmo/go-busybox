@@ -4,7 +4,7 @@ package echo
 import (
 	"strings"
 
-	"github.com/rcarmo/busybox-wasm/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
 // Run executes the echo command with the given arguments.

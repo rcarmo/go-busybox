@@ -7,14 +7,14 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	corefs "github.com/rcarmo/busybox-wasm/pkg/core/fs"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	corefs "github.com/rcarmo/go-busybox/pkg/core/fs"
 )
 
 type diffOptions struct {
-	brief     bool
-	recursive bool
-	same      bool
+	brief             bool
+	recursive         bool
+	same              bool
 	ignoreSpaceAmount bool
 	ignoreAllSpace    bool
 	ignoreBlank       bool
@@ -326,7 +326,6 @@ func diffFile(stdio *core.Stdio, left string, right string, opts diffOptions, co
 func diffMissingFile(stdio *core.Stdio, left string, right string, leftErr error, rightErr error, opts diffOptions, contextLines int) (bool, int, error) {
 	var leftLines []string
 	var rightLines []string
-	var err error
 	if leftErr == nil {
 		data, readErr := corefs.ReadFile(left)
 		if readErr != nil {
@@ -342,7 +341,8 @@ func diffMissingFile(stdio *core.Stdio, left string, right string, leftErr error
 		}
 		rightLines = splitLines(string(data))
 	} else {
-		return false, core.ExitUsage, err
+		stdio.Errorf("diff: can't stat '%s': %v\n", left, leftErr)
+		return false, core.ExitUsage, leftErr
 	}
 	leftNorm, leftMap := normalizeLinesWithMap(leftLines, opts)
 	rightNorm, rightMap := normalizeLinesWithMap(rightLines, opts)
@@ -531,11 +531,15 @@ func writeUnified(stdio *core.Stdio, lines []diffLine, left string, right string
 		if bCount == 0 {
 			bStart--
 		}
-		if aCount == 1 {
-			stdio.Printf("@@ -%d +%d @@\n", aStart, bStart)
-		} else {
-			stdio.Printf("@@ -%d,%d +%d,%d @@\n", aStart, aCount, bStart, bCount)
+		aPart := fmt.Sprintf("-%d", aStart)
+		if aCount != 1 {
+			aPart = fmt.Sprintf("-%d,%d", aStart, aCount)
 		}
+		bPart := fmt.Sprintf("+%d", bStart)
+		if bCount != 1 {
+			bPart = fmt.Sprintf("+%d,%d", bStart, bCount)
+		}
+		stdio.Printf("@@ %s %s @@\n", aPart, bPart)
 		for _, line := range lines[h.start:h.end] {
 			if line.tag == '-' {
 				stdio.Printf("%s%s\n", formatPrefix("-", opts), formatDiffLine(line.text, opts))

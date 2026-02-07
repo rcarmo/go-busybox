@@ -4,10 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
-	"github.com/rcarmo/busybox-wasm/pkg/applets/cp"
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	"github.com/rcarmo/busybox-wasm/pkg/testutil"
+	"github.com/rcarmo/go-busybox/pkg/applets/cp"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/testutil"
 )
 
 func TestCp(t *testing.T) {
@@ -47,6 +48,33 @@ func TestCp(t *testing.T) {
 			},
 			Check: func(t *testing.T, dir string) {
 				testutil.AssertFileContent(t, filepath.Join(dir, "b.txt"), "b")
+			},
+		},
+		{
+			Name:     "preserve_timestamps",
+			Args:     []string{"-p", "a.txt", "b.txt"},
+			WantCode: core.ExitSuccess,
+			Files: map[string]string{
+				"a.txt": "a",
+			},
+			Setup: func(t *testing.T, dir string) {
+				older := time.Now().Add(-48 * time.Hour)
+				if err := os.Chtimes(filepath.Join(dir, "a.txt"), older, older); err != nil {
+					t.Fatal(err)
+				}
+			},
+			Check: func(t *testing.T, dir string) {
+				srcInfo, err := os.Stat(filepath.Join(dir, "a.txt"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				dstInfo, err := os.Stat(filepath.Join(dir, "b.txt"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !dstInfo.ModTime().Equal(srcInfo.ModTime()) {
+					t.Fatalf("expected preserved mtime, got %v want %v", dstInfo.ModTime(), srcInfo.ModTime())
+				}
 			},
 		},
 	}

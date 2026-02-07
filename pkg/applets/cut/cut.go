@@ -4,9 +4,9 @@ import (
 	"bufio"
 	"strings"
 
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	"github.com/rcarmo/busybox-wasm/pkg/core/fs"
-	"github.com/rcarmo/busybox-wasm/pkg/core/textutil"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/core/fs"
+	"github.com/rcarmo/go-busybox/pkg/core/textutil"
 )
 
 func Run(stdio *core.Stdio, args []string) int {

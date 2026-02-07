@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	"github.com/rcarmo/busybox-wasm/pkg/core/fs"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/core/fs"
 )
 
 type actionType int
@@ -21,21 +21,21 @@ const (
 )
 
 type options struct {
-	followSymlinks bool
-	minDepth       int
-	maxDepth       int
-	namePattern    string
+	followSymlinks  bool
+	minDepth        int
+	maxDepth        int
+	namePattern     string
 	nameInsensitive bool
-	pathPattern    string
+	pathPattern     string
 	pathInsensitive bool
-	typeFilter     rune
-	print0         bool
-	prune          bool
-	sizeFilter     *sizeFilter
-	mtimeFilter    *timeFilter
-	atimeFilter    *timeFilter
-	ctimeFilter    *timeFilter
-	actions        []actionType
+	typeFilter      rune
+	print0          bool
+	prune           bool
+	sizeFilter      *sizeFilter
+	mtimeFilter     *timeFilter
+	atimeFilter     *timeFilter
+	ctimeFilter     *timeFilter
+	actions         []actionType
 }
 
 type sizeFilter struct {
@@ -260,14 +260,15 @@ func match(path string, info os.FileInfo, opts *options) bool {
 	if opts.pathPattern != "" {
 		target := filepath.ToSlash(path)
 		pattern := opts.pathPattern
-		if !strings.HasPrefix(pattern, "*") {
-			pattern = "*" + pattern
-		}
 		if opts.pathInsensitive {
-			if !matchPattern(strings.ToLower(pattern), strings.ToLower(target)) {
-				return false
-			}
-		} else if !matchPattern(pattern, target) {
+			pattern = strings.ToLower(pattern)
+			target = strings.ToLower(target)
+		}
+		if matchPattern(pattern, target) {
+			// matched
+		} else if !strings.HasPrefix(target, "./") && matchPattern(pattern, "./"+target) {
+			// matched with ./ prefix
+		} else {
 			return false
 		}
 	}

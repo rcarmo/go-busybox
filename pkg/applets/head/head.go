@@ -5,8 +5,8 @@ import (
 	"bufio"
 	"io"
 
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	"github.com/rcarmo/busybox-wasm/pkg/core/fs"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/core/fs"
 )
 
 // Run executes the head command with the given arguments.

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("echo ok | ca\x15\x15\x15t")

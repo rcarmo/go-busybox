@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rcarmo/busybox-wasm/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
 // TempFile creates a temp file with content, returns path.
@@ -151,6 +151,14 @@ type AppletTestCase struct {
 	Files      map[string]string              // Files to create in temp dir
 	Setup      func(t *testing.T, dir string) // Optional setup function
 	Check      func(t *testing.T, dir string) // Optional post-run check
+}
+
+// CaptureAndRun runs an applet with captured stdio and returns the output buffers.
+func CaptureAndRun(t *testing.T, run RunApplet, args []string, input string) (*bytes.Buffer, *bytes.Buffer, int) {
+	t.Helper()
+	stdio, out, errBuf := CaptureStdio(input)
+	code := run(stdio, args)
+	return out, errBuf, code
 }
 
 // RunAppletTests runs a slice of parameterized applet test cases.

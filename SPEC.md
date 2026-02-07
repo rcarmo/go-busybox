@@ -58,14 +58,14 @@ busybox-wasm/
 ### Phase 2: Core Utilities
 - [ ] File utilities: `head`, `tail`, `wc`, `sort`, `uniq`, `cut`, `grep`
 - [ ] Directory utilities: `mkdir`, `rmdir`, `pwd`, `find`
-- [ ] Text utilities: `sed`, `awk`, `tr`, `diff`
+- [ ] Text utilities: `sed`, `awk`, `tr`, `diff` (awk parity via goawk)
 - [ ] Implement filesystem sandbox
 
 ### Phase 3: Advanced Features
-- [ ] Shell implementation (`ash` subset)
-- [ ] Process utilities: `ps`, `kill`, `xargs`
-- [ ] Archive utilities: `tar`, `gzip`, `gunzip`
-- [ ] Network utilities (sandboxed and gated via environment variable/CLI options): `wget`, `nc`
+- [ ] Shell implementation (`ash` subset, baseline stub implemented)
+- [ ] Process utilities: `ps`, `kill`, `xargs`, `killall`, `pidof`, `pgrep`, `pkill`, `nice`, `renice`, `uptime`, `who`, `w`, `top`, `time`, `nohup`, `watch`, `setsid`, `start-stop-daemon`, `sleep`, `timeout`, `taskset`, `ionice`, `nproc`, `free`, `logname`, `users`, `whoami` (implemented baseline versions; parity gaps tracked in TODOs/tests)
+- [ ] Archive utilities: `tar`, `gzip`, `gunzip` (tar/gzip/gunzip baseline implemented)
+- [ ] Network utilities (sandboxed and gated via environment variable/CLI options): `wget`, `nc`, `dig` (wget/nc baseline implemented)
 
 ### Phase 4: Hardening
 - [ ] Comprehensive fuzzing campaign
@@ -84,11 +84,19 @@ busybox-wasm/
 - Test across multiple WASM runtimes (TBD)
 
 ### Comparative Testing
+
+### WASM Parity
+- Integration tests run the BusyBox parity matrix against the unified busybox.wasm using wasmtime when available.
+- Deviations are expected for network-facing applets (e.g. `dig`, `ss`) which are skipped in WASM parity runs.
 - Automated test generation from busybox test suite
 - Output diffing with normalization for acceptable variations
 - Exit code and stderr validation
 
 ### Fuzz Testing
+
+### Fuzzing Harness
+- Each applet includes a Go fuzz test (testing.F) with shared fixtures and BusyBox differential comparisons when available.
+- Fuzzing clamps input sizes to keep runs deterministic and bounded.
 - **Input fuzzing**: Random/mutated command-line arguments and stdin
 - **Corpus seeding**: Real-world usage patterns and edge cases
 - **Differential fuzzing**: Compare WASM output vs C binary for same inputs

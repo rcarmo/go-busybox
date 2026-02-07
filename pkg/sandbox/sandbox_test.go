@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rcarmo/busybox-wasm/pkg/sandbox"
+	"github.com/rcarmo/go-busybox/pkg/sandbox"
 )
 
 func TestSandboxDisabled(t *testing.T) {

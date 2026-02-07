@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	sbfs "github.com/rcarmo/busybox-wasm/pkg/core/fs"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	sbfs "github.com/rcarmo/go-busybox/pkg/core/fs"
 	"golang.org/x/term"
 )
 

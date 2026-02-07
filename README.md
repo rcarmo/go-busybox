@@ -10,6 +10,11 @@ This project ports common busybox utilities to Go, targeting WebAssembly (WASI) 
 - **POSIX-compatible utilities** for shell scripting
 - **Comparative testing** against the original C busybox binary
 - **Small binary sizes** (<100KB per applet, <2MB combined)
+- **Envisioned dual use**: a WASM sandboxing tool and a way to extend GoKrazy on embedded devices
+
+## Reference BusyBox
+
+Current parity target: **BusyBox v1.35.0 (Debian 1:1.35.0-4+b7)** as installed on the test host.
 
 ## Quick Start
 
@@ -43,32 +48,30 @@ make test
 ### Phase 2 (In Progress)
 - File: `head`, `tail`, `wc`
 - Directory: `mkdir`, `rmdir`, `pwd`
-- Planned: `sort`, `uniq`, `cut`, `grep`, `find`, `sed`, `awk`, `tr`, `diff`
+- Planned: `sort`, `uniq`, `cut`, `grep`, `find`, `sed`, `tr`, `diff` (awk parity via goawk)
 
 ### Phase 3 (Planned)
-- Shell: `ash` subset
+- Shell: `ash` subset (baseline stub implemented)
 - Process: `ps`, `kill`, `xargs`
-- Archive: `tar`, `gzip`, `gunzip`
-- Network: `wget`, `nc` (sandboxed)
+- Archive: `tar` (tar/gzip/gunzip baseline implemented)
+- Network: `wget`, `nc` (sandboxed; wget/nc baseline implemented), `dig`
 
 ## Usage
 
 ### Native (for development/testing)
 ```bash
 make build
-./_build/echo "Hello, World!"
-./_build/cat file.txt
-./_build/ls -la
-./_build/busybox echo "Hello from unified binary"
+./_build/busybox echo "Hello, World!"
+./_build/busybox cat file.txt
+./_build/busybox ls -la
 ```
 
 ### WASM (requires wasmtime, wasmer, or similar)
 ```bash
 make build-wasm
-wasmtime _build/echo.wasm "Hello, World!"
-wasmtime --dir=. _build/cat.wasm file.txt
-wasmtime --dir=. _build/ls.wasm -la
-wasmtime _build/busybox.wasm echo "Hello from unified binary"
+wasmtime _build/busybox.wasm echo "Hello, World!"
+wasmtime --dir=. _build/busybox.wasm cat file.txt
+wasmtime --dir=. _build/busybox.wasm ls -la
 ```
 
 ## Development
@@ -85,9 +88,9 @@ wasmtime _build/busybox.wasm echo "Hello from unified binary"
 | `make help` | Show all targets |
 | `make setup-toolchain` | Install Go and TinyGo via brew |
 | `make install-dev` | Install linters and security tools |
-| `make build` | Build native binaries |
-| `make build-wasm` | Build WASM binaries |
-| `make build-wasm-optimized` | Build size-optimized WASM |
+| `make build` | Build unified busybox (native) |
+| `make build-wasm` | Build unified busybox (WASM) |
+| `make build-wasm-optimized` | Build size-optimized unified WASM |
 | `make test` | Run tests |
 | `make coverage` | Run tests with coverage |
 | `make lint` | Run golangci-lint |
@@ -148,7 +151,7 @@ When running as WASM, utilities operate within WASI's capability-based security 
 All file operations go through the `pkg/sandbox` package, which can be configured:
 
 ```go
-import "github.com/rcarmo/busybox-wasm/pkg/sandbox"
+import "github.com/rcarmo/go-busybox/pkg/sandbox"
 
 // Initialize sandbox with allowed paths
 sandbox.Init(&sandbox.Config{

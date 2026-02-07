@@ -3,9 +3,9 @@ package uniq_test
 import (
 	"testing"
 
-	"github.com/rcarmo/busybox-wasm/pkg/applets/uniq"
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	"github.com/rcarmo/busybox-wasm/pkg/testutil"
+	"github.com/rcarmo/go-busybox/pkg/applets/uniq"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/testutil"
 )
 
 func TestUniq(t *testing.T) {

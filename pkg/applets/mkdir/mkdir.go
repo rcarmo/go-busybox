@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	"github.com/rcarmo/busybox-wasm/pkg/core/fs"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/core/fs"
 )
 
 // Run executes the mkdir command with the given arguments.
@@ -109,7 +109,11 @@ func mkdirParents(stdio *core.Stdio, dir string, mode os.FileMode, verbose bool)
 			return err
 		}
 		if verbose {
-			stdio.Printf("created directory: '%s'\n", current)
+			out := current
+			if strings.HasSuffix(dir, string(os.PathSeparator)) && current == strings.TrimSuffix(dir, string(os.PathSeparator)) {
+				out = current + string(os.PathSeparator)
+			}
+			stdio.Printf("created directory: '%s'\n", out)
 		}
 	}
 	return nil

@@ -3,9 +3,9 @@ package cat_test
 import (
 	"testing"
 
-	"github.com/rcarmo/busybox-wasm/pkg/applets/cat"
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	"github.com/rcarmo/busybox-wasm/pkg/testutil"
+	"github.com/rcarmo/go-busybox/pkg/applets/cat"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/testutil"
 )
 
 func TestCat(t *testing.T) {

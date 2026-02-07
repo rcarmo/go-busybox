@@ -1,12 +1,13 @@
 package mv_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/rcarmo/busybox-wasm/pkg/applets/mv"
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	"github.com/rcarmo/busybox-wasm/pkg/testutil"
+	"github.com/rcarmo/go-busybox/pkg/applets/mv"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/testutil"
 )
 
 func TestMv(t *testing.T) {
@@ -34,6 +35,22 @@ func TestMv(t *testing.T) {
 			Check: func(t *testing.T, dir string) {
 				testutil.AssertFileContent(t, filepath.Join(dir, "b.txt"), "b")
 				testutil.AssertFileContent(t, filepath.Join(dir, "a.txt"), "a")
+			},
+		},
+		{
+			Name:     "cross_device_fallback",
+			Args:     []string{"a.txt", "b.txt"},
+			WantCode: core.ExitSuccess,
+			Files: map[string]string{
+				"a.txt": "a",
+			},
+			Setup: func(t *testing.T, dir string) {
+				_ = os.Setenv("MV_FORCE_COPY", "1")
+			},
+			Check: func(t *testing.T, dir string) {
+				testutil.AssertFileNotExists(t, filepath.Join(dir, "a.txt"))
+				testutil.AssertFileContent(t, filepath.Join(dir, "b.txt"), "a")
+				_ = os.Unsetenv("MV_FORCE_COPY")
 			},
 		},
 	}

@@ -4,7 +4,7 @@ export PATH := $(HOME)/go/bin:$(PATH)
 .DEFAULT_GOAL := help
 
 # Project configuration
-MODULE_NAME := github.com/rcarmo/busybox-wasm
+MODULE_NAME := github.com/rcarmo/go-busybox
 BUILD_DIR := _build
 COVERAGE_FILE := coverage.out
 WASM_TARGET := wasip1
@@ -16,7 +16,7 @@ GOLANGCI_LINT_VERSION := latest
 GOSEC_VERSION := latest
 
 # Applets to build
-APPLETS := echo cat ls cp mv rm head tail wc find mkdir pwd rmdir busybox
+APPLETS := busybox
 
 .PHONY: help
 help: ## Show targets
@@ -137,25 +137,19 @@ $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
 
 .PHONY: build
-build: check-toolchain $(BUILD_DIR) ## Build all applets as native binaries (for testing)
-	@for applet in $(APPLETS); do \
-		echo "Building $$applet (native)..."; \
-		go build -o $(BUILD_DIR)/$$applet ./cmd/$$applet; \
-	done
+build: check-toolchain $(BUILD_DIR) ## Build unified busybox binary (native)
+	@echo "Building busybox (native)..."
+	@go build -o $(BUILD_DIR)/busybox ./cmd/busybox
 
 .PHONY: build-wasm
-build-wasm: check-toolchain $(BUILD_DIR) ## Build all applets as WASM
-	@for applet in $(APPLETS); do \
-		echo "Building $$applet (WASM)..."; \
-		tinygo build -target=$(WASM_TARGET) -o $(BUILD_DIR)/$$applet.wasm ./cmd/$$applet; \
-	done
+build-wasm: check-toolchain $(BUILD_DIR) ## Build unified busybox binary (WASM)
+	@echo "Building busybox (WASM)..."
+	@tinygo build -target=$(WASM_TARGET) -o $(BUILD_DIR)/busybox.wasm ./cmd/busybox
 
 .PHONY: build-wasm-optimized
 build-wasm-optimized: check-toolchain $(BUILD_DIR) ## Build optimized WASM (smaller size)
-	@for applet in $(APPLETS); do \
-		echo "Building $$applet (WASM optimized)..."; \
-		tinygo build -target=$(WASM_TARGET) -opt=z -no-debug -o $(BUILD_DIR)/$$applet.wasm ./cmd/$$applet; \
-	done
+	@echo "Building busybox (WASM optimized)..."
+	@tinygo build -target=$(WASM_TARGET) -opt=z -no-debug -o $(BUILD_DIR)/busybox.wasm ./cmd/busybox
 
 .PHONY: build-all
 build-all: build build-wasm ## Build both native and WASM
@@ -171,7 +165,7 @@ init: setup-toolchain install-dev ## Initialize project (first-time setup)
 
 .PHONY: run
 run: build ## Build and run a specific applet (usage: make run APPLET=echo ARGS="hello")
-	@$(BUILD_DIR)/$(APPLET) $(ARGS)
+	@$(BUILD_DIR)/busybox $(APPLET) $(ARGS)
 
 .PHONY: run-wasm
 run-wasm: build-wasm ## Run WASM applet with wasmtime (usage: make run-wasm APPLET=echo ARGS="hello")

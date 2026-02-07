@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	"github.com/rcarmo/busybox-wasm/pkg/core/fileutil"
-	"github.com/rcarmo/busybox-wasm/pkg/core/fs"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/core/fileutil"
+	"github.com/rcarmo/go-busybox/pkg/core/fs"
 )
 
 // Options holds cp command options.
@@ -154,6 +154,10 @@ func copyFile(stdio *core.Stdio, src, dest string, srcInfo os.FileInfo, opts *Op
 	if _, err := io.Copy(destFile, srcFile); err != nil {
 		stdio.Errorf("cp: error writing '%s': %v\n", dest, err)
 		return err
+	}
+
+	if opts.Preserve {
+		_ = fs.Chtimes(dest, srcInfo.ModTime(), srcInfo.ModTime())
 	}
 
 	if opts.Verbose {

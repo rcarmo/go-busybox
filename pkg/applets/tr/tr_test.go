@@ -3,9 +3,9 @@ package tr_test
 import (
 	"testing"
 
-	"github.com/rcarmo/busybox-wasm/pkg/applets/tr"
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	"github.com/rcarmo/busybox-wasm/pkg/testutil"
+	"github.com/rcarmo/go-busybox/pkg/applets/tr"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/testutil"
 )
 
 func TestTr(t *testing.T) {

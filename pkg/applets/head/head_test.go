@@ -3,9 +3,9 @@ package head_test
 import (
 	"testing"
 
-	"github.com/rcarmo/busybox-wasm/pkg/applets/head"
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	"github.com/rcarmo/busybox-wasm/pkg/testutil"
+	"github.com/rcarmo/go-busybox/pkg/applets/head"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	"github.com/rcarmo/go-busybox/pkg/testutil"
 )
 
 func TestHead(t *testing.T) {

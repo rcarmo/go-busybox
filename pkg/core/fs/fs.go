@@ -6,8 +6,9 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"time"
 
-	"github.com/rcarmo/busybox-wasm/pkg/sandbox"
+	"github.com/rcarmo/go-busybox/pkg/sandbox"
 )
 
 // Open opens a file for reading.
@@ -116,6 +117,11 @@ func CopyFile(src, dst string, preserveMode bool) error {
 
 	_, err = io.Copy(dstFile, srcFile)
 	return err
+}
+
+// Chtimes updates atime/mtime for a path.
+func Chtimes(path string, atime time.Time, mtime time.Time) error {
+	return os.Chtimes(path, atime, mtime)
 }
 
 // CopyDir copies a directory recursively.

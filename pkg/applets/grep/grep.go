@@ -7,8 +7,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/rcarmo/busybox-wasm/pkg/core"
-	corefs "github.com/rcarmo/busybox-wasm/pkg/core/fs"
+	"github.com/rcarmo/go-busybox/pkg/core"
+	corefs "github.com/rcarmo/go-busybox/pkg/core/fs"
 )
 
 type grepOptions struct {
