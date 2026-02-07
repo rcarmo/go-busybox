@@ -26,7 +26,7 @@ Current parity target: **BusyBox v1.35.0 (Debian 1:1.35.0-4+b7)** as installed o
 
 | Category | Applet | Status | Notes |
 |----------|--------|--------|-------|
-| **Shell** | ash | 🟡 ~70% | Pipelines, redirects, control flow, functions, case/esac, arithmetic, command substitution |
+| **Shell** | ash | 🟡 ~85% | Builtins complete; pipelines, redirects, control flow, functions, case/esac, arithmetic, command substitution |
 | **Text Processing** | awk | 🟢 ~90% | Full parser/evaluator, builtins, printf/sprintf, getline, regex |
 | | sed | 🟢 Complete | Basic and extended regex, in-place editing |
 | | grep | 🟢 Complete | -E, -i, -v, -c, -l, -n, -r flags |
@@ -97,11 +97,11 @@ Current parity target: **BusyBox v1.35.0 (Debian 1:1.35.0-4+b7)** as installed o
 | **Positional Params** | ✅ Complete | `$0`-`$9`, `$@`, `$*`, `$#`, shift |
 | **Special Variables** | ✅ Complete | `$$`, `$?`, `$!` |
 | **File Tests** | ✅ Complete | -e, -f, -d, -r, -w, -x, -s, -L |
-| **Builtins** | ✅ Complete | 25+ builtins including cd, export, eval, read, printf |
-| **Background Jobs** | 🟡 Basic | `&`, wait; no fg/bg/jobs table |
+| **Builtins** | ✅ Complete | 25+ builtins including cd, export, eval, read, printf, alias, getopts, trap |
+| **Background Jobs** | 🟡 Basic | `&`, jobs/fg/wait with minimal tracking |
 | **Here-documents** | 🟡 Partial | Marker detection; content parsing WIP |
 | **Subshells** | 🟡 Basic | `(...)` grouping |
-| **Traps/Signals** | ❌ Missing | trap builtin no-op |
+| **Traps/Signals** | 🟡 Partial | trap builtin stores handlers; signal wiring pending |
 
 ### AWK Feature Details
 
@@ -156,7 +156,7 @@ make test
 - Planned: `sort`, `uniq`, `cut`, `grep`, `find`, `sed`, `tr`, `diff` (awk parity via goawk)
 
 ### Phase 3 (Planned)
-- Shell: `ash` subset (baseline stub implemented)
+- Shell: `ash` implementation largely complete (job control/traps partial)
 - Process: `ps`, `kill`, `xargs`
 - Archive: `tar` (tar/gzip/gunzip baseline implemented)
 - Network: `wget`, `nc` (sandboxed; wget/nc baseline implemented), `dig`
