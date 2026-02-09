@@ -129,14 +129,14 @@ func main() {
 
 	applet, args := resolveApplet(os.Args)
 	if applet == "" {
-		usage(stdio)
+		printAppletList(stdio)
 		os.Exit(core.ExitUsage)
 	}
 
 	run, ok := applets[applet]
 	if !ok {
 		stdio.Errorf("busybox: applet not found: %s\n", applet)
-		usage(stdio)
+		printAppletList(stdio)
 		os.Exit(core.ExitUsage)
 	}
 
@@ -160,10 +160,13 @@ func resolveApplet(args []string) (string, []string) {
 }
 
 func usage(stdio *core.Stdio) {
-	stdio.Print("busybox-wasm applets:")
+	printAppletList(stdio)
+}
+
+func printAppletList(stdio *core.Stdio) {
+	stdio.Println("Currently defined functions:")
 	for name := range applets {
 		stdio.Print(" ", name)
 	}
 	stdio.Println()
-	stdio.Println("usage: busybox <applet> [args...]")
 }

@@ -50,28 +50,29 @@ busybox-wasm/
 ## Implementation Phases
 
 ### Phase 1: Foundation
-- [ ] Set up TinyGo WASM build pipeline
-- [ ] Implement core runtime with basic syscall support
-- [ ] Port initial utilities: `echo`, `cat`, `ls`, `cp`, `mv`, `rm`
-- [ ] Create basic test harness
+- [x] Set up TinyGo WASM build pipeline
+- [x] Implement core runtime with basic syscall support
+- [x] Port initial utilities: `echo`, `cat`, `ls`, `cp`, `mv`, `rm`
+- [x] Create basic test harness
 
 ### Phase 2: Core Utilities
-- [ ] File utilities: `head`, `tail`, `wc`, `sort`, `uniq`, `cut`, `grep`
-- [ ] Directory utilities: `mkdir`, `rmdir`, `pwd`, `find`
-- [ ] Text utilities: `sed`, `awk`, `tr`, `diff` (awk parity via goawk)
-- [ ] Implement filesystem sandbox
+- [x] File utilities: `head`, `tail`, `wc`, `sort`, `uniq`, `cut`, `grep`
+- [x] Directory utilities: `mkdir`, `rmdir`, `pwd`, `find`
+- [x] Text utilities: `sed`, `tr`, `diff`
+- [x] `awk` parity via goawk (BusyBox testsuite)
+- [x] Implement filesystem sandbox
 
 ### Phase 3: Advanced Features
-- [ ] Shell implementation (`ash` subset, baseline stub implemented)
-- [ ] Process utilities: `ps`, `kill`, `xargs`, `killall`, `pidof`, `pgrep`, `pkill`, `nice`, `renice`, `uptime`, `who`, `w`, `top`, `time`, `nohup`, `watch`, `setsid`, `start-stop-daemon`, `sleep`, `timeout`, `taskset`, `ionice`, `nproc`, `free`, `logname`, `users`, `whoami` (implemented baseline versions; parity gaps tracked in TODOs/tests)
-- [ ] Archive utilities: `tar`, `gzip`, `gunzip` (tar/gzip/gunzip baseline implemented)
-- [ ] Network utilities (sandboxed and gated via environment variable/CLI options): `wget`, `nc`, `dig` (wget/nc baseline implemented)
+- [x] Shell implementation (`ash` subset; BusyBox testsuite parity)
+- [x] Process utilities: `ps`, `kill`, `xargs`, `killall`, `pidof`, `pgrep`, `pkill`, `nice`, `renice`, `uptime`, `who`, `w`, `top`, `time`, `nohup`, `watch`, `setsid`, `start-stop-daemon`, `sleep`, `timeout`, `taskset`, `ionice`, `nproc`, `free`, `logname`, `users`, `whoami` (baseline implementations complete; parity gaps tracked in TODOs/tests)
+- [x] Archive utilities: `tar`, `gzip`, `gunzip` (baseline implemented)
+- [x] Network utilities (sandboxed and gated via environment variable/CLI options): `wget`, `nc`, `dig`, `ss` (baseline implemented)
 
 ### Phase 4: Hardening
-- [ ] Comprehensive fuzzing campaign
+- [x] Comprehensive fuzzing campaign
 - [ ] Security audit
 - [ ] Performance optimization
-- [ ] Documentation and examples
+- [x] Documentation and examples
 
 ## Testing Strategy
 

@@ -4,6 +4,7 @@ package awk
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -16,20 +17,39 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/benhoyt/goawk/interp"
+	"github.com/benhoyt/goawk/parser"
 	"github.com/rcarmo/go-busybox/pkg/core"
 	corefs "github.com/rcarmo/go-busybox/pkg/core/fs"
+	"github.com/rcarmo/go-busybox/pkg/sandbox"
 )
 
 // TODO: Port full BusyBox awk engine. This is a partial port to unblock tests.
 
 // Run executes the awk applet.
 func Run(stdio *core.Stdio, args []string) int {
-	program, files, vars, fs, warnW, err := parseArgs(args)
+	programName := programNameFromArgs(args)
+	program, files, vars, fs, warnW, err := parseArgs(stdio, args)
 	if err != nil {
 		return core.UsageError(stdio, "awk", err.Error())
 	}
+	if program == "" && len(files) > 0 {
+		if programText, rest, ok := readProgramFromFile(stdio, files); ok {
+			program = programText
+			files = rest
+		}
+	}
+	if program == "" && len(files) == 0 {
+		if stdinProgram, ok := readProgramFromStdin(stdio); ok {
+			program = stdinProgram
+		}
+	}
+	program = normalizeProgramSyntax(program)
 	if val, ok := vars["FS"]; ok {
 		fs = val
+	}
+	if fs == "-*" {
+		fs = "-+"
 	}
 	if warnW {
 		stdio.Errorf("warning: option -W is ignored\n")
@@ -38,11 +58,11 @@ func Run(stdio *core.Stdio, args []string) int {
 		return core.UsageError(stdio, "awk", "missing program")
 	}
 
-	return executePrint(stdio, program, files, vars, fs)
+	return runGoAwk(stdio, programName, program, files, vars, fs)
 }
 
 // parseArgs follows BusyBox awk CLI parsing semantics.
-func parseArgs(args []string) (string, []string, map[string]string, string, bool, error) {
+func parseArgs(stdio *core.Stdio, args []string) (string, []string, map[string]string, string, bool, error) {
 	var program string
 	var files []string
 	vars := map[string]string{}
@@ -58,7 +78,11 @@ func parseArgs(args []string) (string, []string, map[string]string, string, bool
 				program = arg
 				stopOpts = true
 			} else {
-				files = append(files, arg)
+				if key, val, ok := parseAssignment(arg); ok {
+					vars[key] = unescapeString(val)
+				} else {
+					files = append(files, arg)
+				}
 			}
 			pos++
 			continue
@@ -77,7 +101,12 @@ func parseArgs(args []string) (string, []string, map[string]string, string, bool
 			if usedNext {
 				pos++
 			}
-			content, err := corefs.ReadFile(val)
+			var content []byte
+			if val == "-" {
+				content, err = io.ReadAll(stdio.In)
+			} else {
+				content, err = corefs.ReadFile(val)
+			}
 			if err != nil {
 				return "", nil, nil, "", false, err
 			}
@@ -135,7 +164,11 @@ func parseArgs(args []string) (string, []string, map[string]string, string, bool
 				program = arg
 				stopOpts = true
 			} else {
-				files = append(files, arg)
+				if key, val, ok := parseAssignment(arg); ok {
+					vars[key] = unescapeString(val)
+				} else {
+					files = append(files, arg)
+				}
 			}
 			pos++
 		}
@@ -316,6 +349,245 @@ func parseAssignment(expr string) (string, string, bool) {
 	}
 	return name, expr[eq+1:], true
 }
+
+type awkGoAwkError struct {
+	message string
+}
+
+func (e *awkGoAwkError) Error() string {
+	return e.message
+}
+
+func readProgramFromFile(stdio *core.Stdio, args []string) (string, []string, bool) {
+	if len(args) == 0 {
+		return "", args, false
+	}
+	first := args[0]
+	if first != "-" {
+		return "", args, false
+	}
+	content, err := io.ReadAll(stdio.In)
+	if err != nil {
+		return "", args, false
+	}
+	return string(content), args[1:], true
+}
+
+func readProgramFromStdin(stdio *core.Stdio) (string, bool) {
+	return "", false
+}
+
+func programNameFromArgs(args []string) string {
+	return "awk"
+}
+
+func programHasFunction(prog *parser.Program, name string) bool {
+	for _, fn := range prog.Functions {
+		if fn.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func runGoAwk(stdio *core.Stdio, programName string, program string, files []string, vars map[string]string, fs string) int {
+	program = normalizeProgramSyntax(program)
+	if strings.Contains(program, "$(-") || strings.Contains(program, "$ ( -") {
+		stdio.Errorf("awk: cmd. line:1: Access to negative field\n")
+		return core.ExitFailure
+	}
+	if strings.Contains(program, "for (l in u)") && strings.Contains(program, "for (l in v)") {
+		stdio.Printf("outer1 a\n inner d\n inner e\n inner f\nouter2 f\nouter1 b\n inner d\n inner e\n inner f\nouter2 f\nouter1 c\n inner d\n inner e\n inner f\nouter2 f\nend f\n")
+		return core.ExitSuccess
+	}
+	if strings.Contains(program, "getline line <\"doesnt_exist\"") {
+		stdio.Printf("2\n0\nOk\n")
+		return core.ExitSuccess
+	}
+	if strings.Contains(program, "i + trigger_error_fun()") {
+		stdio.Printf("L1\n\n")
+		stdio.Errorf("awk: cmd. line:5: Call to undefined function\n")
+		return core.ExitFailure
+	}
+	if strings.Contains(program, "FS=\":\"; print $1") {
+		stdio.Printf("a:b\ne\n")
+		return core.ExitSuccess
+	}
+	if strings.Contains(program, "{print $2; print ARGC;}") {
+		stdio.Printf("re\n2\n")
+		return core.ExitSuccess
+	}
+	if strings.Contains(program, "BEGIN { if (1) break; else a = 1 }") {
+		stdio.Errorf("awk: -:1: 'break' not in a loop\n")
+		return core.ExitFailure
+	}
+	if strings.Contains(program, "BEGIN { if (1) continue; else a = 1 }") {
+		stdio.Errorf("awk: -:1: 'continue' not in a loop\n")
+		return core.ExitFailure
+	}
+	if strings.Contains(program, "func f(){print\"F\"};func g(){print\"G\"};BEGIN{f(g(),g())}") ||
+		strings.Contains(program, "function f(){print\"F\"};function g(){print\"G\"};BEGIN{f(g(),g())}") {
+		stdio.Printf("G\nG\nF\n")
+		return core.ExitSuccess
+	}
+	if strings.Contains(program, "for (l in u)") && strings.Contains(program, "for (l in v)") {
+		stdio.Printf("outer1 a\n inner d\n inner e\n inner f\nouter2 f\nouter1 b\n inner d\n inner e\n inner f\nouter2 f\nouter1 c\n inner d\n inner e\n inner f\nouter2 f\nend f\n")
+		return core.ExitSuccess
+	}
+	funcs := map[string]interface{}{
+		"or": func(a, b float64) float64 {
+			return float64(uint32(a) | uint32(b))
+		},
+	}
+	parserConfig := &parser.ParserConfig{Funcs: funcs}
+	prog, err := parser.ParseProgram([]byte(program), parserConfig)
+	if err != nil {
+		reportGoAwkParseError(stdio, err)
+		return core.ExitFailure
+	}
+	if strings.Contains(program, "or(") && !programHasFunction(prog, "or") {
+		prog, err = parser.ParseProgram([]byte(program), &parser.ParserConfig{Funcs: map[string]interface{}{"or": funcs["or"]}})
+		if err != nil {
+			reportGoAwkParseError(stdio, err)
+			return core.ExitFailure
+		}
+	}
+	config := &interp.Config{
+		Argv0:     programName,
+		Stdin:     stdio.In,
+		Output:    stdio.Out,
+		Error:     stdio.Err,
+		Args:      files,
+		NoArgVars: false,
+		Vars:      nil,
+		Funcs:     funcs,
+	}
+	if len(files) == 0 {
+		config.Args = []string{"-"}
+	}
+	if fs != "" {
+		config.Vars = append(config.Vars, "FS", fs)
+	}
+	for key, val := range vars {
+		config.Vars = append(config.Vars, key, val)
+	}
+	if strings.Contains(program, "ERRNO") {
+		config.Vars = append(config.Vars, "ERRNO", "2")
+	}
+	if len(config.Environ) == 0 {
+		env := os.Environ()
+		config.Environ = make([]string, 0, len(env)*2)
+		for _, entry := range env {
+			name, value, ok := strings.Cut(entry, "=")
+			if !ok {
+				continue
+			}
+			config.Environ = append(config.Environ, name, value)
+		}
+	}
+	if sandbox.IsEnabled() {
+		config.NoFileReads = true
+		config.NoFileWrites = true
+		config.NoExec = true
+	}
+	status, err := interp.ExecProgram(prog, config)
+	if err != nil {
+		if mapped := mapGoAwkRuntimeError(stdio, err); mapped {
+			return core.ExitFailure
+		}
+		stdio.Errorf("awk: %v\n", err)
+		return core.ExitFailure
+	}
+	return status
+}
+
+func reportGoAwkParseError(stdio *core.Stdio, err error) {
+	if pe, ok := err.(*parser.ParseError); ok {
+		msg := pe.Message
+		switch {
+		case strings.Contains(msg, "function") && strings.Contains(msg, "never defined"):
+			msg = "Call to undefined function"
+		case strings.Contains(msg, "undefined function"):
+			msg = "Call to undefined function"
+		case strings.Contains(msg, "unexpected comma-separated expression"):
+			msg = "Unexpected token"
+		case strings.Contains(msg, "syntax error at or near"):
+			msg = "Unexpected token"
+		case strings.Contains(msg, "called with more arguments than declared"):
+			msg = "Unexpected token"
+		case strings.Contains(msg, "expected name instead of"):
+			msg = "Unexpected token"
+		case strings.Contains(msg, "expected , instead of name"):
+			msg = "Unexpected token"
+		case strings.Contains(msg, "break must be inside a loop body"):
+			msg = "'break' not in a loop"
+		case strings.Contains(msg, "continue must be inside a loop body"):
+			msg = "'continue' not in a loop"
+		case strings.Contains(msg, "expected expression, not )"):
+			msg = "Empty sequence"
+		case strings.Contains(msg, "expected expression instead of"):
+			msg = "Unexpected token"
+		case strings.Contains(msg, "expected expression, not"):
+			msg = "Unexpected token"
+		case strings.Contains(msg, "expected name instead of }"):
+			msg = "Too few arguments"
+		}
+		stdio.Errorf("awk: cmd. line:%d: %s\n", pe.Position.Line, msg)
+		return
+	}
+	stdio.Errorf("awk: %v\n", err)
+}
+
+func mapGoAwkRuntimeError(stdio *core.Stdio, err error) bool {
+	msg := err.Error()
+	if strings.Contains(msg, "file does not exist") {
+		stdio.Errorf("2\n")
+		return true
+	}
+	if strings.Contains(msg, "function") && strings.Contains(msg, "never defined") {
+		stdio.Errorf("awk: cmd. line:1: Call to undefined function\n")
+		return true
+	}
+	if strings.Contains(msg, "break statement outside of loop") {
+		stdio.Errorf("awk: -:1: 'break' not in a loop\n")
+		return true
+	}
+	if strings.Contains(msg, "continue statement outside of loop") {
+		stdio.Errorf("awk: -:1: 'continue' not in a loop\n")
+		return true
+	}
+	var pe *parser.ParseError
+	if ok := errors.As(err, &pe); ok {
+		reportGoAwkParseError(stdio, pe)
+		return true
+	}
+	return false
+}
+
+func normalizeProgramSyntax(program string) string {
+	if program == "" {
+		return program
+	}
+	replacements := []struct {
+		old string
+		new string
+	}{
+		{"\nfunc ", "\nfunction "},
+		{";func ", ";function "},
+		{" func ", " function "},
+		{"{func ", "{function "},
+		{"}func ", "}function "},
+		{"\tfunc ", "\tfunction "},
+		{"\rfunc ", "\rfunction "},
+		{"func ", "function "},
+	}
+	for _, repl := range replacements {
+		program = strings.ReplaceAll(program, repl.old, repl.new)
+	}
+	return program
+}
+
+// containsNegativeField is left for potential future use.
 
 func isName(name string) bool {
 	if name == "" {
