@@ -41,7 +41,7 @@ func Run(stdio *core.Stdio, args []string) int {
 func printElapsed(stdio *core.Stdio, elapsed time.Duration) {
 	sec := elapsed.Seconds()
 	spec := timeutil.DurationSpec{Duration: elapsed, Unit: "s", Value: sec}
-	stdio.Printf("real\t%s\n", timeutil.FormatDuration(spec))
-	stdio.Printf("user\t0.00\n")
-	stdio.Printf("sys\t0.00\n")
+	stdio.Errorf("real\t%s\n", timeutil.FormatDuration(spec))
+	stdio.Errorf("user\t0.00\n")
+	stdio.Errorf("sys\t0.00\n")
 }

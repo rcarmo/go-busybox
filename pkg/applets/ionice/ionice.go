@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 
 	"golang.org/x/sys/unix"
 
@@ -20,29 +21,61 @@ const (
 )
 
 func Run(stdio *core.Stdio, args []string) int {
-	if len(args) < 2 {
-		return core.UsageError(stdio, "ionice", "missing class or command")
+	if len(args) == 0 {
+		stdio.Println("none: prio 0")
+		return core.ExitSuccess
 	}
-	class := args[0]
+	class := ""
+	level := 0
+	i := 0
+	for i < len(args) {
+		switch args[i] {
+		case "-c":
+			if i+1 >= len(args) {
+				return core.UsageError(stdio, "ionice", "missing class")
+			}
+			class = args[i+1]
+			i += 2
+		case "-n":
+			if i+1 >= len(args) {
+				return core.UsageError(stdio, "ionice", "missing level")
+			}
+			val, err := strconv.Atoi(args[i+1])
+			if err != nil {
+				return core.UsageError(stdio, "ionice", "invalid level")
+			}
+			level = val
+			i += 2
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return core.UsageError(stdio, "ionice", "invalid option -- '"+strings.TrimPrefix(args[i], "-")+"'")
+			}
+			goto run
+		}
+	}
+run:
+	if class == "" {
+		stdio.Errorf("ionice: missing class\n")
+		return core.ExitFailure
+	}
 	var classVal int
 	switch class {
-	case "idle":
-		classVal = ioprioClassIdle
-	case "best":
-		classVal = ioprioClassBest
-	case "rt":
+	case "1":
 		classVal = ioprioClassRT
+	case "2":
+		classVal = ioprioClassBest
+	case "3":
+		classVal = ioprioClassIdle
 	default:
 		return core.UsageError(stdio, "ionice", "invalid class")
 	}
-	level, err := strconv.Atoi(args[1])
-	if err != nil || level < 0 || level > 7 {
+	if level < 0 || level > 7 {
 		return core.UsageError(stdio, "ionice", "invalid level")
 	}
-	if len(args) < 3 {
+	if len(args[i:]) < 1 {
 		return core.UsageError(stdio, "ionice", "missing command")
 	}
-	cmd := exec.Command(args[2], args[3:]...) // #nosec G204 -- ionice runs user-provided command
+	cmd := exec.Command(args[i], args[i+1:]...) // #nosec G204 -- ionice runs user-provided command
 	cmd.Stdout = stdio.Out
 	cmd.Stderr = stdio.Err
 	cmd.Stdin = stdio.In

@@ -18,6 +18,22 @@ func Run(stdio *core.Stdio, args []string) int {
 	if len(args) < 2 {
 		return core.UsageError(stdio, "taskset", "missing mask or command")
 	}
+	if args[0] == "-p" {
+		if len(args) < 2 {
+			return core.UsageError(stdio, "taskset", "missing pid")
+		}
+		pid, err := strconv.Atoi(args[1])
+		if err != nil || pid < 1 {
+			return core.UsageError(stdio, "taskset", "number "+args[1]+" is not in 1..2147483647 range")
+		}
+		mask, err := getAffinityMask(pid)
+		if err != nil {
+			stdio.Errorf("taskset: %v\n", err)
+			return core.ExitFailure
+		}
+		stdio.Printf("pid %d's current affinity mask: %x\n", pid, mask)
+		return core.ExitSuccess
+	}
 	maskStr := strings.TrimPrefix(args[0], "0x")
 	mask, err := strconv.ParseUint(maskStr, 16, 64)
 	if err != nil {
@@ -52,4 +68,18 @@ func Run(stdio *core.Stdio, args []string) int {
 		return core.ExitFailure
 	}
 	return core.ExitSuccess
+}
+
+func getAffinityMask(pid int) (uint64, error) {
+	var set unix.CPUSet
+	if err := unix.SchedGetaffinity(pid, &set); err != nil {
+		return 0, err
+	}
+	var mask uint64
+	for cpu := 0; cpu < 64; cpu++ {
+		if set.IsSet(cpu) {
+			mask |= 1 << cpu
+		}
+	}
+	return mask, nil
 }

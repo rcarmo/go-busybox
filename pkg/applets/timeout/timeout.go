@@ -6,22 +6,50 @@ package timeout
 import (
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/rcarmo/go-busybox/pkg/applets/procutil"
 	"github.com/rcarmo/go-busybox/pkg/core"
 	"github.com/rcarmo/go-busybox/pkg/core/timeutil"
 )
 
 func Run(stdio *core.Stdio, args []string) int {
-	if len(args) < 2 {
+	sig := syscall.SIGTERM
+	if len(args) == 0 {
 		return core.UsageError(stdio, "timeout", "missing duration or command")
 	}
-	spec, err := timeutil.ParseDuration(args[0])
+	i := 0
+	for i < len(args) && strings.HasPrefix(args[i], "-") {
+		switch args[i] {
+		case "-s":
+			if i+1 >= len(args) {
+				return core.UsageError(stdio, "timeout", "missing signal")
+			}
+			parsed, err := procutil.ParseSignal(args[i+1])
+			if err != nil {
+				return core.UsageError(stdio, "timeout", "invalid signal")
+			}
+			sig = parsed
+			i += 2
+		case "-k":
+			if i+1 >= len(args) {
+				return core.UsageError(stdio, "timeout", "missing duration")
+			}
+			i += 2
+		default:
+			return core.UsageError(stdio, "timeout", "invalid option -- '"+strings.TrimPrefix(args[i], "-")+"'")
+		}
+	}
+	if len(args)-i < 2 {
+		return core.UsageError(stdio, "timeout", "missing duration or command")
+	}
+	spec, err := timeutil.ParseDuration(args[i])
 	if err != nil {
 		return core.UsageError(stdio, "timeout", "invalid duration")
 	}
-	cmd := exec.Command(args[1], args[2:]...) // #nosec G204 -- timeout runs user-provided command
+	cmd := exec.Command(args[i+1], args[i+2:]...) // #nosec G204 -- timeout runs user-provided command
 	cmd.Stdout = stdio.Out
 	cmd.Stderr = stdio.Err
 	cmd.Stdin = stdio.In
@@ -43,7 +71,10 @@ func Run(stdio *core.Stdio, args []string) int {
 		}
 		return core.ExitSuccess
 	case <-time.After(spec.Duration):
-		_ = cmd.Process.Signal(syscall.SIGTERM)
+		_ = cmd.Process.Signal(sig)
+		if sig == syscall.SIGTERM {
+			return 143
+		}
 		return core.ExitFailure
 	}
 }

@@ -93,6 +93,73 @@ busybox-wasm/
 - Output diffing with normalization for acceptable variations
 - Exit code and stderr validation
 
+### Per-applet parity coverage
+Coverage sources:
+- BusyBox testsuite: `awk.tests`, `ash.tests`
+- Integration parity matrix: `pkg/integration/busybox_compare_test.go`
+- Others: baseline implementations without parity matrix/tests yet
+
+| Applet | Parity coverage | Notes |
+| --- | --- | --- |
+| `ash` | BusyBox testsuite (`ash.tests`) | Line-edit focused tests. |
+| `awk` | BusyBox testsuite (`awk.tests`) | goawk parity adaptations. |
+| `cat` | Integration parity matrix |  |
+| `cp` | Integration parity matrix |  |
+| `cut` | Integration parity matrix |  |
+| `diff` | Integration parity matrix |  |
+| `dig` | None yet | Network-facing; parity skipped in WASM runs. |
+| `echo` | Integration parity matrix |  |
+| `find` | Integration parity matrix | BusyBox `./` path prefix is normalized. |
+| `free` | Integration parity matrix |  |
+| `grep` | Integration parity matrix |  |
+| `gunzip` | Integration parity matrix |  |
+| `gzip` | Integration parity matrix |  |
+| `head` | Integration parity matrix |  |
+| `ionice` | Integration parity matrix |  |
+| `kill` | Integration parity matrix |  |
+| `killall` | Integration parity matrix |  |
+| `logname` | Integration parity matrix |  |
+| `ls` | Integration parity matrix |  |
+| `mkdir` | Integration parity matrix |  |
+| `mv` | Integration parity matrix |  |
+| `nc` | Integration parity matrix | Loopback-only parity checks. |
+| `nice` | None yet | Baseline implementation only. |
+| `nohup` | None yet | Baseline implementation only. |
+| `nproc` | Integration parity matrix |  |
+| `pgrep` | None yet | Baseline implementation only. |
+| `pidof` | Integration parity matrix |  |
+| `pkill` | None yet | Baseline implementation only. |
+| `ps` | Integration parity matrix | Output normalization applied. |
+| `pwd` | Integration parity matrix | Compared per temporary directory. |
+| `renice` | Integration parity matrix |  |
+| `rm` | Integration parity matrix |  |
+| `rmdir` | Integration parity matrix |  |
+| `sed` | Integration parity matrix |  |
+| `setsid` | Integration parity matrix |  |
+| `sleep` | Integration parity matrix |  |
+| `sort` | Integration parity matrix |  |
+| `ss` | None yet | Network-facing; parity skipped in WASM runs. |
+| `start-stop-daemon` | Integration parity matrix | Skipped in CI parity run (output varies). |
+| `tail` | Integration parity matrix |  |
+| `tar` | Integration parity matrix |  |
+| `taskset` | Integration parity matrix | PID output normalized. |
+| `time` | Integration parity matrix | Output timing varies; excluded from strict compare. |
+| `timeout` | Integration parity matrix |  |
+| `top` | Integration parity matrix | Skipped in CI parity run (output varies). |
+| `tr` | Integration parity matrix |  |
+| `uniq` | Integration parity matrix |  |
+| `uptime` | Integration parity matrix | Output varies across systems. |
+| `users` | None yet | Baseline implementation only. |
+| `w` | Integration parity matrix | Output varies across systems. |
+| `watch` | None yet | No parity tests; output differs from BusyBox. |
+| `wc` | Integration parity matrix |  |
+| `wget` | Integration parity matrix | Loopback-only parity checks. |
+| `who` | Integration parity matrix | Output varies across systems. |
+| `whoami` | Integration parity matrix |  |
+| `xargs` | Integration parity matrix |  |
+
+Parity matrix normalizations: invalid option/missing file exit codes accept BusyBox=1 vs ours=2, `ps` output normalized, `find` strips leading `./`, `pwd` compares per temp directory, `taskset` PID normalized, `wget` stderr ignored, loopback-only `nc`/`wget` checks, and time/uptime/who/w skipped for strict output comparison.
+
 ### Fuzz Testing
 
 ### Fuzzing Harness

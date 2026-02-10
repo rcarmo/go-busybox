@@ -46,31 +46,33 @@ func Run(stdio *core.Stdio, args []string) int {
 		return core.ExitFailure
 	}
 	stdio.Println("              total        used        free      shared  buff/cache   available")
+	memUsed := stats.MemTotal - stats.MemFree - stats.Buffers - stats.Cached - stats.SReclaimable
+	buffCache := stats.Buffers + stats.Cached + stats.SReclaimable
 	if human {
-		stdio.Printf("Mem:%12s%12s%12s%12s%12s%12s\n",
-			formatHuman(stats.MemTotal),
-			formatHuman(stats.MemTotal-stats.MemFree-stats.Buffers-stats.Cached),
-			formatHuman(stats.MemFree),
-			formatHuman(stats.Shmem),
-			formatHuman(stats.Buffers+stats.Cached),
-			formatHuman(stats.MemAvailable),
+		stdio.Printf("Mem:%15s%12s%12s%12s%12s%12s\n",
+			padHuman(formatHuman(stats.MemTotal)),
+			padHuman(formatHuman(memUsed)),
+			padHuman(formatHuman(stats.MemFree)),
+			padHuman(formatHuman(stats.Shmem)),
+			padHuman(formatHuman(buffCache)),
+			padHuman(formatHuman(stats.MemAvailable)),
 		)
-		stdio.Printf("Swap:%12s%12s%12s\n",
-			formatHuman(stats.SwapTotal),
-			formatHuman(stats.SwapTotal-stats.SwapFree),
-			formatHuman(stats.SwapFree),
+		stdio.Printf("Swap:%14s%12s%12s\n",
+			padHuman(formatHuman(stats.SwapTotal)),
+			padHuman(formatHuman(stats.SwapTotal-stats.SwapFree)),
+			padHuman(formatHuman(stats.SwapFree)),
 		)
 		return core.ExitSuccess
 	}
-	stdio.Printf("Mem:%12d%12d%12d%12d%12d%12d\n",
+	stdio.Printf("Mem:%15d%12d%12d%12d%12d%12d\n",
 		convertUnit(stats.MemTotal, scale),
-		convertUnit(stats.MemTotal-stats.MemFree-stats.Buffers-stats.Cached, scale),
+		convertUnit(memUsed, scale),
 		convertUnit(stats.MemFree, scale),
 		convertUnit(stats.Shmem, scale),
-		convertUnit(stats.Buffers+stats.Cached, scale),
+		convertUnit(buffCache, scale),
 		convertUnit(stats.MemAvailable, scale),
 	)
-	stdio.Printf("Swap:%12d%12d%12d\n",
+	stdio.Printf("Swap:%14d%12d%12d\n",
 		convertUnit(stats.SwapTotal, scale),
 		convertUnit(stats.SwapTotal-stats.SwapFree, scale),
 		convertUnit(stats.SwapFree, scale),
@@ -84,6 +86,7 @@ type memInfo struct {
 	MemAvailable int64
 	Buffers      int64
 	Cached       int64
+	SReclaimable int64
 	Shmem        int64
 	SwapTotal    int64
 	SwapFree     int64
@@ -113,6 +116,8 @@ func readMeminfo() (memInfo, error) {
 			info.Buffers = value * 1024
 		case "Cached":
 			info.Cached = value * 1024
+		case "SReclaimable":
+			info.SReclaimable = value * 1024
 		case "Shmem":
 			info.Shmem = value * 1024
 		case "SwapTotal":
@@ -142,4 +147,11 @@ func formatHuman(value int64) string {
 	default:
 		return fmt.Sprintf("%dB", value)
 	}
+}
+
+func padHuman(value string) string {
+	if strings.HasSuffix(value, "B") {
+		return strings.TrimSuffix(value, "B")
+	}
+	return value
 }

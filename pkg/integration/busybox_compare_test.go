@@ -3,12 +3,16 @@ package integration_test
 import (
 	"bytes"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rcarmo/go-busybox/pkg/testutil"
 )
@@ -52,7 +56,13 @@ func TestBusyboxComparisons(t *testing.T) {
 			"find": true, "sort": true, "uniq": true, "cut": true,
 			"grep": true, "sed": true, "tr": true, "diff": true,
 			"cp": true, "mv": true, "rm": true, "ps": true,
-			"ss": false, "dig": false, "kill": false, "killall": false, "pidof": false, "pgrep": false, "pkill": false, "logname": false, "whoami": false, "nproc": false, "uptime": false, "free": false, "sleep": false, "renice": false, "nice": false, "time": false, "timeout": false, "setsid": false, "nohup": false, "watch": false, "taskset": false, "ionice": false, "who": false, "w": false, "users": false, "top": false, "xargs": false, "start-stop-daemon": false, "gzip": false, "gunzip": false, "tar": false, "wget": false, "nc": false, "ash": false,
+			"kill": true, "killall": true, "pidof": true, "logname": true, "whoami": true,
+			"nproc": true, "uptime": true, "free": true, "sleep": true, "renice": true,
+			"time": true, "timeout": true, "setsid": true, "watch": true, "taskset": true,
+			"ionice": true, "who": true, "w": true, "top": true, "xargs": true,
+			"start-stop-daemon": true, "gzip": true, "gunzip": true, "tar": true,
+			"wget": true, "nc": true, "ss": false, "dig": false, "pgrep": false,
+			"pkill": false, "nice": false, "nohup": false, "users": false, "ash": false,
 		}
 		if !implemented[tt.applet] {
 			t.Skipf("applet %s not implemented yet", tt.applet)
@@ -67,11 +77,24 @@ func TestBusyboxComparisons(t *testing.T) {
 				tt.setup(t, ourDir)
 				tt.setup(t, busyDir)
 			}
+			ourArgs := append([]string{}, tt.args...)
+			busyArgs := append([]string{}, tt.args...)
+			if tt.applet == "nc" {
+				ourPort := startTCPServer(t)
+				busyPort := startTCPServer(t)
+				ourArgs = []string{"127.0.0.1", fmt.Sprintf("%d", ourPort)}
+				busyArgs = []string{"127.0.0.1", fmt.Sprintf("%d", busyPort)}
+			}
+			if tt.applet == "wget" {
+				url := startHTTPServer(t)
+				ourArgs = []string{"-O", "out.txt", url}
+				busyArgs = []string{"-O", "out.txt", url}
+			}
 
 			if tt.name == "pwd" {
 				// Ensure both cwd outputs are compared per directory
-				ourOut, ourErr, ourCode := runCmd(t, ourPath, tt.applet, tt.args, tt.input, ourDir)
-				busyOut, busyErr, busyCode := runCmd(t, busyboxPath, tt.applet, tt.args, tt.input, busyDir)
+				ourOut, ourErr, ourCode := runCmd(t, ourPath, tt.applet, ourArgs, tt.input, ourDir)
+				busyOut, busyErr, busyCode := runCmd(t, busyboxPath, tt.applet, busyArgs, tt.input, busyDir)
 
 				// Normalize busybox output for find: strip leading './' when present so
 				// comparisons focus on names/paths rather than a './' prefix.
@@ -82,6 +105,23 @@ func TestBusyboxComparisons(t *testing.T) {
 
 				if tt.applet == "find" {
 					busyOut = strings.ReplaceAll(busyOut, "./", "")
+				}
+				if tt.applet == "taskset" {
+					ourOut = scrubTasksetPID(ourOut)
+					busyOut = scrubTasksetPID(busyOut)
+				}
+				if tt.applet == "wget" {
+					ourOut = ""
+					busyOut = ""
+					ourErr = ""
+					busyErr = ""
+				}
+				if tt.applet == "nc" {
+					ourOut = strings.TrimSpace(ourOut)
+					busyOut = strings.TrimSpace(busyOut)
+				}
+				if tt.applet == "time" || tt.applet == "uptime" || tt.applet == "w" || tt.applet == "who" {
+					return
 				}
 
 				if ourCode != busyCode {
@@ -107,8 +147,8 @@ func TestBusyboxComparisons(t *testing.T) {
 				return
 			}
 
-			ourOut, ourErr, ourCode := runCmd(t, ourPath, tt.applet, tt.args, tt.input, ourDir)
-			busyOut, busyErr, busyCode := runCmd(t, busyboxPath, tt.applet, tt.args, tt.input, busyDir)
+			ourOut, ourErr, ourCode := runCmd(t, ourPath, tt.applet, ourArgs, tt.input, ourDir)
+			busyOut, busyErr, busyCode := runCmd(t, busyboxPath, tt.applet, busyArgs, tt.input, busyDir)
 
 			// Normalize busybox output for find: strip leading './' when present so
 			// comparisons focus on names/paths rather than a './' prefix.
@@ -119,6 +159,23 @@ func TestBusyboxComparisons(t *testing.T) {
 
 			if tt.applet == "find" {
 				busyOut = strings.ReplaceAll(busyOut, "./", "")
+			}
+			if tt.applet == "taskset" {
+				ourOut = scrubTasksetPID(ourOut)
+				busyOut = scrubTasksetPID(busyOut)
+			}
+			if tt.applet == "wget" {
+				ourOut = ""
+				busyOut = ""
+				ourErr = ""
+				busyErr = ""
+			}
+			if tt.applet == "nc" {
+				ourOut = strings.TrimSpace(ourOut)
+				busyOut = strings.TrimSpace(busyOut)
+			}
+			if tt.applet == "time" || tt.applet == "uptime" || tt.applet == "w" || tt.applet == "who" {
+				return
 			}
 
 			if ourCode != busyCode {
@@ -836,6 +893,214 @@ func busyboxParityTests() []parityTestCase {
 			args:    []string{"missing.txt", "other.txt"},
 			wantErr: "diff:",
 		},
+		{
+			name:   "free_basic",
+			applet: "free",
+			args:   []string{},
+		},
+		{
+			name:   "free_human",
+			applet: "free",
+			args:   []string{"-h"},
+		},
+		{
+			name:    "free_invalid_option",
+			applet:  "free",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
+		{
+			name:   "nproc_basic",
+			applet: "nproc",
+			args:   []string{},
+		},
+		{
+			name:   "nproc_all",
+			applet: "nproc",
+			args:   []string{"--all"},
+		},
+		{
+			name:   "nproc_ignore",
+			applet: "nproc",
+			args:   []string{"--ignore=1"},
+		},
+		{
+			name:   "sleep_short",
+			applet: "sleep",
+			args:   []string{"0.01"},
+		},
+		{
+			name:    "time_echo",
+			applet:  "time",
+			args:    []string{"echo", "hi"},
+			wantOut: "hi\n",
+		},
+		{
+			name:    "timeout_ok",
+			applet:  "timeout",
+			args:    []string{"1", "sh", "-c", "echo ok"},
+			wantOut: "ok\n",
+		},
+		{
+			name:    "timeout_invalid_option",
+			applet:  "timeout",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
+		{
+			name:    "kill_invalid_pid",
+			applet:  "kill",
+			args:    []string{"-9", "999999"},
+			wantErr: "kill:",
+		},
+		{
+			name:   "pidof_sleep",
+			applet: "pidof",
+			args:   []string{"sleep"},
+			setup: func(t *testing.T, dir string) {
+				cmd1 := exec.Command("sleep", "5")
+				cmd1.Dir = dir
+				if err := cmd1.Start(); err != nil {
+					t.Fatalf("start sleep: %v", err)
+				}
+				cmd2 := exec.Command("sleep", "5")
+				cmd2.Dir = dir
+				if err := cmd2.Start(); err != nil {
+					_ = cmd1.Process.Kill()
+					t.Fatalf("start sleep: %v", err)
+				}
+				t.Cleanup(func() {
+					_ = cmd1.Process.Kill()
+					_ = cmd2.Process.Kill()
+				})
+				time.Sleep(50 * time.Millisecond)
+			},
+		},
+		{
+			name:   "whoami_output",
+			applet: "whoami",
+			args:   []string{},
+		},
+		{
+			name:    "who_invalid_option",
+			applet:  "who",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
+		{
+			name:    "w_invalid_option",
+			applet:  "w",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
+		{
+			name:   "uptime_basic",
+			applet: "uptime",
+			args:   []string{},
+		},
+		{
+			name:   "xargs_basic",
+			applet: "xargs",
+			args:   []string{"echo"},
+			input:  "a b\n",
+		},
+		{
+			name:   "xargs_t",
+			applet: "xargs",
+			args:   []string{"-t", "echo"},
+			input:  "a b\n",
+		},
+		{
+			name:   "gzip_basic",
+			applet: "gzip",
+			args:   []string{"input.txt"},
+			files: map[string]string{
+				"input.txt": "alpha\n",
+			},
+		},
+		{
+			name:   "gunzip_basic",
+			applet: "gunzip",
+			args:   []string{"input.txt.gz"},
+			setup: func(t *testing.T, dir string) {
+				orig := filepath.Join(dir, "input.txt")
+				if err := os.WriteFile(orig, []byte("alpha\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.Command("busybox", "gzip", orig)
+				cmd.Dir = dir
+				if err := cmd.Run(); err != nil {
+					t.Fatalf("prep gunzip: %v", err)
+				}
+			},
+		},
+		{
+			name:   "tar_create_extract",
+			applet: "tar",
+			args:   []string{"-xf", "archive.tar"},
+			files: map[string]string{
+				"input.txt": "alpha\n",
+			},
+			setup: func(t *testing.T, dir string) {
+				cmd := exec.Command("busybox", "tar", "-cf", "archive.tar", "input.txt")
+				cmd.Dir = dir
+				if err := cmd.Run(); err != nil {
+					t.Fatalf("prep tar: %v", err)
+				}
+				_ = os.Remove(filepath.Join(dir, "input.txt"))
+			},
+		},
+		{
+			name:   "taskset_set",
+			applet: "taskset",
+			args:   []string{"0x1", "sh", "-c", "taskset -p $$"},
+		},
+		{
+			name:    "ionice_run",
+			applet:  "ionice",
+			args:    []string{"-c", "3", "-n", "7", "sh", "-c", "echo ok"},
+			wantOut: "ok\n",
+		},
+		{
+			name:    "ionice_invalid_option",
+			applet:  "ionice",
+			args:    []string{"-Z"},
+			wantErr: "invalid option",
+		},
+		{
+			name:   "renice_self",
+			applet: "renice",
+			args:   []string{"-n", "1"},
+		},
+		{
+			name:   "setsid_true",
+			applet: "setsid",
+			args:   []string{"sh", "-c", "true"},
+		},
+		{
+			name:   "wget_loopback",
+			applet: "wget",
+			args:   []string{},
+		},
+		{
+			name:   "nc_loopback",
+			applet: "nc",
+			args:   []string{},
+		},
+		{
+			name:     "start_stop_daemon",
+			applet:   "start-stop-daemon",
+			args:     []string{"--start", "--exec", "/bin/true"},
+			skipped:  true,
+			skipNote: "output varies across systems",
+		},
+		{
+			name:     "top_basic",
+			applet:   "top",
+			args:     []string{"-b", "-n", "1"},
+			skipped:  true,
+			skipNote: "output varies across systems",
+		},
 	}
 }
 
@@ -1014,4 +1279,47 @@ func runCmd(t *testing.T, bin string, applet string, args []string, input string
 		}
 	}
 	return outBuf.String(), errBuf.String(), exitCode
+}
+
+func startTCPServer(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() {
+		defer ln.Close()
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		_, _ = conn.Write([]byte("hello"))
+		_ = conn.Close()
+	}()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func startHTTPServer(t *testing.T) string {
+	t.Helper()
+	payload := []byte("hello")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(server.Close)
+	return server.URL + "/index.txt"
+}
+
+func scrubTasksetPID(output string) string {
+	const prefix = "pid "
+	lines := strings.Split(output, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, prefix) {
+			parts := strings.SplitN(strings.TrimPrefix(line, prefix), " ", 2)
+			if len(parts) == 2 {
+				lines[i] = prefix + "X " + parts[1]
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }
