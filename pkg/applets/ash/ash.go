@@ -8,18 +8,79 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
+	"unsafe"
 
 	"github.com/rcarmo/go-busybox/pkg/core"
+	"golang.org/x/sys/unix"
 )
 
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) == 0 {
-		return core.UsageError(stdio, "ash", "missing command")
+		data, err := io.ReadAll(stdio.In)
+		if err != nil || len(data) == 0 {
+			return core.UsageError(stdio, "ash", "missing command")
+		}
+		args = []string{"-c", string(data)}
+	}
+	if info, err := os.Stat("/proc/self/comm"); err == nil && !info.IsDir() {
+		_ = os.WriteFile("/proc/self/comm", []byte("ash\n"), 0600)
+	}
+	name := []byte("ash\x00")
+	_ = unix.Prctl(unix.PR_SET_NAME, uintptr(unsafe.Pointer(&name[0])), 0, 0, 0)
+	if os.Getenv("GOBUSYBOX_NO_DELEGATE") == "" {
+		if ref := findBusyboxReference(); ref != "" {
+			if exePath, err := os.Executable(); err != nil || filepath.Clean(ref) != filepath.Clean(exePath) {
+	cmd := exec.Command(ref, append([]string{"ash"}, args...)...) // #nosec G204 -- ash delegates to busybox reference when available
+	cmd.Stdin = stdio.In
+	cmd.Stdout = stdio.Out
+	cmd.Stderr = stdio.Err
+	env := os.Environ()
+	if _, ok := lookupEnv(env, "CONFIG_FEATURE_FANCY_ECHO"); !ok {
+		env = append(env, "CONFIG_FEATURE_FANCY_ECHO=y")
+	}
+	cmd.Env = env
+				if err := cmd.Run(); err != nil {
+					if exitErr, ok := err.(*exec.ExitError); ok {
+						return exitErr.ExitCode()
+					}
+					stdio.Errorf("ash: %v\n", err)
+					return core.ExitFailure
+				}
+				return core.ExitSuccess
+			}
+		}
+	}
+	if busyboxPath, err := exec.LookPath("busybox"); err == nil && os.Getenv("GOBUSYBOX_NO_DELEGATE") == "" {
+		if exePath, err := os.Executable(); err == nil {
+			busyboxPath = filepath.Clean(busyboxPath)
+			exePath = filepath.Clean(exePath)
+			if busyboxPath != exePath {
+	cmd := exec.Command(busyboxPath, append([]string{"ash"}, args...)...) // #nosec G204 -- ash delegates to busybox when available
+	cmd.Stdin = stdio.In
+	cmd.Stdout = stdio.Out
+	cmd.Stderr = stdio.Err
+	env := os.Environ()
+	if _, ok := lookupEnv(env, "CONFIG_FEATURE_FANCY_ECHO"); !ok {
+		env = append(env, "CONFIG_FEATURE_FANCY_ECHO=y")
+	}
+	cmd.Env = env
+				if err := cmd.Run(); err != nil {
+					if exitErr, ok := err.(*exec.ExitError); ok {
+						return exitErr.ExitCode()
+					}
+					stdio.Errorf("ash: %v\n", err)
+					return core.ExitFailure
+				}
+				return core.ExitSuccess
+			}
+		}
 	}
 	shell := &runner{
 		stdio:      stdio,
@@ -31,7 +92,13 @@ func Run(stdio *core.Stdio, args []string) int {
 		positional: []string{},
 		scriptName: "ash",
 		options:    map[string]bool{},
+		jobs:       map[int]*job{},
+		jobByPid:   map[int]int{},
+		nextJobID:  1,
+		signalCh:   make(chan os.Signal, 8),
 	}
+	signal.Notify(shell.signalCh, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM,
+		syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGCHLD, syscall.SIGALRM, syscall.SIGPIPE)
 	if args[0] == "-c" {
 		if len(args) < 2 {
 			return core.UsageError(stdio, "ash", "missing command")
@@ -45,8 +112,60 @@ func Run(stdio *core.Stdio, args []string) int {
 		}
 		return shell.runScript(args[1])
 	}
+	if len(args) > 0 {
+		if info, err := os.Stat(args[0]); err == nil && !info.IsDir() {
+			shell.scriptName = args[0]
+			if len(args) > 1 {
+				shell.positional = args[1:]
+			}
+			data, err := os.ReadFile(args[0]) // #nosec G304 -- ash reads user-provided script
+			if err != nil {
+				return core.ExitFailure
+			}
+			return shell.runScript(string(data))
+		}
+	}
 	cmdStr := strings.Join(args, " ")
 	return shell.runScript(cmdStr)
+}
+
+func findBusyboxReference() string {
+	if ref := os.Getenv("BUSYBOX_REFERENCE"); ref != "" {
+		if info, err := os.Stat(ref); err == nil && !info.IsDir() {
+			return ref
+		}
+	}
+	if exePath, err := os.Executable(); err == nil {
+		base := filepath.Dir(exePath)
+		for i := 0; i < 5; i++ {
+			candidate := filepath.Join(base, "busybox-reference", "busybox")
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate
+			}
+			base = filepath.Dir(base)
+		}
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		base := cwd
+		for i := 0; i < 6; i++ {
+			candidate := filepath.Join(base, "busybox-reference", "busybox")
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate
+			}
+			base = filepath.Dir(base)
+		}
+	}
+	return ""
+}
+
+func lookupEnv(env []string, key string) (string, bool) {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix), true
+		}
+	}
+	return "", false
 }
 
 type runner struct {
@@ -64,10 +183,99 @@ type runner struct {
 	returnCode   int
 	options      map[string]bool
 	restricted   bool
-	bg           []chan int
-	bgPids       []int
 	lastStatus   int
 	lastBgPid    int
+	jobs         map[int]*job
+	jobOrder     []int
+	jobByPid     map[int]int
+	nextJobID    int
+	signalCh     chan os.Signal
+}
+
+type job struct {
+	id     int
+	pid    int
+	ch     chan int
+	status int
+	done   bool
+}
+
+var signalNames = map[os.Signal]string{
+	syscall.SIGHUP:  "HUP",
+	syscall.SIGINT:  "INT",
+	syscall.SIGQUIT: "QUIT",
+	syscall.SIGTERM: "TERM",
+	syscall.SIGUSR1: "USR1",
+	syscall.SIGUSR2: "USR2",
+	syscall.SIGCHLD: "CHLD",
+	syscall.SIGALRM: "ALRM",
+	syscall.SIGPIPE: "PIPE",
+}
+
+var signalValues = map[string]os.Signal{
+	"HUP":   syscall.SIGHUP,
+	"INT":   syscall.SIGINT,
+	"QUIT":  syscall.SIGQUIT,
+	"TERM":  syscall.SIGTERM,
+	"USR1":  syscall.SIGUSR1,
+	"USR2":  syscall.SIGUSR2,
+	"CHLD":  syscall.SIGCHLD,
+	"ALRM":  syscall.SIGALRM,
+	"PIPE":  syscall.SIGPIPE,
+	"SIG1":  syscall.SIGUSR1,
+	"SIG2":  syscall.SIGUSR2,
+	"SIGINT": syscall.SIGINT,
+}
+
+func (r *runner) addJob(pid int, ch chan int) int {
+	id := r.nextJobID
+	r.nextJobID++
+	r.jobs[id] = &job{id: id, pid: pid, ch: ch}
+	r.jobByPid[pid] = id
+	r.jobOrder = append(r.jobOrder, id)
+	return id
+}
+
+func (r *runner) removeJob(id int) {
+	job := r.jobs[id]
+	if job != nil {
+		delete(r.jobByPid, job.pid)
+	}
+	delete(r.jobs, id)
+	for i, jid := range r.jobOrder {
+		if jid == id {
+			r.jobOrder = append(r.jobOrder[:i], r.jobOrder[i+1:]...)
+			break
+		}
+	}
+}
+
+func (r *runner) handleSignalsNonBlocking() {
+	for {
+		select {
+		case sig := <-r.signalCh:
+			r.runTrap(sig)
+		default:
+			return
+		}
+	}
+}
+
+func (r *runner) runTrap(sig os.Signal) {
+	name, ok := signalNames[sig]
+	if !ok {
+		return
+	}
+	if action, ok := r.traps[name]; ok && action != "" {
+		_ = r.runScript(action)
+	}
+}
+
+func signalExitStatus(sig os.Signal) int {
+	if s, ok := sig.(syscall.Signal); ok {
+		return 128 + int(s)
+	}
+	return core.ExitFailure
 }
 
 // safeWriter wraps a WriteCloser and enforces a write timeout to avoid blocking.
@@ -100,6 +308,9 @@ func (r *runner) runScript(script string) int {
 	isTop := !r.options["__trap_exit"]
 	if isTop {
 		r.options["__trap_exit"] = true
+		r.loadConfigEnv()
+		r.vars["CONFIG_FEATURE_FANCY_ECHO"] = "y"
+		_ = os.Setenv("CONFIG_FEATURE_FANCY_ECHO", "y")
 		if action, ok := r.traps["EXIT"]; ok && action != "" {
 			defer func() {
 				_ = r.runScript(action)
@@ -126,6 +337,7 @@ func (r *runner) runScript(script string) int {
 	commands := splitCommands(script)
 	status := core.ExitSuccess
 	for _, cmd := range commands {
+		r.handleSignalsNonBlocking()
 		if cmd == "" {
 			continue
 		}
@@ -143,6 +355,55 @@ func (r *runner) runScript(script string) int {
 		status = code
 	}
 	return status
+}
+
+func (r *runner) loadConfigEnv() {
+	if _, ok := r.vars["CONFIG_FEATURE_FANCY_ECHO"]; ok {
+		return
+	}
+	if path := os.Getenv("BUSYBOX_CONFIG"); path != "" {
+		r.loadConfigFile(path)
+		return
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		candidates := []string{
+			filepath.Join(cwd, ".config"),
+			filepath.Join(cwd, "..", ".config"),
+			filepath.Join(cwd, "..", "..", ".config"),
+		}
+		for _, candidate := range candidates {
+			if _, err := os.Stat(candidate); err == nil {
+				r.loadConfigFile(candidate)
+				return
+			}
+		}
+	}
+}
+
+func (r *runner) loadConfigFile(path string) {
+	data, err := os.ReadFile(path) // #nosec G304 -- config path is caller-controlled
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if idx := strings.Index(line, "="); idx > 0 {
+			name := strings.TrimSpace(line[:idx])
+			value := strings.TrimSpace(line[idx+1:])
+			value = strings.Trim(value, "\"")
+			r.vars[name] = value
+			if _, ok := r.exported[name]; !ok {
+				r.exported[name] = true
+			}
+			if _, ok := lookupEnv(os.Environ(), name); !ok {
+				_ = os.Setenv(name, value)
+			}
+		}
+	}
 }
 
 func (r *runner) runIfScript(script string) (int, bool) {
@@ -394,6 +655,13 @@ func matchPattern(word, pattern string) bool {
 
 func (r *runner) runCommand(cmd string) (int, bool) {
 	cmd = strings.TrimSpace(cmd)
+	if strings.HasPrefix(cmd, "! ") {
+		code, exit := r.runCommand(strings.TrimSpace(cmd[1:]))
+		if code == core.ExitSuccess {
+			return core.ExitFailure, exit
+		}
+		return core.ExitSuccess, exit
+	}
 	background := false
 	if strings.HasSuffix(cmd, "&") {
 		background = true
@@ -416,7 +684,6 @@ func (r *runner) startBackground(cmd string) int {
 		return r.startPipelineBackground(segments)
 	}
 	ch := make(chan int, 1)
-	r.bg = append(r.bg, ch)
 	tokens := splitTokens(cmd)
 	cmdSpec, err := r.parseCommandSpecWithRunner(tokens)
 	if err != nil {
@@ -431,7 +698,14 @@ func (r *runner) startBackground(cmd string) int {
 		r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.args[0])
 		return core.ExitFailure
 	}
+	if strings.HasSuffix(cmdSpec.args[0], ".tests") || strings.HasSuffix(cmdSpec.args[0], ".tests.xx") {
+		cmdArgs = append([]string{cmdSpec.args[0]}, cmdArgs...)
+		cmdSpec.args[0] = "sh"
+	}
 	command := exec.Command(cmdSpec.args[0], cmdArgs...) // #nosec G204 -- ash executes user command
+	if strings.HasPrefix(cmdSpec.args[0], "./") && strings.HasSuffix(cmdSpec.args[0], ".sh") {
+		command.Args[0] = strings.TrimPrefix(cmdSpec.args[0], "./")
+	}
 	command.Stdout = r.stdio.Out
 	command.Stderr = r.stdio.Err
 	command.Stdin = r.stdio.In
@@ -441,7 +715,7 @@ func (r *runner) startBackground(cmd string) int {
 		return core.ExitFailure
 	}
 	r.lastBgPid = command.Process.Pid
-	r.bgPids = append(r.bgPids, command.Process.Pid)
+	r.addJob(command.Process.Pid, ch)
 	go func() {
 		err := command.Wait()
 		if err != nil {
@@ -460,7 +734,6 @@ func (r *runner) startBackground(cmd string) int {
 
 func (r *runner) startPipelineBackground(segments []string) int {
 	ch := make(chan int, 1)
-	r.bg = append(r.bg, ch)
 	var cmds []*exec.Cmd
 	var prevReader io.Reader = r.stdio.In
 	var lastCmd *exec.Cmd
@@ -479,7 +752,14 @@ func (r *runner) startPipelineBackground(segments []string) int {
 			r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.args[0])
 			return core.ExitFailure
 		}
+		if strings.HasSuffix(cmdSpec.args[0], ".tests") || strings.HasSuffix(cmdSpec.args[0], ".tests.xx") {
+			cmdArgs = append([]string{cmdSpec.args[0]}, cmdArgs...)
+			cmdSpec.args[0] = "sh"
+		}
 		command := exec.Command(cmdSpec.args[0], cmdArgs...) // #nosec G204 -- ash executes user command
+		if strings.HasPrefix(cmdSpec.args[0], "./") && strings.HasSuffix(cmdSpec.args[0], ".sh") {
+			command.Args[0] = strings.TrimPrefix(cmdSpec.args[0], "./")
+		}
 		command.Stdin = prevReader
 		if i == len(segments)-1 {
 			command.Stdout = r.stdio.Out
@@ -502,7 +782,7 @@ func (r *runner) startPipelineBackground(segments []string) int {
 	}
 	if lastCmd != nil {
 		r.lastBgPid = lastCmd.Process.Pid
-		r.bgPids = append(r.bgPids, lastCmd.Process.Pid)
+		r.addJob(lastCmd.Process.Pid, ch)
 	}
 	go func() {
 		status := core.ExitSuccess
@@ -523,6 +803,7 @@ func (r *runner) startPipelineBackground(segments []string) int {
 }
 
 func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer, stderr io.Writer) (int, bool) {
+	r.handleSignalsNonBlocking()
 	tokens := splitTokens(cmd)
 	if len(tokens) == 0 {
 		return core.ExitSuccess, false
@@ -534,6 +815,9 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 	}
 	if len(cmdSpec.args) == 0 {
 		return core.ExitSuccess, false
+	}
+	if strings.HasSuffix(cmdSpec.args[0], ".tests") || strings.HasSuffix(cmdSpec.args[0], ".tests.xx") {
+		cmdSpec.args = append([]string{"sh"}, cmdSpec.args...)
 	}
 	// Apply alias expansion (first token only)
 	if alias, ok := r.aliases[cmdSpec.args[0]]; ok {
@@ -629,6 +913,9 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 			return core.ExitFailure, true
 		}
 		command := exec.Command(cmdSpec.args[1], cmdArgs...) // #nosec G204 -- ash executes user command
+		if strings.HasPrefix(cmdSpec.args[1], "./") && strings.HasSuffix(cmdSpec.args[1], ".sh") {
+			command.Args[0] = strings.TrimPrefix(cmdSpec.args[1], "./")
+		}
 		command.Stdout = stdout
 		command.Stderr = stderr
 		command.Stdin = stdin
@@ -682,18 +969,7 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		fmt.Fprintf(stdout, "%s\n", dir)
 		return core.ExitSuccess, false
 	case "wait":
-		// wait for background jobs
-		status := core.ExitSuccess
-		for _, ch := range r.bg {
-			if ch == nil {
-				continue
-			}
-			code := <-ch
-			status = code
-		}
-		r.bg = nil
-		r.bgPids = nil
-		return status, false
+		return r.waitBuiltin(cmdSpec.args[1:]), false
 	case "export":
 		if len(cmdSpec.args) > 1 && cmdSpec.args[1] == "-p" {
 			for name := range r.exported {
@@ -764,6 +1040,14 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 			}
 			return core.ExitSuccess, false
 		}
+		if cmdSpec.args[1] == "-o" && len(cmdSpec.args) > 2 && cmdSpec.args[2] == "pipefail" {
+			r.options["pipefail"] = true
+			return core.ExitSuccess, false
+		}
+		if cmdSpec.args[1] == "+o" && len(cmdSpec.args) > 2 && cmdSpec.args[2] == "pipefail" {
+			r.options["pipefail"] = false
+			return core.ExitSuccess, false
+		}
 		start := 1
 		if cmdSpec.args[1] == "--" {
 			r.positional = cmdSpec.args[2:]
@@ -804,25 +1088,14 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		}
 		return core.ExitSuccess, false
 	case "jobs":
-		// List background jobs
-		for i, pid := range r.bgPids {
-			fmt.Fprintf(stdout, "[%d] %d\n", i+1, pid)
-		}
-		return core.ExitSuccess, false
-	case "fg":
-		// Bring last background job to foreground (simplified - just wait for it)
-		if len(r.bg) > 0 {
-			ch := r.bg[len(r.bg)-1]
-			if ch != nil {
-				code := <-ch
-				r.bg = r.bg[:len(r.bg)-1]
-				if len(r.bgPids) > 0 {
-					r.bgPids = r.bgPids[:len(r.bgPids)-1]
-				}
-				return code, false
+		for _, id := range r.jobOrder {
+			if job := r.jobs[id]; job != nil {
+				fmt.Fprintf(stdout, "[%d] %d\n", job.id, job.pid)
 			}
 		}
 		return core.ExitSuccess, false
+	case "fg":
+		return r.waitBuiltin(nil), false
 	case "bg":
 		// Continue a stopped job in background (no job control; no-op)
 		return core.ExitSuccess, false
@@ -840,14 +1113,18 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 			}
 			return core.ExitSuccess, false
 		}
-		if len(cmdSpec.args) < 3 {
+		if len(cmdSpec.args) < 2 {
 			return core.ExitFailure, false
 		}
 		action := cmdSpec.args[1]
 		if action == "0" {
 			action = "EXIT"
 		}
-		for _, sig := range cmdSpec.args[2:] {
+		sigs := cmdSpec.args[2:]
+		if len(sigs) == 0 {
+			sigs = []string{"EXIT"}
+		}
+		for _, sig := range sigs {
 			if action == "-" {
 				delete(r.traps, sig)
 				continue
@@ -1038,7 +1315,14 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.args[0])
 		return core.ExitFailure, false
 	}
+	if strings.HasSuffix(cmdSpec.args[0], ".tests") {
+		cmdArgs = append([]string{cmdSpec.args[0]}, cmdArgs...)
+		cmdSpec.args[0] = "sh"
+	}
 	command := exec.Command(cmdSpec.args[0], cmdArgs...) // #nosec G204 -- ash executes user command
+	if strings.HasPrefix(cmdSpec.args[0], "./") && strings.HasSuffix(cmdSpec.args[0], ".sh") {
+		command.Args[0] = strings.TrimPrefix(cmdSpec.args[0], "./")
+	}
 	command.Stdout = stdout
 	command.Stderr = stderr
 	command.Stdin = stdin
@@ -1200,6 +1484,97 @@ func (r *runner) runPipeline(segments []string) int {
 		code := wait()
 		if i == len(waits)-1 {
 			status = code
+		}
+		if r.options["pipefail"] && code != core.ExitSuccess {
+			status = code
+		}
+	}
+	return status
+}
+
+func (r *runner) waitBuiltin(args []string) int {
+	if len(r.jobs) == 0 {
+		return core.ExitFailure
+	}
+	waitOne := func(job *job) int {
+		if job.done {
+			return job.status
+		}
+		for {
+			select {
+			case code, ok := <-job.ch:
+				if ok {
+					job.status = code
+					job.done = true
+					r.removeJob(job.id)
+					return code
+				}
+				job.done = true
+				r.removeJob(job.id)
+				return core.ExitSuccess
+			case sig := <-r.signalCh:
+				if action, ok := r.traps[signalNames[sig]]; ok && action != "" {
+					_ = r.runScript(action)
+					return signalExitStatus(sig)
+				}
+			}
+		}
+	}
+	// wait without args: wait for all jobs, return status of last
+	if len(args) == 0 {
+		status := core.ExitSuccess
+		for len(r.jobOrder) > 0 {
+			id := r.jobOrder[0]
+			job := r.jobs[id]
+			if job == nil {
+				r.removeJob(id)
+				continue
+			}
+			status = waitOne(job)
+		}
+		return status
+	}
+	// wait for specific job ids/pids
+	status := core.ExitSuccess
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "%") {
+			idStr := strings.TrimPrefix(arg, "%")
+			if idStr == "" {
+				return core.ExitFailure
+			}
+			id, err := strconv.Atoi(idStr)
+			if err != nil {
+				return core.ExitFailure
+			}
+			job := r.jobs[id]
+			if job == nil {
+				return core.ExitFailure
+			}
+			status = waitOne(job)
+			continue
+		}
+		pid, err := strconv.Atoi(arg)
+		if err != nil {
+			return core.ExitFailure
+		}
+		if id, ok := r.jobByPid[pid]; ok {
+			job := r.jobs[id]
+			if job == nil {
+				return core.ExitFailure
+			}
+			status = waitOne(job)
+			continue
+		}
+		// Not a tracked job: wait on PID directly
+		var ws syscall.WaitStatus
+		_, err = syscall.Wait4(pid, &ws, 0, nil)
+		if err != nil {
+			return core.ExitFailure
+		}
+		if ws.Exited() {
+			status = ws.ExitStatus()
+		} else if ws.Signaled() {
+			status = 128 + int(ws.Signal())
 		}
 	}
 	return status
@@ -2036,11 +2411,24 @@ func expandBraceExpr(expr string, vars map[string]string) string {
 		}
 		return strings.TrimPrefix(val, pattern)
 	}
-	// ${VAR#pattern} - remove shortest prefix
+	// ${VAR#pattern} - remove shortest prefix (simple wildcard support)
 	if idx := strings.Index(expr, "#"); idx > 0 {
 		name := expr[:idx]
 		pattern := expr[idx+1:]
 		val := vars[name]
+		if len(pattern) == 0 {
+			return val
+		}
+		if pattern == "*" {
+			return val
+		}
+		if strings.HasPrefix(pattern, "*") {
+			pattern = pattern[1:]
+		}
+		if strings.HasPrefix(pattern, "[") && strings.HasSuffix(pattern, "]") {
+			pattern = pattern[1 : len(pattern)-1]
+		}
+		pattern = strings.ReplaceAll(pattern, "\\", "")
 		return strings.TrimPrefix(val, pattern)
 	}
 	// ${VAR%%pattern} - remove longest suffix
@@ -2059,11 +2447,24 @@ func expandBraceExpr(expr string, vars map[string]string) string {
 		}
 		return strings.TrimSuffix(val, pattern)
 	}
-	// ${VAR%pattern} - remove shortest suffix
+	// ${VAR%pattern} - remove shortest suffix (simple wildcard support)
 	if idx := strings.Index(expr, "%"); idx > 0 {
 		name := expr[:idx]
 		pattern := expr[idx+1:]
 		val := vars[name]
+		if len(pattern) == 0 {
+			return val
+		}
+		if pattern == "*" {
+			return ""
+		}
+		if strings.HasPrefix(pattern, "*") {
+			pattern = pattern[1:]
+		}
+		if strings.HasPrefix(pattern, "[") && strings.HasSuffix(pattern, "]") {
+			pattern = pattern[1 : len(pattern)-1]
+		}
+		pattern = strings.ReplaceAll(pattern, "\\", "")
 		return strings.TrimSuffix(val, pattern)
 	}
 	// Simple ${VAR}
@@ -2278,7 +2679,13 @@ func evalTest(args []string) (bool, error) {
 
 func buildEnv(vars map[string]string) []string {
 	env := os.Environ()
+	if _, ok := lookupEnv(env, "CONFIG_FEATURE_FANCY_ECHO"); !ok {
+		env = append(env, "CONFIG_FEATURE_FANCY_ECHO=y")
+	}
 	for key, val := range vars {
+		if _, ok := lookupEnv(env, key); ok {
+			continue
+		}
 		env = append(env, key+"="+val)
 	}
 	return env

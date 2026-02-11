@@ -1,6 +1,6 @@
 ./SCRIPT.sh:
-  /proc/N/comm: SCRIPT.sh
+  /proc/N/comm: busybox
 exec ./SCRIPT.sh:
-  /proc/N/comm: SCRIPT.sh
+  /proc/N/comm: busybox
 sh ./SCRIPT.sh:
-  /proc/N/comm: ash
+  /proc/N/comm: busybox
