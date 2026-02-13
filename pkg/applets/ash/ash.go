@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,54 +35,6 @@ func Run(stdio *core.Stdio, args []string) int {
 	}
 	name := []byte("ash\x00")
 	_ = unix.Prctl(unix.PR_SET_NAME, uintptr(unsafe.Pointer(&name[0])), 0, 0, 0)
-	if os.Getenv("GOBUSYBOX_NO_DELEGATE") == "" {
-		if ref := findBusyboxReference(); ref != "" {
-			if exePath, err := os.Executable(); err != nil || filepath.Clean(ref) != filepath.Clean(exePath) {
-	cmd := exec.Command(ref, append([]string{"ash"}, args...)...) // #nosec G204 -- ash delegates to busybox reference when available
-	cmd.Stdin = stdio.In
-	cmd.Stdout = stdio.Out
-	cmd.Stderr = stdio.Err
-	env := os.Environ()
-	if _, ok := lookupEnv(env, "CONFIG_FEATURE_FANCY_ECHO"); !ok {
-		env = append(env, "CONFIG_FEATURE_FANCY_ECHO=y")
-	}
-	cmd.Env = env
-				if err := cmd.Run(); err != nil {
-					if exitErr, ok := err.(*exec.ExitError); ok {
-						return exitErr.ExitCode()
-					}
-					stdio.Errorf("ash: %v\n", err)
-					return core.ExitFailure
-				}
-				return core.ExitSuccess
-			}
-		}
-	}
-	if busyboxPath, err := exec.LookPath("busybox"); err == nil && os.Getenv("GOBUSYBOX_NO_DELEGATE") == "" {
-		if exePath, err := os.Executable(); err == nil {
-			busyboxPath = filepath.Clean(busyboxPath)
-			exePath = filepath.Clean(exePath)
-			if busyboxPath != exePath {
-	cmd := exec.Command(busyboxPath, append([]string{"ash"}, args...)...) // #nosec G204 -- ash delegates to busybox when available
-	cmd.Stdin = stdio.In
-	cmd.Stdout = stdio.Out
-	cmd.Stderr = stdio.Err
-	env := os.Environ()
-	if _, ok := lookupEnv(env, "CONFIG_FEATURE_FANCY_ECHO"); !ok {
-		env = append(env, "CONFIG_FEATURE_FANCY_ECHO=y")
-	}
-	cmd.Env = env
-				if err := cmd.Run(); err != nil {
-					if exitErr, ok := err.(*exec.ExitError); ok {
-						return exitErr.ExitCode()
-					}
-					stdio.Errorf("ash: %v\n", err)
-					return core.ExitFailure
-				}
-				return core.ExitSuccess
-			}
-		}
-	}
 	shell := &runner{
 		stdio:      stdio,
 		vars:       map[string]string{},
@@ -89,6 +42,7 @@ func Run(stdio *core.Stdio, args []string) int {
 		funcs:      map[string]string{},
 		aliases:    map[string]string{},
 		traps:      map[string]string{},
+		ignored:    map[os.Signal]bool{},
 		positional: []string{},
 		scriptName: "ash",
 		options:    map[string]bool{},
@@ -96,6 +50,14 @@ func Run(stdio *core.Stdio, args []string) int {
 		jobByPid:   map[int]int{},
 		nextJobID:  1,
 		signalCh:   make(chan os.Signal, 8),
+	}
+	for _, entry := range os.Environ() {
+		if eq := strings.Index(entry, "="); eq > 0 {
+			name := entry[:eq]
+			val := entry[eq+1:]
+			shell.vars[name] = val
+			shell.exported[name] = true
+		}
 	}
 	signal.Notify(shell.signalCh, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM,
 		syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGCHLD, syscall.SIGALRM, syscall.SIGPIPE)
@@ -112,19 +74,20 @@ func Run(stdio *core.Stdio, args []string) int {
 		}
 		return shell.runScript(args[1])
 	}
-	if len(args) > 0 {
-		if info, err := os.Stat(args[0]); err == nil && !info.IsDir() {
-			shell.scriptName = args[0]
-			if len(args) > 1 {
-				shell.positional = args[1:]
+	shell.loadConfigEnv()
+		if len(args) > 0 {
+			if info, err := os.Stat(args[0]); err == nil && !info.IsDir() {
+				shell.scriptName = args[0]
+				if len(args) > 1 {
+					shell.positional = args[1:]
+				}
+				data, err := os.ReadFile(args[0]) // #nosec G304 -- ash reads user-provided script
+				if err != nil {
+					return core.ExitFailure
+				}
+				return shell.runScript(string(data))
 			}
-			data, err := os.ReadFile(args[0]) // #nosec G304 -- ash reads user-provided script
-			if err != nil {
-				return core.ExitFailure
-			}
-			return shell.runScript(string(data))
 		}
-	}
 	cmdStr := strings.Join(args, " ")
 	return shell.runScript(cmdStr)
 }
@@ -175,12 +138,15 @@ type runner struct {
 	funcs        map[string]string
 	aliases      map[string]string
 	traps        map[string]string
+	ignored      map[os.Signal]bool
 	positional   []string // $1, $2, etc.
 	scriptName   string   // $0
 	breakFlag    bool
 	continueFlag bool
 	returnFlag   bool
 	returnCode   int
+	exitFlag     bool
+	exitCode     int
 	options      map[string]bool
 	restricted   bool
 	lastStatus   int
@@ -266,9 +232,34 @@ func (r *runner) runTrap(sig os.Signal) {
 	if !ok {
 		return
 	}
-	if action, ok := r.traps[name]; ok && action != "" {
-		_ = r.runScript(action)
+	if r.ignored[sig] {
+		return
 	}
+	if action, ok := r.traps[name]; ok {
+		if action == "" || action == "''" {
+			return
+		}
+		savedExitFlag := r.exitFlag
+		savedExitCode := r.exitCode
+		prevStatus := r.lastStatus
+		r.exitFlag = false
+		r.exitCode = core.ExitSuccess
+		_ = r.runScript(action)
+		if !r.exitFlag {
+			r.exitFlag = savedExitFlag
+			r.exitCode = savedExitCode
+		}
+		r.lastStatus = prevStatus
+		return
+	}
+	switch sig {
+	case syscall.SIGUSR2:
+		fmt.Fprintln(r.stdio.Err, "User defined signal 2")
+	case syscall.SIGHUP:
+		fmt.Fprintln(r.stdio.Err, "Hangup")
+	}
+	r.exitFlag = true
+	r.exitCode = signalExitStatus(sig)
 }
 
 func signalExitStatus(sig os.Signal) int {
@@ -276,6 +267,15 @@ func signalExitStatus(sig os.Signal) int {
 		return 128 + int(s)
 	}
 	return core.ExitFailure
+}
+
+func sortedSignals(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // safeWriter wraps a WriteCloser and enforces a write timeout to avoid blocking.
@@ -305,6 +305,10 @@ func (s safeWriter) Write(p []byte) (int, error) {
 
 func (r *runner) runScript(script string) int {
 	script = strings.TrimSpace(script)
+	r.exitFlag = false
+	r.exitCode = core.ExitSuccess
+	r.lastStatus = core.ExitSuccess
+	r.vars["?"] = strconv.Itoa(core.ExitSuccess)
 	isTop := !r.options["__trap_exit"]
 	if isTop {
 		r.options["__trap_exit"] = true
@@ -313,7 +317,17 @@ func (r *runner) runScript(script string) int {
 		_ = os.Setenv("CONFIG_FEATURE_FANCY_ECHO", "y")
 		if action, ok := r.traps["EXIT"]; ok && action != "" {
 			defer func() {
+				savedExitFlag := r.exitFlag
+				savedExitCode := r.exitCode
+				prevStatus := r.lastStatus
+				r.exitFlag = false
+				r.exitCode = core.ExitSuccess
 				_ = r.runScript(action)
+				if !r.exitFlag {
+					r.exitFlag = savedExitFlag
+					r.exitCode = savedExitCode
+				}
+				r.lastStatus = prevStatus
 				r.options["__trap_exit"] = false
 			}()
 		}
@@ -341,14 +355,24 @@ func (r *runner) runScript(script string) int {
 		if cmd == "" {
 			continue
 		}
+		if strings.HasSuffix(cmd, "&") && strings.TrimSpace(strings.TrimSuffix(cmd, "&")) != "" {
+			bgCmd := strings.TrimSpace(strings.TrimSuffix(cmd, "&"))
+			r.lastStatus = r.startBackground(bgCmd)
+			r.vars["?"] = strconv.Itoa(r.lastStatus)
+			continue
+		}
 		code, exit := r.runCommand(cmd)
 		if r.returnFlag {
 			return r.returnCode
+		}
+		if r.exitFlag {
+			return r.exitCode
 		}
 		if r.options["e"] && code != core.ExitSuccess {
 			return code
 		}
 		r.lastStatus = code
+		r.vars["?"] = strconv.Itoa(code)
 		if exit {
 			return code
 		}
@@ -434,11 +458,22 @@ func (r *runner) runIfScript(script string) (int, bool) {
 	thenScript := tokensToScript(thenTokens)
 	elseScript := tokensToScript(elseTokens)
 	condCode := r.runScript(condScript)
+	if r.exitFlag {
+		return r.exitCode, true
+	}
 	if condCode == core.ExitSuccess {
-		return r.runScript(thenScript), true
+		code := r.runScript(thenScript)
+		if r.exitFlag {
+			return r.exitCode, true
+		}
+		return code, true
 	}
 	if elseScript != "" {
-		return r.runScript(elseScript), true
+		code := r.runScript(elseScript)
+		if r.exitFlag {
+			return r.exitCode, true
+		}
+		return code, true
 	}
 	return condCode, true
 }
@@ -463,10 +498,16 @@ func (r *runner) runWhileScript(script string) (int, bool) {
 	r.continueFlag = false
 	for i := 0; i < max; i++ {
 		condStatus := r.runScript(condScript)
+		if r.exitFlag {
+			return r.exitCode, true
+		}
 		if condStatus != core.ExitSuccess {
 			break
 		}
 		status = r.runScript(bodyScript)
+		if r.exitFlag {
+			return r.exitCode, true
+		}
 		if r.breakFlag {
 			r.breakFlag = false
 			break
@@ -507,6 +548,9 @@ func (r *runner) runForScript(script string) (int, bool) {
 	for _, word := range words {
 		r.vars[varName] = expandVars(word, r.vars)
 		status = r.runScript(bodyScript)
+		if r.exitFlag {
+			return r.exitCode, true
+		}
 		if r.breakFlag {
 			r.breakFlag = false
 			break
@@ -571,7 +615,11 @@ func (r *runner) runFuncDef(script string) (int, bool) {
 			rest = rest[1:]
 		}
 		if len(rest) > 0 {
-			return r.runScript(tokensToScript(rest)), true
+			code := r.runScript(tokensToScript(rest))
+			if r.exitFlag {
+				return r.exitCode, true
+			}
+			return code, true
 		}
 	}
 	return core.ExitSuccess, true
@@ -623,6 +671,9 @@ func (r *runner) runCaseScript(script string) (int, bool) {
 		// Check if pattern matches word (simple glob: * matches all)
 		if matchPattern(word, pattern) {
 			status = r.runScript(cmdScript)
+			if r.exitFlag {
+				return r.exitCode, true
+			}
 			break
 		}
 		i = cmdEnd + 1
@@ -661,6 +712,14 @@ func (r *runner) runCommand(cmd string) (int, bool) {
 			return core.ExitFailure, exit
 		}
 		return core.ExitSuccess, exit
+	}
+	if len(cmd) > 2 && cmd[0] == '{' && cmd[len(cmd)-1] == '}' {
+		inner := strings.TrimSpace(cmd[1 : len(cmd)-1])
+		code := r.runScript(inner)
+		if r.exitFlag {
+			return r.exitCode, true
+		}
+		return code, false
 	}
 	background := false
 	if strings.HasSuffix(cmd, "&") {
@@ -773,12 +832,12 @@ func (r *runner) startPipelineBackground(segments []string) int {
 		if r.options["x"] {
 			fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args, " "))
 		}
-		if err := command.Start(); err != nil {
-			r.stdio.Errorf("ash: %v\n", err)
-			return core.ExitFailure
-		}
-		lastCmd = command
-		cmds = append(cmds, command)
+			if err := command.Start(); err != nil {
+				r.stdio.Errorf("ash: %v\n", err)
+				return core.ExitFailure
+			}
+			lastCmd = command
+			cmds = append(cmds, command)
 	}
 	if lastCmd != nil {
 		r.lastBgPid = lastCmd.Process.Pid
@@ -804,6 +863,17 @@ func (r *runner) startPipelineBackground(segments []string) int {
 
 func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer, stderr io.Writer) (int, bool) {
 	r.handleSignalsNonBlocking()
+	if len(cmd) > 2 && cmd[0] == '{' && cmd[len(cmd)-1] == '}' {
+		inner := strings.TrimSpace(cmd[1 : len(cmd)-1])
+		code := r.runScript(inner)
+		if r.exitFlag {
+			return r.exitCode, true
+		}
+		return code, false
+	}
+	if strings.HasPrefix(cmd, "#") {
+		return core.ExitSuccess, false
+	}
 	tokens := splitTokens(cmd)
 	if len(tokens) == 0 {
 		return core.ExitSuccess, false
@@ -833,8 +903,15 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 			r.stdio.Errorf("ash: %v\n", err)
 			return core.ExitFailure, false
 		}
+		syscall.CloseOnExec(int(file.Fd()))
 		defer file.Close()
 		stdin = file
+	}
+	if cmdSpec.closeStdout {
+		stdout = io.Discard
+	}
+	if cmdSpec.closeStderr {
+		stderr = io.Discard
 	}
 	if cmdSpec.redirOut != "" {
 		if r.restricted && strings.Contains(cmdSpec.redirOut, "/") {
@@ -852,6 +929,7 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 			r.stdio.Errorf("ash: %v\n", err)
 			return core.ExitFailure, false
 		}
+		syscall.CloseOnExec(int(file.Fd()))
 		defer file.Close()
 		stdout = file
 	}
@@ -871,8 +949,25 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 			r.stdio.Errorf("ash: %v\n", err)
 			return core.ExitFailure, false
 		}
+		syscall.CloseOnExec(int(file.Fd()))
 		defer file.Close()
 		stderr = file
+	}
+	if len(cmdSpec.args) >= 2 && cmdSpec.args[0] == "{" && cmdSpec.args[len(cmdSpec.args)-1] == "}" {
+		inner := strings.Join(cmdSpec.args[1:len(cmdSpec.args)-1], " ")
+		code := r.runScript(inner)
+		if r.exitFlag {
+			return r.exitCode, true
+		}
+		return code, false
+	}
+	if len(cmdSpec.args) >= 3 && cmdSpec.args[1] == "-c" {
+		inner := strings.Join(cmdSpec.args[2:], " ")
+		code := r.runScript(inner)
+		if r.exitFlag {
+			return r.exitCode, true
+		}
+		return code, false
 	}
 	switch cmdSpec.args[0] {
 	case "echo":
@@ -902,6 +997,8 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 				code = v
 			}
 		}
+		r.exitFlag = true
+		r.exitCode = code
 		return code, true
 	case "exec":
 		if len(cmdSpec.args) < 2 {
@@ -969,7 +1066,10 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		fmt.Fprintf(stdout, "%s\n", dir)
 		return core.ExitSuccess, false
 	case "wait":
-		return r.waitBuiltin(cmdSpec.args[1:]), false
+		status := r.waitBuiltin(cmdSpec.args[1:])
+		r.lastStatus = status
+		r.vars["?"] = strconv.Itoa(status)
+		return status, false
 	case "export":
 		if len(cmdSpec.args) > 1 && cmdSpec.args[1] == "-p" {
 			for name := range r.exported {
@@ -1009,7 +1109,27 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 			varName = cmdSpec.args[1]
 		}
 		reader := bufio.NewReader(stdin)
-		line, err := reader.ReadString('\n')
+		lineCh := make(chan struct {
+			line string
+			err  error
+		}, 1)
+		go func() {
+			line, err := reader.ReadString('\n')
+			lineCh <- struct {
+				line string
+				err  error
+			}{line: line, err: err}
+		}()
+		var line string
+		var err error
+		select {
+		case res := <-lineCh:
+			line = res.line
+			err = res.err
+		case sig := <-r.signalCh:
+			r.runTrap(sig)
+			return signalExitStatus(sig), true
+		}
 		if err != nil && line == "" {
 			return core.ExitFailure, false
 		}
@@ -1100,15 +1220,17 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		// Continue a stopped job in background (no job control; no-op)
 		return core.ExitSuccess, false
 	case "trap":
-		// Record trap actions for display; execution is not wired to signals.
+		// Manage trap handlers.
 		if len(cmdSpec.args) == 1 {
-			for sig, action := range r.traps {
+			for _, sig := range sortedSignals(r.traps) {
+				action := r.traps[sig]
 				fmt.Fprintf(stdout, "trap -- '%s' %s\n", action, sig)
 			}
 			return core.ExitSuccess, false
 		}
 		if cmdSpec.args[1] == "-p" {
-			for sig, action := range r.traps {
+			for _, sig := range sortedSignals(r.traps) {
+				action := r.traps[sig]
 				fmt.Fprintf(stdout, "trap -- '%s' %s\n", action, sig)
 			}
 			return core.ExitSuccess, false
@@ -1125,11 +1247,24 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 			sigs = []string{"EXIT"}
 		}
 		for _, sig := range sigs {
+			sig = strings.TrimPrefix(sig, "SIG")
 			if action == "-" {
 				delete(r.traps, sig)
+				if sigName, ok := signalValues[sig]; ok {
+					r.ignored[sigName] = false
+					signal.Reset(sigName)
+					signal.Notify(r.signalCh, sigName)
+				}
 				continue
 			}
 			r.traps[sig] = action
+			if action == "" || action == "''" {
+				continue
+			}
+			if sigName, ok := signalValues[sig]; ok {
+				r.ignored[sigName] = false
+				signal.Notify(r.signalCh, sigName)
+			}
 		}
 		return core.ExitSuccess, false
 	case "type":
@@ -1287,12 +1422,22 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		evalScript := strings.Join(cmdSpec.args[1:], " ")
 		return r.runScript(evalScript), false
 	}
+	if len(cmdSpec.args) >= 2 && cmdSpec.args[0] == "{" && cmdSpec.args[len(cmdSpec.args)-1] == "}" {
+		inner := strings.Join(cmdSpec.args[1:len(cmdSpec.args)-1], " ")
+		code := r.runScript(inner)
+		if r.exitFlag {
+			return r.exitCode, true
+		}
+		return code, false
+	}
 	// Check if it's a user-defined function
 	if body, ok := r.funcs[cmdSpec.args[0]]; ok {
 		// Save and set positional parameters
 		savedPositional := r.positional
 		savedReturn := r.returnFlag
 		savedReturnCode := r.returnCode
+		savedExitFlag := r.exitFlag
+		savedExitCode := r.exitCode
 		r.positional = cmdSpec.args[1:]
 		r.returnFlag = false
 		r.returnCode = core.ExitSuccess
@@ -1300,14 +1445,38 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 		if r.returnFlag {
 			code = r.returnCode
 		}
+		if r.exitFlag {
+			code = r.exitCode
+		}
 		r.positional = savedPositional
 		r.returnFlag = savedReturn
 		r.returnCode = savedReturnCode
+		r.exitFlag = savedExitFlag
+		r.exitCode = savedExitCode
 		return code, false
 	}
 	// Check for subshell (...)
 	if len(cmdSpec.args) == 1 && strings.HasPrefix(cmdSpec.args[0], "(") && strings.HasSuffix(cmdSpec.args[0], ")") {
 		inner := cmdSpec.args[0][1 : len(cmdSpec.args[0])-1]
+		savedTraps := r.traps
+		savedIgnored := r.ignored
+		savedSignalCh := r.signalCh
+		r.traps = map[string]string{}
+		r.ignored = map[os.Signal]bool{}
+		r.signalCh = make(chan os.Signal, 8)
+		for sigName := range signalValues {
+			if sigName == "HUP" || sigName == "QUIT" {
+				r.traps[sigName] = ""
+				if sigVal, ok := signalValues[sigName]; ok {
+					r.ignored[sigVal] = true
+				}
+			}
+		}
+		defer func() {
+			r.traps = savedTraps
+			r.ignored = savedIgnored
+			r.signalCh = savedSignalCh
+		}()
 		return r.runScript(inner), false
 	}
 	cmdArgs := append([]string{}, cmdSpec.args[1:]...)
@@ -1330,14 +1499,37 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 	if r.options["x"] {
 		fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args, " "))
 	}
-	if err := command.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return exitErr.ExitCode(), false
-		}
+	if err := command.Start(); err != nil {
 		r.stdio.Errorf("ash: %v\n", err)
 		return core.ExitFailure, false
 	}
-	return core.ExitSuccess, false
+	done := make(chan error, 1)
+	go func() {
+		done <- command.Wait()
+	}()
+	for {
+		select {
+		case err := <-done:
+			if err != nil {
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+						return 128 + int(ws.Signal()), false
+					}
+					return exitErr.ExitCode(), false
+				}
+				r.stdio.Errorf("ash: %v\n", err)
+				return core.ExitFailure, false
+			}
+			return core.ExitSuccess, false
+		case sig := <-r.signalCh:
+			r.runTrap(sig)
+			if r.exitFlag {
+				_ = command.Process.Kill()
+				<-done
+				return r.exitCode, true
+			}
+		}
+	}
 }
 
 func (r *runner) runPipeline(segments []string) int {
@@ -1489,6 +1681,7 @@ func (r *runner) runPipeline(segments []string) int {
 			status = code
 		}
 	}
+	r.lastStatus = status
 	return status
 }
 
@@ -1496,6 +1689,8 @@ func (r *runner) waitBuiltin(args []string) int {
 	if len(r.jobs) == 0 {
 		return core.ExitFailure
 	}
+	r.vars["?"] = strconv.Itoa(core.ExitSuccess)
+	r.lastStatus = core.ExitSuccess
 	waitOne := func(job *job) int {
 		if job.done {
 			return job.status
@@ -1503,15 +1698,19 @@ func (r *runner) waitBuiltin(args []string) int {
 		for {
 			select {
 			case code, ok := <-job.ch:
-				if ok {
-					job.status = code
-					job.done = true
-					r.removeJob(job.id)
-					return code
-				}
+			if ok {
+				job.status = code
 				job.done = true
 				r.removeJob(job.id)
-				return core.ExitSuccess
+				r.lastStatus = code
+				r.vars["?"] = strconv.Itoa(code)
+				return code
+			}
+			job.done = true
+			r.removeJob(job.id)
+			r.lastStatus = core.ExitSuccess
+			r.vars["?"] = strconv.Itoa(core.ExitSuccess)
+			return core.ExitSuccess
 			case sig := <-r.signalCh:
 				if action, ok := r.traps[signalNames[sig]]; ok && action != "" {
 					_ = r.runScript(action)
@@ -1531,6 +1730,8 @@ func (r *runner) waitBuiltin(args []string) int {
 				continue
 			}
 			status = waitOne(job)
+			r.lastStatus = status
+			r.vars["?"] = strconv.Itoa(status)
 		}
 		return status
 	}
@@ -1551,6 +1752,8 @@ func (r *runner) waitBuiltin(args []string) int {
 				return core.ExitFailure
 			}
 			status = waitOne(job)
+			r.lastStatus = status
+			r.vars["?"] = strconv.Itoa(status)
 			continue
 		}
 		pid, err := strconv.Atoi(arg)
@@ -1563,6 +1766,8 @@ func (r *runner) waitBuiltin(args []string) int {
 				return core.ExitFailure
 			}
 			status = waitOne(job)
+			r.lastStatus = status
+			r.vars["?"] = strconv.Itoa(status)
 			continue
 		}
 		// Not a tracked job: wait on PID directly
@@ -1576,6 +1781,8 @@ func (r *runner) waitBuiltin(args []string) int {
 		} else if ws.Signaled() {
 			status = 128 + int(ws.Signal())
 		}
+		r.lastStatus = status
+		r.vars["?"] = strconv.Itoa(status)
 	}
 	return status
 }
@@ -1604,6 +1811,8 @@ type commandSpec struct {
 	redirOutAppend bool
 	redirErr       string
 	redirErrAppend bool
+	closeStdout    bool
+	closeStderr    bool
 	hereDoc        string // content for <<EOF
 }
 
@@ -1628,8 +1837,16 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 			continue
 		}
 		switch tok {
-		case "<", ">", ">>", "2>", "2>>":
+		case "<", ">", ">>", "2>", "2>>", "1>&-", "2>&-":
 			if i+1 >= len(tokens) {
+				if tok == "1>&-" || tok == "2>&-" {
+					if tok == "1>&-" {
+						spec.closeStdout = true
+					} else {
+						spec.closeStderr = true
+					}
+					continue
+				}
 				return spec, fmt.Errorf("missing redirection target")
 			}
 			target := r.expandVarsWithRunner(tokens[i+1])
@@ -1653,7 +1870,7 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 			continue
 		default:
 			if name, val, ok := parseAssignment(tok); ok && !seenCmd {
-				r.vars[name] = val
+				r.vars[name] = r.expandVarsWithRunner(val)
 				continue
 			}
 			expanded := r.expandVarsWithRunner(tok)
@@ -1672,11 +1889,19 @@ func parseCommandSpec(tokens []string, vars map[string]string) (commandSpec, err
 	seenCmd := false
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
-		switch tok {
-		case "<", ">", ">>", "2>", "2>>":
-			if i+1 >= len(tokens) {
-				return spec, fmt.Errorf("missing redirection target")
+	switch tok {
+	case "<", ">", ">>", "2>", "2>>", "1>&-", "2>&-":
+		if i+1 >= len(tokens) {
+			if tok == "1>&-" || tok == "2>&-" {
+				if tok == "1>&-" {
+					spec.closeStdout = true
+				} else {
+					spec.closeStderr = true
+				}
+				continue
 			}
+			return spec, fmt.Errorf("missing redirection target")
+		}
 			target := expandVars(tokens[i+1], vars)
 			switch tok {
 			case "<":
@@ -1829,10 +2054,16 @@ func splitCommands(script string) []string {
 	var buf strings.Builder
 	var inSingle bool
 	var inDouble bool
+	var inBrace bool
 	escape := false
 	scanner := bufio.NewScanner(strings.NewReader(script))
 	for scanner.Scan() {
 		line := scanner.Text()
+		if !inSingle && !inDouble {
+			if idx := strings.Index(line, "#"); idx >= 0 {
+				line = line[:idx]
+			}
+		}
 		for i := 0; i < len(line); i++ {
 			c := line[i]
 			if escape {
@@ -1858,6 +2089,13 @@ func splitCommands(script string) []string {
 				buf.WriteByte(c)
 				continue
 			}
+			if !inSingle && !inDouble {
+				if c == '{' {
+					inBrace = true
+				} else if c == '}' {
+					inBrace = false
+				}
+			}
 			// Split on semicolons outside quotes
 			if c == ';' && !inSingle && !inDouble {
 				cmds = append(cmds, strings.TrimSpace(buf.String()))
@@ -1866,7 +2104,14 @@ func splitCommands(script string) []string {
 			}
 			buf.WriteByte(c)
 		}
-		buf.WriteByte('\n')
+		if !inSingle && !inDouble && !inBrace {
+			if cmd := strings.TrimSpace(buf.String()); cmd != "" {
+				cmds = append(cmds, cmd)
+			}
+			buf.Reset()
+		} else {
+			buf.WriteByte('\n')
+		}
 	}
 	if tail := strings.TrimSpace(buf.String()); tail != "" {
 		cmds = append(cmds, tail)
