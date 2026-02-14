@@ -512,8 +512,15 @@ func (r *runner) runScript(script string) int {
 		}()
 	}
 	commands := splitCommands(script)
+	hereDocLine := 0
+	skipFrom := -1
+	skipTo := -1
 	status := core.ExitSuccess
 	for i := 0; i < len(commands); i++ {
+		if skipFrom >= 0 && i == skipFrom {
+			i = skipTo - 1
+			continue
+		}
 		entry := commands[i]
 		cmd := entry.cmd
 		if aliasTokens := splitTokens(cmd); len(aliasTokens) > 0 {
@@ -521,43 +528,25 @@ func (r *runner) runScript(script string) int {
 				cmd = r.expandAliases(cmd)
 			}
 		}
-		if reqs := extractHereDocRequests(cmd); len(reqs) > 0 {
-			var contents []string
-			j := i + 1
-			for _, req := range reqs {
-				var buf strings.Builder
-				continuation := false
-				for j < len(commands) {
-					line := commands[j].raw
-					if req.stripTabs {
-						line = strings.TrimLeft(line, "\t")
-					}
-					if !continuation && line == req.marker {
-						break
-					}
-					if !req.quoted && strings.HasSuffix(line, "\\") {
-						line = strings.TrimSuffix(line, "\\")
-						buf.WriteString(line)
-						continuation = true
-						j++
-						continue
-					}
-					buf.WriteString(line)
-					buf.WriteByte('\n')
-					continuation = false
-					j++
-				}
-				content := buf.String()
-				if !req.quoted {
-					content = r.expandHereDoc(content)
-				}
-				contents = append(contents, content)
-				if j < len(commands) {
-					j++
-				}
+		if entry.line != hereDocLine {
+			hereDocLine = 0
+			skipFrom = -1
+			skipTo = -1
+		}
+		if hereDocLine == 0 {
+			var reqs []hereDocRequest
+			k := i
+			for k < len(commands) && commands[k].line == entry.line {
+				reqs = append(reqs, extractHereDocRequests(commands[k].cmd)...)
+				k++
 			}
-			r.pendingHereDocs = contents
-			i = j - 1
+			if len(reqs) > 0 {
+				contents, endIdx := r.readHereDocContents(reqs, commands, k)
+				r.pendingHereDocs = contents
+				hereDocLine = entry.line
+				skipFrom = k
+				skipTo = endIdx
+			}
 		}
 		r.currentLine = entry.line + r.lineOffset
 		r.handleSignalsNonBlocking()
@@ -822,6 +811,112 @@ func (r *runner) runIfScript(script string) (int, bool) {
 	return lastCond, true
 }
 
+func (r *runner) withRedirections(spec commandSpec, fn func() (int, bool)) (int, bool) {
+	stdin := r.stdio.In
+	stdout := r.stdio.Out
+	stderr := r.stdio.Err
+	if spec.closeStdout {
+		stdout = io.Discard
+	}
+	if spec.closeStderr {
+		stderr = io.Discard
+	}
+	savedFdReaders := r.fdReaders
+	var closers []io.Closer
+	if len(spec.hereDocs) > 0 {
+		fdReaders := copyFdReaders(savedFdReaders)
+		if fdReaders == nil {
+			fdReaders = make(map[int]*bufio.Reader)
+		}
+		for _, doc := range spec.hereDocs {
+			if doc.fd == 0 {
+				stdin = strings.NewReader(doc.content)
+				continue
+			}
+			fdReaders[doc.fd] = bufio.NewReader(strings.NewReader(doc.content))
+		}
+		r.fdReaders = fdReaders
+	}
+	if strings.HasPrefix(spec.redirIn, "&") {
+		fd, err := strconv.Atoi(strings.TrimPrefix(spec.redirIn, "&"))
+		if err != nil {
+			r.stdio.Errorf("ash: %v\n", err)
+			return core.ExitFailure, false
+		}
+		reader, ok := r.fdReaders[fd]
+		if !ok {
+			r.stdio.Errorf("ash: bad file descriptor\n")
+			return core.ExitFailure, false
+		}
+		stdin = reader
+	} else if spec.redirIn != "" {
+		file, err := os.Open(spec.redirIn)
+		if err != nil {
+			r.stdio.Errorf("ash: %v\n", err)
+			return core.ExitFailure, false
+		}
+		syscall.CloseOnExec(int(file.Fd()))
+		stdin = file
+		closers = append(closers, file)
+	}
+	if spec.redirOut != "" {
+		if spec.redirOut == "&2" {
+			stdout = stderr
+		} else {
+			if r.restricted && strings.Contains(spec.redirOut, "/") {
+				r.stdio.Errorf("ash: restricted: %s\n", spec.redirOut)
+				return core.ExitFailure, false
+			}
+			flags := os.O_CREATE | os.O_WRONLY
+			if spec.redirOutAppend {
+				flags |= os.O_APPEND
+			} else {
+				flags |= os.O_TRUNC
+			}
+			file, err := os.OpenFile(spec.redirOut, flags, 0600) // #nosec G304 -- shell redirection uses user path
+			if err != nil {
+				r.stdio.Errorf("ash: %v\n", err)
+				return core.ExitFailure, false
+			}
+			syscall.CloseOnExec(int(file.Fd()))
+			stdout = file
+			closers = append(closers, file)
+		}
+	}
+	if spec.redirErr != "" {
+		if spec.redirErr == "&1" {
+			stderr = stdout
+		} else if r.restricted && strings.Contains(spec.redirErr, "/") {
+			r.stdio.Errorf("ash: restricted: %s\n", spec.redirErr)
+			return core.ExitFailure, false
+		} else {
+			flags := os.O_CREATE | os.O_WRONLY
+			if spec.redirErrAppend {
+				flags |= os.O_APPEND
+			} else {
+				flags |= os.O_TRUNC
+			}
+			file, err := os.OpenFile(spec.redirErr, flags, 0600) // #nosec G304 -- shell redirection uses user path
+			if err != nil {
+				r.stdio.Errorf("ash: %v\n", err)
+				return core.ExitFailure, false
+			}
+			syscall.CloseOnExec(int(file.Fd()))
+			stderr = file
+			closers = append(closers, file)
+		}
+	}
+	savedStdio := r.stdio
+	r.stdio = &core.Stdio{In: stdin, Out: stdout, Err: stderr}
+	code, exit := fn()
+	r.stdio = savedStdio
+	for _, closer := range closers {
+		_ = closer.Close()
+	}
+	r.fdReaders = savedFdReaders
+	return code, exit
+}
+
 func (r *runner) runWhileScript(script string) (int, bool) {
 	tokens := tokenizeScript(script)
 	if len(tokens) == 0 || tokens[0] != "while" {
@@ -836,45 +931,63 @@ func (r *runner) runWhileScript(script string) (int, bool) {
 	bodyTokens := tokens[doIdx+1 : doneIdx]
 	condScript := tokensToScript(condTokens)
 	bodyScript := tokensToScript(bodyTokens)
-	status := core.ExitSuccess
-	r.loopDepth++
-	defer func() { r.loopDepth-- }()
-	for {
-		condStatus := r.runScript(condScript)
-		if r.exitFlag {
-			return r.exitCode, true
+	loopFn := func() (int, bool) {
+		status := core.ExitSuccess
+		r.loopDepth++
+		defer func() { r.loopDepth-- }()
+		for {
+			condStatus := r.runScript(condScript)
+			if r.exitFlag {
+				return r.exitCode, true
+			}
+			if r.breakCount > 0 {
+				r.breakCount--
+				break
+			}
+			if r.continueCount > 0 {
+				r.continueCount--
+				if r.continueCount == 0 {
+					continue
+				}
+				break
+			}
+			if condStatus != core.ExitSuccess {
+				break
+			}
+			status = r.runScript(bodyScript)
+			if r.exitFlag {
+				return r.exitCode, true
+			}
+			if r.breakCount > 0 {
+				r.breakCount--
+				break
+			}
+			if r.continueCount > 0 {
+				r.continueCount--
+				if r.continueCount == 0 {
+					continue
+				}
+				break
+			}
 		}
-		if r.breakCount > 0 {
-			r.breakCount--
-			break
-		}
-		if r.continueCount > 0 {
-			r.continueCount--
-			if r.continueCount == 0 {
+		return status, true
+	}
+	tailTokens := tokens[doneIdx+1:]
+	if len(tailTokens) > 0 {
+		redirTokens := make([]string, 0, len(tailTokens))
+		for _, tok := range tailTokens {
+			if tok == ";" || tok == "\n" {
 				continue
 			}
-			break
+			redirTokens = append(redirTokens, tok)
 		}
-		if condStatus != core.ExitSuccess {
-			break
-		}
-		status = r.runScript(bodyScript)
-		if r.exitFlag {
-			return r.exitCode, true
-		}
-		if r.breakCount > 0 {
-			r.breakCount--
-			break
-		}
-		if r.continueCount > 0 {
-			r.continueCount--
-			if r.continueCount == 0 {
-				continue
+		if len(redirTokens) > 0 {
+			if spec, err := r.parseCommandSpecWithRunner(redirTokens); err == nil {
+				return r.withRedirections(spec, loopFn)
 			}
-			break
 		}
 	}
-	return status, true
+	return loopFn()
 }
 
 func (r *runner) runUntilScript(script string) (int, bool) {
@@ -891,45 +1004,63 @@ func (r *runner) runUntilScript(script string) (int, bool) {
 	bodyTokens := tokens[doIdx+1 : doneIdx]
 	condScript := tokensToScript(condTokens)
 	bodyScript := tokensToScript(bodyTokens)
-	status := core.ExitSuccess
-	r.loopDepth++
-	defer func() { r.loopDepth-- }()
-	for {
-		condStatus := r.runScript(condScript)
-		if r.exitFlag {
-			return r.exitCode, true
+	loopFn := func() (int, bool) {
+		status := core.ExitSuccess
+		r.loopDepth++
+		defer func() { r.loopDepth-- }()
+		for {
+			condStatus := r.runScript(condScript)
+			if r.exitFlag {
+				return r.exitCode, true
+			}
+			if r.breakCount > 0 {
+				r.breakCount--
+				break
+			}
+			if r.continueCount > 0 {
+				r.continueCount--
+				if r.continueCount == 0 {
+					continue
+				}
+				break
+			}
+			if condStatus == core.ExitSuccess {
+				break
+			}
+			status = r.runScript(bodyScript)
+			if r.exitFlag {
+				return r.exitCode, true
+			}
+			if r.breakCount > 0 {
+				r.breakCount--
+				break
+			}
+			if r.continueCount > 0 {
+				r.continueCount--
+				if r.continueCount == 0 {
+					continue
+				}
+				break
+			}
 		}
-		if r.breakCount > 0 {
-			r.breakCount--
-			break
-		}
-		if r.continueCount > 0 {
-			r.continueCount--
-			if r.continueCount == 0 {
+		return status, true
+	}
+	tailTokens := tokens[doneIdx+1:]
+	if len(tailTokens) > 0 {
+		redirTokens := make([]string, 0, len(tailTokens))
+		for _, tok := range tailTokens {
+			if tok == ";" || tok == "\n" {
 				continue
 			}
-			break
+			redirTokens = append(redirTokens, tok)
 		}
-		if condStatus == core.ExitSuccess {
-			break
-		}
-		status = r.runScript(bodyScript)
-		if r.exitFlag {
-			return r.exitCode, true
-		}
-		if r.breakCount > 0 {
-			r.breakCount--
-			break
-		}
-		if r.continueCount > 0 {
-			r.continueCount--
-			if r.continueCount == 0 {
-				continue
+		if len(redirTokens) > 0 {
+			if spec, err := r.parseCommandSpecWithRunner(redirTokens); err == nil {
+				return r.withRedirections(spec, loopFn)
 			}
-			break
 		}
 	}
-	return status, true
+	return loopFn()
 }
 
 func (r *runner) runForScript(script string) (int, bool) {
@@ -956,28 +1087,46 @@ func (r *runner) runForScript(script string) (int, bool) {
 	}
 	bodyTokens := tokens[doIdx+1 : doneIdx]
 	bodyScript := tokensToScript(bodyTokens)
-	status := core.ExitSuccess
-	r.loopDepth++
-	defer func() { r.loopDepth-- }()
-	for _, word := range words {
-		r.vars[varName] = expandVars(word, r.vars)
-		status = r.runScript(bodyScript)
-		if r.exitFlag {
-			return r.exitCode, true
+	loopFn := func() (int, bool) {
+		status := core.ExitSuccess
+		r.loopDepth++
+		defer func() { r.loopDepth-- }()
+		for _, word := range words {
+			r.vars[varName] = expandVars(word, r.vars)
+			status = r.runScript(bodyScript)
+			if r.exitFlag {
+				return r.exitCode, true
+			}
+			if r.breakCount > 0 {
+				r.breakCount--
+				break
+			}
+			if r.continueCount > 0 {
+				r.continueCount--
+				if r.continueCount == 0 {
+					continue
+				}
+				break
+			}
 		}
-		if r.breakCount > 0 {
-			r.breakCount--
-			break
-		}
-		if r.continueCount > 0 {
-			r.continueCount--
-			if r.continueCount == 0 {
+		return status, true
+	}
+	tailTokens := tokens[doneIdx+1:]
+	if len(tailTokens) > 0 {
+		redirTokens := make([]string, 0, len(tailTokens))
+		for _, tok := range tailTokens {
+			if tok == ";" || tok == "\n" {
 				continue
 			}
-			break
+			redirTokens = append(redirTokens, tok)
+		}
+		if len(redirTokens) > 0 {
+			if spec, err := r.parseCommandSpecWithRunner(redirTokens); err == nil {
+				return r.withRedirections(spec, loopFn)
+			}
 		}
 	}
-	return status, true
+	return loopFn()
 }
 
 // runFuncDef handles function definitions: name() { body }
@@ -1507,6 +1656,25 @@ func (r *runner) startSubshellBackgroundWithStdio(inner string, stdio *core.Stdi
 
 func (r *runner) runCommand(cmd string) (int, bool) {
 	cmd = strings.TrimSpace(cmd)
+	if parts, ops := splitAndOr(cmd); len(ops) > 0 {
+		status, exit := r.runCommand(parts[0])
+		for i, op := range ops {
+			if exit {
+				return status, exit
+			}
+			switch op {
+			case "&&":
+				if status == core.ExitSuccess {
+					status, exit = r.runCommand(parts[i+1])
+				}
+			case "||":
+				if status != core.ExitSuccess {
+					status, exit = r.runCommand(parts[i+1])
+				}
+			}
+		}
+		return status, exit
+	}
 	if strings.HasPrefix(cmd, "! ") {
 		code, exit := r.runCommand(strings.TrimSpace(cmd[1:]))
 		if code == core.ExitSuccess {
@@ -3510,6 +3678,86 @@ func splitPipelines(cmd string) []string {
 	return parts
 }
 
+func splitAndOr(cmd string) ([]string, []string) {
+	var parts []string
+	var ops []string
+	var buf strings.Builder
+	var inSingle bool
+	var inDouble bool
+	escape := false
+	cmdSubDepth := 0
+	arithDepth := 0
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		if escape {
+			buf.WriteByte(c)
+			escape = false
+			continue
+		}
+		if c == '\\' && !inSingle {
+			buf.WriteByte(c)
+			escape = true
+			continue
+		}
+		if c == '\'' && !inDouble {
+			inSingle = !inSingle
+			buf.WriteByte(c)
+			continue
+		}
+		if c == '"' && !inSingle {
+			inDouble = !inDouble
+			buf.WriteByte(c)
+			continue
+		}
+		if !inSingle && c == '$' && i+1 < len(cmd) && cmd[i+1] == '(' {
+			if i+2 < len(cmd) && cmd[i+2] == '(' {
+				buf.WriteString("$((")
+				arithDepth++
+				i += 2
+				continue
+			}
+			buf.WriteString("$(")
+			cmdSubDepth++
+			i++
+			continue
+		}
+		if !inSingle && !inDouble {
+			if arithDepth > 0 && c == ')' && i+1 < len(cmd) && cmd[i+1] == ')' {
+				buf.WriteString("))")
+				arithDepth--
+				i++
+				continue
+			}
+			if cmdSubDepth > 0 && c == ')' {
+				buf.WriteByte(c)
+				cmdSubDepth--
+				continue
+			}
+		}
+		if !inSingle && !inDouble && cmdSubDepth == 0 && arithDepth == 0 {
+			if c == '&' && i+1 < len(cmd) && cmd[i+1] == '&' {
+				parts = append(parts, strings.TrimSpace(buf.String()))
+				ops = append(ops, "&&")
+				buf.Reset()
+				i++
+				continue
+			}
+			if c == '|' && i+1 < len(cmd) && cmd[i+1] == '|' {
+				parts = append(parts, strings.TrimSpace(buf.String()))
+				ops = append(ops, "||")
+				buf.Reset()
+				i++
+				continue
+			}
+		}
+		buf.WriteByte(c)
+	}
+	if buf.Len() > 0 {
+		parts = append(parts, strings.TrimSpace(buf.String()))
+	}
+	return parts, ops
+}
+
 func tokenizeScript(script string) []string {
 	var tokens []string
 	var buf strings.Builder
@@ -4022,6 +4270,44 @@ func extractHereDocRequests(cmd string) []hereDocRequest {
 		}
 	}
 	return reqs
+}
+
+func (r *runner) readHereDocContents(reqs []hereDocRequest, commands []commandEntry, start int) ([]string, int) {
+	contents := make([]string, 0, len(reqs))
+	j := start
+	for _, req := range reqs {
+		var buf strings.Builder
+		continuation := false
+		for j < len(commands) {
+			line := commands[j].raw
+			if req.stripTabs {
+				line = strings.TrimLeft(line, "\t")
+			}
+			if !continuation && line == req.marker {
+				break
+			}
+			if !req.quoted && strings.HasSuffix(line, "\\") {
+				line = strings.TrimSuffix(line, "\\")
+				buf.WriteString(line)
+				continuation = true
+				j++
+				continue
+			}
+			buf.WriteString(line)
+			buf.WriteByte('\n')
+			continuation = false
+			j++
+		}
+		content := buf.String()
+		if !req.quoted {
+			content = r.expandHereDoc(content)
+		}
+		contents = append(contents, content)
+		if j < len(commands) {
+			j++
+		}
+	}
+	return contents, j
 }
 
 func parsePrintfVerbs(format string) []rune {
