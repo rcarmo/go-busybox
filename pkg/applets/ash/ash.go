@@ -1722,7 +1722,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 	}
 	cmd = trimmedCmd
 	trimmed := strings.TrimSpace(cmd)
-	if trimmed != "" && !strings.HasPrefix(trimmed, "{") {
+	if trimmed != "" && !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "(") {
 		cmd = r.expandAliases(cmd)
 	}
 	tokens := splitTokens(cmd)
