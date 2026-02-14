@@ -4303,11 +4303,10 @@ func parseHereDocToken(tok string, next string) (hereDocRequest, bool, bool) {
 	}
 	quoted := false
 	marker := rest
-	if len(rest) >= 2 {
-		if (rest[0] == '\'' && rest[len(rest)-1] == '\'') || (rest[0] == '"' && rest[len(rest)-1] == '"') {
-			quoted = true
-			marker = rest[1 : len(rest)-1]
-		}
+	if strings.ContainsAny(rest, "'\"") {
+		quoted = true
+		marker = strings.ReplaceAll(rest, "'", "")
+		marker = strings.ReplaceAll(marker, "\"", "")
 	}
 	return hereDocRequest{fd: fd, marker: marker, stripTabs: stripTabs, quoted: quoted}, usedNext, true
 }
