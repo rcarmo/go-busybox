@@ -4022,6 +4022,9 @@ func normalizeGlobPattern(pattern string) (string, bool) {
 
 func expandGlobs(pattern string) []string {
 	orig := pattern
+	if strings.ContainsRune(pattern, literalBackslashMarker) {
+		return []string{unescapeGlob(pattern)}
+	}
 	normalized, hasGlob := normalizeGlobPattern(pattern)
 	if !hasGlob {
 		return []string{unescapeGlob(pattern)}
