@@ -263,6 +263,7 @@ type runner struct {
 	pendingSignals  []pendingSignal
 	inSubshell      bool
 	pendingHereDocs []string
+	skipHereDocRead bool
 	fdReaders       map[int]*bufio.Reader
 	readBufs        map[io.Reader]*bufio.Reader
 }
@@ -595,7 +596,7 @@ func (r *runner) runScript(script string) int {
 		}
 		cmdEndIdx = i
 
-		if !isFuncDefCommand(cmd) {
+		if !r.skipHereDocRead && !isFuncDefCommand(cmd) {
 			if entry.line != hereDocLine {
 				hereDocLine = 0
 				skipFrom = -1
@@ -2126,8 +2127,11 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			inner = strings.Join(cmdSpec.args[1:len(cmdSpec.args)-1], " ")
 		}
 		savedStdio := r.stdio
+		savedSkip := r.skipHereDocRead
 		r.stdio = &core.Stdio{In: stdin, Out: stdout, Err: stderr}
+		r.skipHereDocRead = true
 		code := r.runScript(inner)
+		r.skipHereDocRead = savedSkip
 		r.stdio = savedStdio
 		if r.exitFlag {
 			return r.exitCode, true
@@ -2892,8 +2896,11 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			inner = strings.Join(cmdSpec.args[1:len(cmdSpec.args)-1], " ")
 		}
 		savedStdio := r.stdio
+		savedSkip := r.skipHereDocRead
 		r.stdio = &core.Stdio{In: stdin, Out: stdout, Err: stderr}
+		r.skipHereDocRead = true
 		code := r.runScript(inner)
+		r.skipHereDocRead = savedSkip
 		r.stdio = savedStdio
 		if r.exitFlag {
 			return r.exitCode, true
