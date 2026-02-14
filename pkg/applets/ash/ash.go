@@ -1704,44 +1704,51 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		stderr = io.Discard
 	}
 	if cmdSpec.redirOut != "" {
-		if r.restricted && strings.Contains(cmdSpec.redirOut, "/") {
-			r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.redirOut)
-			return core.ExitFailure, false
-		}
-		flags := os.O_CREATE | os.O_WRONLY
-		if cmdSpec.redirOutAppend {
-			flags |= os.O_APPEND
+		if cmdSpec.redirOut == "&2" {
+			stdout = stderr
 		} else {
-			flags |= os.O_TRUNC
+			if r.restricted && strings.Contains(cmdSpec.redirOut, "/") {
+				r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.redirOut)
+				return core.ExitFailure, false
+			}
+			flags := os.O_CREATE | os.O_WRONLY
+			if cmdSpec.redirOutAppend {
+				flags |= os.O_APPEND
+			} else {
+				flags |= os.O_TRUNC
+			}
+			file, err := os.OpenFile(cmdSpec.redirOut, flags, 0600) // #nosec G304 -- shell redirection uses user path
+			if err != nil {
+				r.stdio.Errorf("ash: %v\n", err)
+				return core.ExitFailure, false
+			}
+			syscall.CloseOnExec(int(file.Fd()))
+			defer file.Close()
+			stdout = file
 		}
-		file, err := os.OpenFile(cmdSpec.redirOut, flags, 0600) // #nosec G304 -- shell redirection uses user path
-		if err != nil {
-			r.stdio.Errorf("ash: %v\n", err)
-			return core.ExitFailure, false
-		}
-		syscall.CloseOnExec(int(file.Fd()))
-		defer file.Close()
-		stdout = file
 	}
 	if cmdSpec.redirErr != "" {
-		if r.restricted && strings.Contains(cmdSpec.redirErr, "/") {
+		if cmdSpec.redirErr == "&1" {
+			stderr = stdout
+		} else if r.restricted && strings.Contains(cmdSpec.redirErr, "/") {
 			r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.redirErr)
 			return core.ExitFailure, false
-		}
-		flags := os.O_CREATE | os.O_WRONLY
-		if cmdSpec.redirErrAppend {
-			flags |= os.O_APPEND
 		} else {
-			flags |= os.O_TRUNC
+			flags := os.O_CREATE | os.O_WRONLY
+			if cmdSpec.redirErrAppend {
+				flags |= os.O_APPEND
+			} else {
+				flags |= os.O_TRUNC
+			}
+			file, err := os.OpenFile(cmdSpec.redirErr, flags, 0600) // #nosec G304 -- shell redirection uses user path
+			if err != nil {
+				r.stdio.Errorf("ash: %v\n", err)
+				return core.ExitFailure, false
+			}
+			syscall.CloseOnExec(int(file.Fd()))
+			defer file.Close()
+			stderr = file
 		}
-		file, err := os.OpenFile(cmdSpec.redirErr, flags, 0600) // #nosec G304 -- shell redirection uses user path
-		if err != nil {
-			r.stdio.Errorf("ash: %v\n", err)
-			return core.ExitFailure, false
-		}
-		syscall.CloseOnExec(int(file.Fd()))
-		defer file.Close()
-		stderr = file
 	}
 	if len(cmdSpec.args) >= 2 && cmdSpec.args[0] == "{" && cmdSpec.args[len(cmdSpec.args)-1] == "}" {
 		inner := ""
@@ -3062,6 +3069,12 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 			continue
 		}
 		switch tok {
+		case "2>&1":
+			spec.redirErr = "&1"
+			continue
+		case "1>&2":
+			spec.redirOut = "&2"
+			continue
 		case "<", ">", ">>", "2>", "2>>", "1>&-", "2>&-":
 			if i+1 >= len(tokens) {
 				if tok == "1>&-" || tok == "2>&-" {
@@ -3143,6 +3156,12 @@ func parseCommandSpec(tokens []string, vars map[string]string) (commandSpec, err
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
 		switch tok {
+		case "2>&1":
+			spec.redirErr = "&1"
+			continue
+		case "1>&2":
+			spec.redirOut = "&2"
+			continue
 		case "<", ">", ">>", "2>", "2>>", "1>&-", "2>&-":
 			if i+1 >= len(tokens) {
 				if tok == "1>&-" || tok == "2>&-" {
