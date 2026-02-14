@@ -6083,6 +6083,16 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		vars[name] = defVal
 		return defVal, false
 	}
+	// ${VAR=default}
+	if idx := strings.Index(expr, "="); idx > 0 {
+		name := expr[:idx]
+		defVal := maybeStrip(expr[idx+1:])
+		if val, ok := vars[name]; ok {
+			return val, true
+		}
+		vars[name] = defVal
+		return defVal, false
+	}
 	// ${VAR:+alt}
 	if idx := strings.Index(expr, ":+"); idx > 0 {
 		name := expr[:idx]
