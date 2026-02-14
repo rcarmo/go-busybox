@@ -6326,6 +6326,7 @@ func escapeCommandSubOutput(output string) string {
 }
 
 func restoreCommandSubMarkers(value string) string {
+	value = strings.ReplaceAll(value, string(commandSubBackslashMarker)+string(commandSubDoubleQuoteMarker), string(commandSubDoubleQuoteMarker))
 	replacer := strings.NewReplacer(
 		string(commandSubBackslashMarker), "\\",
 		string(commandSubSingleQuoteMarker), "'",
