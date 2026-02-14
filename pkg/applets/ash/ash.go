@@ -996,6 +996,9 @@ func (r *runner) runWhileScript(script string) (int, bool) {
 		defer func() { r.loopDepth-- }()
 		for {
 			condStatus := r.runScript(condScript)
+			if r.returnFlag {
+				return r.returnCode, true
+			}
 			if r.exitFlag {
 				return r.exitCode, true
 			}
@@ -1014,6 +1017,9 @@ func (r *runner) runWhileScript(script string) (int, bool) {
 				break
 			}
 			status = r.runScript(bodyScript)
+			if r.returnFlag {
+				return r.returnCode, true
+			}
 			if r.exitFlag {
 				return r.exitCode, true
 			}
@@ -1069,6 +1075,9 @@ func (r *runner) runUntilScript(script string) (int, bool) {
 		defer func() { r.loopDepth-- }()
 		for {
 			condStatus := r.runScript(condScript)
+			if r.returnFlag {
+				return r.returnCode, true
+			}
 			if r.exitFlag {
 				return r.exitCode, true
 			}
@@ -1087,6 +1096,9 @@ func (r *runner) runUntilScript(script string) (int, bool) {
 				break
 			}
 			status = r.runScript(bodyScript)
+			if r.returnFlag {
+				return r.returnCode, true
+			}
 			if r.exitFlag {
 				return r.exitCode, true
 			}
@@ -1153,6 +1165,9 @@ func (r *runner) runForScript(script string) (int, bool) {
 		for _, word := range words {
 			r.vars[varName] = expandVars(word, r.vars)
 			status = r.runScript(bodyScript)
+			if r.returnFlag {
+				return r.returnCode, true
+			}
 			if r.exitFlag {
 				return r.exitCode, true
 			}
