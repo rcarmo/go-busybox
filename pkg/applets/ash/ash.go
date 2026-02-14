@@ -3906,6 +3906,7 @@ func unescapeGlob(pattern string) string {
 	var buf strings.Builder
 	escape := false
 	marker := false
+	literalMarker := false
 	for i := 0; i < len(pattern); i++ {
 		c := pattern[i]
 		if marker {
@@ -3914,6 +3915,17 @@ func unescapeGlob(pattern string) string {
 				buf.WriteByte('\\')
 				continue
 			}
+		}
+		if literalMarker {
+			literalMarker = false
+			if c == '\\' {
+				buf.WriteByte('\\')
+				continue
+			}
+		}
+		if c == literalBackslashMarker {
+			literalMarker = true
+			continue
 		}
 		if c == varEscapeMarker {
 			marker = true
@@ -3943,15 +3955,27 @@ func normalizeGlobPattern(pattern string) (string, bool) {
 	var buf strings.Builder
 	escape := false
 	marker := false
+	literalMarker := false
 	hasGlob := false
 	for i := 0; i < len(pattern); i++ {
 		c := pattern[i]
 		if marker {
 			marker = false
 			if c == '\\' {
+				escape = true
+				continue
+			}
+		}
+		if literalMarker {
+			literalMarker = false
+			if c == '\\' {
 				buf.WriteString("[\\\\]")
 				continue
 			}
+		}
+		if c == literalBackslashMarker {
+			literalMarker = true
+			continue
 		}
 		if c == varEscapeMarker {
 			marker = true
@@ -4087,7 +4111,7 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 						continue
 					}
 				}
-				buf.WriteByte(varEscapeMarker)
+				buf.WriteByte(literalBackslashMarker)
 				buf.WriteByte('\\')
 				continue
 			}
@@ -5184,7 +5208,7 @@ func expandVars(tok string, vars map[string]string) string {
 						continue
 					}
 				}
-				buf.WriteByte(varEscapeMarker)
+				buf.WriteByte(literalBackslashMarker)
 				buf.WriteByte('\\')
 				continue
 			}
@@ -5290,8 +5314,9 @@ func escapeGlobChars(value string) string {
 }
 
 const (
-	globEscapeMarker = '\x1e'
-	varEscapeMarker  = '\x1f'
+	literalBackslashMarker = '\x1d'
+	globEscapeMarker       = '\x1e'
+	varEscapeMarker        = '\x1f'
 )
 
 func isGlobChar(c byte) bool {
