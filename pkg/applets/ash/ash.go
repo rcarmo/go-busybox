@@ -4646,6 +4646,7 @@ func normalizeGlobPattern(pattern string) (string, bool) {
 				escape = false
 				continue
 			default:
+				buf.WriteByte('\\')
 				buf.WriteByte(c)
 				escape = false
 				continue
