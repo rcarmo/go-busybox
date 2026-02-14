@@ -6102,6 +6102,9 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		name := expr[:idx]
 		pattern := expr[idx+2:]
 		val := vars[name]
+		if stripped, quoted := stripOuterQuotes(pattern); quoted {
+			return strings.TrimPrefix(val, stripped), true
+		}
 		if pattern == "*" {
 			return "", true
 		}
@@ -6118,6 +6121,9 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		name := expr[:idx]
 		pattern := expr[idx+1:]
 		val := vars[name]
+		if stripped, quoted := stripOuterQuotes(pattern); quoted {
+			return strings.TrimPrefix(val, stripped), true
+		}
 		if len(pattern) == 0 {
 			return val, true
 		}
@@ -6138,6 +6144,9 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		name := expr[:idx]
 		pattern := expr[idx+2:]
 		val := vars[name]
+		if stripped, quoted := stripOuterQuotes(pattern); quoted {
+			return strings.TrimSuffix(val, stripped), true
+		}
 		if pattern == "*" {
 			return "", true
 		}
@@ -6154,6 +6163,9 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		name := expr[:idx]
 		pattern := expr[idx+1:]
 		val := vars[name]
+		if stripped, quoted := stripOuterQuotes(pattern); quoted {
+			return strings.TrimSuffix(val, stripped), true
+		}
 		if len(pattern) == 0 {
 			return val, true
 		}
