@@ -4521,7 +4521,7 @@ func (r *runner) readHereDocContents(reqs []hereDocRequest, commands []commandEn
 		continuation := false
 		for lineIdx < len(scriptLines) {
 			line := scriptLines[lineIdx]
-			if req.stripTabs {
+			if req.stripTabs && !continuation {
 				line = strings.TrimLeft(line, "\t")
 			}
 			if !continuation && line == req.marker {
