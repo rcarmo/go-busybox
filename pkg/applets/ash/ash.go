@@ -583,7 +583,7 @@ func (r *runner) runScript(script string) int {
 								nextCmd = r.expandAliases(nextCmd)
 							}
 						}
-						compound = compound + " " + nextCmd
+						compound = compound + "\n" + nextCmd
 						bracePos = strings.Index(compound, "{")
 						if bracePos >= 0 && findMatchingBrace(compound, bracePos) != -1 {
 							cmd = compound
