@@ -5053,10 +5053,9 @@ func (r *runner) expandVarsWithRunnerNoQuotes(tok string) string {
 func (r *runner) expandHereDoc(content string) string {
 	var buf strings.Builder
 	cmdSubDepth := 0
-	inBacktick := false
 	for i := 0; i < len(content); i++ {
 		c := content[i]
-		if !inBacktick && c == '$' && i+1 < len(content) && content[i+1] == '(' {
+		if c == '$' && i+1 < len(content) && content[i+1] == '(' {
 			cmdSubDepth++
 			buf.WriteByte('$')
 			buf.WriteByte('(')
@@ -5069,19 +5068,8 @@ func (r *runner) expandHereDoc(content string) string {
 			} else if c == ')' {
 				cmdSubDepth--
 			}
-			buf.WriteByte(c)
-			continue
 		}
-		if c == '`' {
-			inBacktick = !inBacktick
-			buf.WriteByte(c)
-			continue
-		}
-		if inBacktick {
-			buf.WriteByte(c)
-			continue
-		}
-		if c == '\\' && i+1 < len(content) {
+		if cmdSubDepth == 0 && c == '\\' && i+1 < len(content) {
 			next := content[i+1]
 			switch next {
 			case '$':
