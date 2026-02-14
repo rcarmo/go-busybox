@@ -1173,11 +1173,13 @@ func (r *runner) runFuncDef(script string) (int, bool) {
 		return 0, false
 	}
 	nameTok := fields[0]
-	if !strings.HasSuffix(nameTok, "()") {
-		return 0, false
+	name := ""
+	if strings.HasSuffix(nameTok, "()") {
+		name = strings.TrimSuffix(nameTok, "()")
+	} else if len(fields) > 1 && fields[1] == "()" {
+		name = nameTok
 	}
-	name := strings.TrimSuffix(nameTok, "()")
-	if !isName(name) {
+	if name == "" || !isName(name) {
 		return 0, false
 	}
 	braceEnd := findMatchingBrace(trimmed, bracePos)
@@ -1201,11 +1203,13 @@ func isFuncDefCommand(script string) bool {
 		return false
 	}
 	nameTok := fields[0]
-	if !strings.HasSuffix(nameTok, "()") {
-		return false
+	name := ""
+	if strings.HasSuffix(nameTok, "()") {
+		name = strings.TrimSuffix(nameTok, "()")
+	} else if len(fields) > 1 && fields[1] == "()" {
+		name = nameTok
 	}
-	name := strings.TrimSuffix(nameTok, "()")
-	return isName(name)
+	return name != "" && isName(name)
 }
 
 func findMatchingBrace(script string, start int) int {
