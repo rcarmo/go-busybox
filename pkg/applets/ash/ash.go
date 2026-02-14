@@ -595,28 +595,30 @@ func (r *runner) runScript(script string) int {
 		}
 		cmdEndIdx = i
 
-		if entry.line != hereDocLine {
-			hereDocLine = 0
-			skipFrom = -1
-			skipTo = -1
-		}
-		if hereDocLine == 0 {
-			reqs := extractHereDocRequests(cmd)
-			lineEndIdx := cmdStartIdx + 1
-			for lineEndIdx < len(commands) && commands[lineEndIdx].line == entry.line {
-				reqs = append(reqs, extractHereDocRequests(commands[lineEndIdx].cmd)...)
-				lineEndIdx++
+		if !isFuncDefCommand(cmd) {
+			if entry.line != hereDocLine {
+				hereDocLine = 0
+				skipFrom = -1
+				skipTo = -1
 			}
-			startIdx := lineEndIdx
-			if cmdEndIdx+1 > startIdx {
-				startIdx = cmdEndIdx + 1
-			}
-			if len(reqs) > 0 {
-				contents, endIdx := r.readHereDocContents(reqs, commands, scriptLines, startIdx)
-				r.pendingHereDocs = contents
-				hereDocLine = entry.line
-				skipFrom = startIdx
-				skipTo = endIdx
+			if hereDocLine == 0 {
+				reqs := extractHereDocRequests(cmd)
+				lineEndIdx := cmdStartIdx + 1
+				for lineEndIdx < len(commands) && commands[lineEndIdx].line == entry.line {
+					reqs = append(reqs, extractHereDocRequests(commands[lineEndIdx].cmd)...)
+					lineEndIdx++
+				}
+				startIdx := lineEndIdx
+				if cmdEndIdx+1 > startIdx {
+					startIdx = cmdEndIdx + 1
+				}
+				if len(reqs) > 0 {
+					contents, endIdx := r.readHereDocContents(reqs, commands, scriptLines, startIdx)
+					r.pendingHereDocs = contents
+					hereDocLine = entry.line
+					skipFrom = startIdx
+					skipTo = endIdx
+				}
 			}
 		}
 
@@ -1185,6 +1187,25 @@ func (r *runner) runFuncDef(script string) (int, bool) {
 	body := strings.TrimSpace(trimmed[bracePos+1 : braceEnd])
 	r.funcs[name] = body
 	return core.ExitSuccess, true
+}
+
+func isFuncDefCommand(script string) bool {
+	trimmed := strings.TrimSpace(script)
+	bracePos := strings.Index(trimmed, "{")
+	if bracePos == -1 {
+		return false
+	}
+	header := strings.TrimSpace(trimmed[:bracePos])
+	fields := strings.Fields(header)
+	if len(fields) == 0 {
+		return false
+	}
+	nameTok := fields[0]
+	if !strings.HasSuffix(nameTok, "()") {
+		return false
+	}
+	name := strings.TrimSuffix(nameTok, "()")
+	return isName(name)
 }
 
 func findMatchingBrace(script string, start int) int {
