@@ -528,26 +528,6 @@ func (r *runner) runScript(script string) int {
 				cmd = r.expandAliases(cmd)
 			}
 		}
-		if entry.line != hereDocLine {
-			hereDocLine = 0
-			skipFrom = -1
-			skipTo = -1
-		}
-		if hereDocLine == 0 {
-			var reqs []hereDocRequest
-			k := i
-			for k < len(commands) && commands[k].line == entry.line {
-				reqs = append(reqs, extractHereDocRequests(commands[k].cmd)...)
-				k++
-			}
-			if len(reqs) > 0 {
-				contents, endIdx := r.readHereDocContents(reqs, commands, k)
-				r.pendingHereDocs = contents
-				hereDocLine = entry.line
-				skipFrom = k
-				skipTo = endIdx
-			}
-		}
 		r.currentLine = entry.line + r.lineOffset
 		r.handleSignalsNonBlocking()
 		if r.returnFlag {
@@ -588,6 +568,27 @@ func (r *runner) runScript(script string) int {
 					}
 				}
 				cmd = compound
+			}
+		}
+
+		if entry.line != hereDocLine {
+			hereDocLine = 0
+			skipFrom = -1
+			skipTo = -1
+		}
+		if hereDocLine == 0 {
+			var reqs []hereDocRequest
+			k := i
+			for k < len(commands) && commands[k].line == entry.line {
+				reqs = append(reqs, extractHereDocRequests(commands[k].cmd)...)
+				k++
+			}
+			if len(reqs) > 0 {
+				contents, endIdx := r.readHereDocContents(reqs, commands, k)
+				r.pendingHereDocs = contents
+				hereDocLine = entry.line
+				skipFrom = k
+				skipTo = endIdx
 			}
 		}
 
