@@ -577,8 +577,8 @@ func (r *runner) runScript(script string) int {
 			skipTo = -1
 		}
 		if hereDocLine == 0 {
-			var reqs []hereDocRequest
-			k := i
+			reqs := extractHereDocRequests(cmd)
+			k := i + 1
 			for k < len(commands) && commands[k].line == entry.line {
 				reqs = append(reqs, extractHereDocRequests(commands[k].cmd)...)
 				k++
