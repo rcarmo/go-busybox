@@ -4022,7 +4022,7 @@ func splitCommands(script string) []commandEntry {
 					i++
 					continue
 				}
-				if i > 0 && line[i-1] == '>' {
+				if i > 0 && (line[i-1] == '>' || line[i-1] == '<') {
 					buf.WriteByte(c)
 					continue
 				}
