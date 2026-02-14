@@ -2685,7 +2685,7 @@ func (r *runner) runPipeline(segments []string) int {
 		}
 		if !isBuiltin {
 			trimmed := strings.TrimSpace(seg)
-			if strings.HasPrefix(trimmed, "{") {
+			if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "(") {
 				isBuiltin = true
 			}
 		}
