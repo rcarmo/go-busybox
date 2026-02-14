@@ -3438,8 +3438,22 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 	spec := commandSpec{}
 	args := []string{}
 	seenCmd := false
+	braceClose := -1
+	if len(tokens) > 0 && tokens[0] == "{" {
+		for idx := len(tokens) - 1; idx >= 0; idx-- {
+			if tokens[idx] == "}" {
+				braceClose = idx
+				break
+			}
+		}
+	}
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
+		if braceClose >= 0 && i <= braceClose {
+			args = append(args, tok)
+			seenCmd = true
+			continue
+		}
 		next := ""
 		if i+1 < len(tokens) {
 			next = tokens[i+1]
