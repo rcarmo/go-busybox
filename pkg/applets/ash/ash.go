@@ -4038,6 +4038,13 @@ func splitCommands(script string) []commandEntry {
 	cmdSubDepth := 0
 	arithDepth := 0
 	escape := false
+	pendingHereDocs := []hereDocRequest{}
+	appendCommand := func(cmd, raw string, line int) {
+		cmds = append(cmds, commandEntry{cmd: cmd, raw: raw, line: line})
+		if len(pendingHereDocs) == 0 {
+			pendingHereDocs = append(pendingHereDocs, extractHereDocRequests(cmd)...)
+		}
+	}
 	scanner := bufio.NewScanner(strings.NewReader(script))
 	lineNo := 0
 	startLine := 1
@@ -4046,6 +4053,17 @@ func splitCommands(script string) []commandEntry {
 		line := scanner.Text()
 		if buf.Len() == 0 {
 			startLine = lineNo
+		}
+		if len(pendingHereDocs) > 0 {
+			cmds = append(cmds, commandEntry{cmd: line, raw: line, line: lineNo})
+			check := line
+			if pendingHereDocs[0].stripTabs {
+				check = strings.TrimLeft(check, "\t")
+			}
+			if check == pendingHereDocs[0].marker {
+				pendingHereDocs = pendingHereDocs[1:]
+			}
+			continue
 		}
 		for i := 0; i < len(line); i++ {
 			c := line[i]
@@ -4123,7 +4141,7 @@ func splitCommands(script string) []commandEntry {
 			if c == ';' && !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
 				raw := buf.String()
 				if cmd := strings.TrimSpace(raw); cmd != "" {
-					cmds = append(cmds, commandEntry{cmd: cmd, raw: raw, line: startLine})
+					appendCommand(cmd, raw, startLine)
 				}
 				buf.Reset()
 				startLine = lineNo
@@ -4142,7 +4160,7 @@ func splitCommands(script string) []commandEntry {
 				buf.WriteByte('&')
 				raw := buf.String()
 				if cmd := strings.TrimSpace(raw); cmd != "" {
-					cmds = append(cmds, commandEntry{cmd: cmd, raw: raw, line: startLine})
+					appendCommand(cmd, raw, startLine)
 				}
 				buf.Reset()
 				startLine = lineNo
@@ -4163,7 +4181,7 @@ func splitCommands(script string) []commandEntry {
 			raw := buf.String()
 			cmd := strings.TrimSpace(raw)
 			if cmd != "" || raw != "" || line == "" {
-				cmds = append(cmds, commandEntry{cmd: cmd, raw: raw, line: startLine})
+				appendCommand(cmd, raw, startLine)
 			}
 			buf.Reset()
 		} else {
@@ -4172,7 +4190,7 @@ func splitCommands(script string) []commandEntry {
 	}
 	raw := buf.String()
 	if tail := strings.TrimSpace(raw); tail != "" {
-		cmds = append(cmds, commandEntry{cmd: tail, raw: raw, line: startLine})
+		appendCommand(tail, raw, startLine)
 	}
 	return cmds
 }
