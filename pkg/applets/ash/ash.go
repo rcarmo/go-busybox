@@ -3980,7 +3980,7 @@ func splitCommands(script string) []commandEntry {
 	var buf strings.Builder
 	var inSingle bool
 	var inDouble bool
-	var inBrace bool
+	braceDepth := 0
 	parenDepth := 0
 	cmdSubDepth := 0
 	arithDepth := 0
@@ -4045,9 +4045,9 @@ func splitCommands(script string) []commandEntry {
 			}
 			if !inSingle && !inDouble {
 				if c == '{' {
-					inBrace = true
-				} else if c == '}' {
-					inBrace = false
+					braceDepth++
+				} else if c == '}' && braceDepth > 0 {
+					braceDepth--
 				}
 				if c == '(' {
 					if cmdSubDepth == 0 && arithDepth == 0 {
@@ -4062,12 +4062,12 @@ func splitCommands(script string) []commandEntry {
 				}
 			}
 			// Split on semicolons outside quotes and subshells
-			if c == ';' && i+1 < len(line) && line[i+1] == ';' && !inSingle && !inDouble && !inBrace && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
+			if c == ';' && i+1 < len(line) && line[i+1] == ';' && !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
 				buf.WriteString(";;")
 				i++
 				continue
 			}
-			if c == ';' && !inSingle && !inDouble && !inBrace && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
+			if c == ';' && !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
 				raw := buf.String()
 				if cmd := strings.TrimSpace(raw); cmd != "" {
 					cmds = append(cmds, commandEntry{cmd: cmd, raw: raw, line: startLine})
@@ -4076,7 +4076,7 @@ func splitCommands(script string) []commandEntry {
 				startLine = lineNo
 				continue
 			}
-			if c == '&' && !inSingle && !inDouble && !inBrace && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
+			if c == '&' && !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
 				if i+1 < len(line) && line[i+1] == '&' {
 					buf.WriteString("&&")
 					i++
@@ -4106,7 +4106,7 @@ func splitCommands(script string) []commandEntry {
 			}
 			continue
 		}
-		if !inSingle && !inDouble && !inBrace && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
+		if !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
 			raw := buf.String()
 			cmd := strings.TrimSpace(raw)
 			if cmd != "" || raw != "" || line == "" {
