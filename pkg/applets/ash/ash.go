@@ -1030,6 +1030,74 @@ func findMatchingBrace(script string, start int) int {
 	return -1
 }
 
+func findMatchingParen(script string, start int) int {
+	depth := 0
+	cmdSubDepth := 0
+	arithDepth := 0
+	inSingle := false
+	inDouble := false
+	escape := false
+	for i := start; i < len(script); i++ {
+		c := script[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if c == '\\' && !inSingle {
+			escape = true
+			continue
+		}
+		if c == '$' && i+1 < len(script) && script[i+1] == '(' && !inSingle {
+			if i+2 < len(script) && script[i+2] == '(' {
+				arithDepth++
+				i += 2
+				continue
+			}
+			cmdSubDepth++
+			i++
+			continue
+		}
+		if c == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if c == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if inSingle || inDouble {
+			continue
+		}
+		if arithDepth > 0 && c == ')' && i+1 < len(script) && script[i+1] == ')' {
+			arithDepth--
+			i++
+			continue
+		}
+		if c == '(' {
+			if cmdSubDepth == 0 && arithDepth == 0 {
+				depth++
+			}
+			continue
+		}
+		if c == ')' {
+			if cmdSubDepth > 0 {
+				cmdSubDepth--
+				continue
+			}
+			if arithDepth > 0 {
+				continue
+			}
+			if depth > 0 {
+				depth--
+				if depth == 0 {
+					return i
+				}
+			}
+		}
+	}
+	return -1
+}
+
 // runCaseScript handles case/esac statements
 func (r *runner) runCaseScript(script string) (int, bool) {
 	tokens := tokenizeScript(script)
@@ -2530,7 +2598,15 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		return code, false
 	}
 	if len(cmdSpec.args) >= 2 && cmdSpec.args[0] == "(" && cmdSpec.args[len(cmdSpec.args)-1] == ")" {
-		inner := strings.Join(cmdSpec.args[1:len(cmdSpec.args)-1], " ")
+		inner := ""
+		if start := strings.IndexByte(cmd, '('); start >= 0 {
+			if end := findMatchingParen(cmd, start); end > start {
+				inner = strings.TrimSpace(cmd[start+1 : end])
+			}
+		}
+		if inner == "" {
+			inner = strings.Join(cmdSpec.args[1:len(cmdSpec.args)-1], " ")
+		}
 		savedStdio := r.stdio
 		r.stdio = &core.Stdio{In: stdin, Out: stdout, Err: stderr}
 		code := r.runSubshell(inner)
