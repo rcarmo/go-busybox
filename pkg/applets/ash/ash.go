@@ -4780,14 +4780,14 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 		}
 		if inSingle {
 			if isGlobChar(c) {
-				buf.WriteByte('\\')
+				buf.WriteByte(globEscapeMarker)
 			}
 			buf.WriteByte(c)
 			continue
 		}
 		if inDouble && c != '$' {
 			if isGlobChar(c) {
-				buf.WriteByte('\\')
+				buf.WriteByte(globEscapeMarker)
 			}
 			buf.WriteByte(c)
 			continue
@@ -5924,14 +5924,14 @@ func expandVars(tok string, vars map[string]string) string {
 		}
 		if inSingle {
 			if isGlobChar(c) {
-				buf.WriteByte('\\')
+				buf.WriteByte(globEscapeMarker)
 			}
 			buf.WriteByte(c)
 			continue
 		}
 		if inDouble && c != '$' {
 			if isGlobChar(c) {
-				buf.WriteByte('\\')
+				buf.WriteByte(globEscapeMarker)
 			}
 			buf.WriteByte(c)
 			continue
