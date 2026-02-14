@@ -3302,15 +3302,18 @@ func tokenizeScript(script string) []string {
 			continue
 		}
 		if c == '\\' {
+			buf.WriteByte(c)
 			escape = true
 			continue
 		}
 		if c == '\'' && !inDouble {
 			inSingle = !inSingle
+			buf.WriteByte(c)
 			continue
 		}
 		if c == '"' && !inSingle {
 			inDouble = !inDouble
+			buf.WriteByte(c)
 			continue
 		}
 		// Handle ;; as a single token (for case/esac)
