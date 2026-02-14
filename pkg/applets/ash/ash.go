@@ -4291,6 +4291,7 @@ func parseHereDocToken(tok string, next string) (hereDocRequest, bool, bool) {
 		fd = n
 	}
 	rest := tok[idx+2:]
+	rest = strings.TrimRight(rest, ";&")
 	stripTabs := false
 	if strings.HasPrefix(rest, "-") {
 		stripTabs = true
@@ -4301,6 +4302,7 @@ func parseHereDocToken(tok string, next string) (hereDocRequest, bool, bool) {
 		rest = next
 		usedNext = true
 	}
+	rest = strings.TrimRight(rest, ";&")
 	quoted := false
 	marker := rest
 	if strings.ContainsAny(rest, "'\"") {
