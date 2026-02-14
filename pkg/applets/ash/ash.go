@@ -4739,7 +4739,7 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 	}
 	// Then expand command substitutions
 	tok = r.expandCommandSubsWithRunner(tok)
-	if !strings.Contains(tok, "$") && !strings.Contains(tok, "'") && !strings.Contains(tok, "\"") {
+	if !strings.Contains(tok, "$") && !strings.Contains(tok, "'") && !strings.Contains(tok, "\"") && !strings.ContainsRune(tok, commandSubDollarMarker) {
 		return tok
 	}
 	var buf strings.Builder
@@ -4900,7 +4900,7 @@ func (r *runner) expandVarsWithRunnerNoQuotes(tok string) string {
 	}
 	// Then expand command substitutions
 	tok = r.expandCommandSubsWithRunner(tok)
-	if !strings.Contains(tok, "$") {
+	if !strings.Contains(tok, "$") && !strings.ContainsRune(tok, commandSubDollarMarker) {
 		return tok
 	}
 	var buf strings.Builder
