@@ -4456,12 +4456,18 @@ func (r *runner) readHereDocContents(reqs []hereDocRequest, commands []commandEn
 			if !continuation && line == req.marker {
 				break
 			}
-			if !req.quoted && strings.HasSuffix(line, "\\") {
-				line = strings.TrimSuffix(line, "\\")
-				buf.WriteString(line)
-				continuation = true
-				lineIdx++
-				continue
+			if !req.quoted {
+				trail := 0
+				for i := len(line) - 1; i >= 0 && line[i] == '\\'; i-- {
+					trail++
+				}
+				if trail > 0 && trail%2 == 1 {
+					line = line[:len(line)-1]
+					buf.WriteString(line)
+					continuation = true
+					lineIdx++
+					continue
+				}
 			}
 			buf.WriteString(line)
 			buf.WriteByte('\n')
