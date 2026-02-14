@@ -6296,6 +6296,26 @@ func findBacktickEnd(tok string, start int) int {
 	return -1
 }
 
+func unescapeBacktickCommand(cmd string) string {
+	var buf strings.Builder
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		if c == '\\' && i+1 < len(cmd) {
+			next := cmd[i+1]
+			switch next {
+			case '\\', '`', '$', '\n':
+				if next != '\n' {
+					buf.WriteByte(next)
+				}
+				i++
+				continue
+			}
+		}
+		buf.WriteByte(c)
+	}
+	return buf.String()
+}
+
 func expandCommandSubs(tok string, vars map[string]string) string {
 	// Handle $(...) first
 	for {
@@ -6331,7 +6351,7 @@ func expandCommandSubs(tok string, vars map[string]string) string {
 		if end == -1 {
 			break
 		}
-		cmdStr := tok[start+1 : end]
+		cmdStr := unescapeBacktickCommand(tok[start+1 : end])
 		output := escapeCommandSubOutput(runCommandSub(cmdStr, vars))
 		tok = tok[:start] + output + tok[end+1:]
 	}
@@ -6373,7 +6393,7 @@ func (r *runner) expandCommandSubsWithRunner(tok string) string {
 		if end == -1 {
 			break
 		}
-		cmdStr := tok[start+1 : end]
+		cmdStr := unescapeBacktickCommand(tok[start+1 : end])
 		output := escapeCommandSubOutput(r.runCommandSubWithRunner(cmdStr))
 		tok = tok[:start] + output + tok[end+1:]
 	}
