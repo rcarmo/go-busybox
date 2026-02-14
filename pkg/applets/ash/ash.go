@@ -240,6 +240,7 @@ type runner struct {
 	breakCount     int
 	continueCount  int
 	loopDepth      int
+	getoptsPos     int
 	returnFlag     bool
 	returnCode     int
 	exitFlag       bool
@@ -1250,6 +1251,7 @@ func (r *runner) runSubshell(inner string) int {
 	savedBreakCount := r.breakCount
 	savedContinueCount := r.continueCount
 	savedLoopDepth := r.loopDepth
+	savedGetoptsPos := r.getoptsPos
 	savedReturn := r.returnFlag
 	savedReturnCode := r.returnCode
 	savedExitFlag := r.exitFlag
@@ -1276,6 +1278,7 @@ func (r *runner) runSubshell(inner string) int {
 	r.breakCount = 0
 	r.continueCount = 0
 	r.loopDepth = 0
+	r.getoptsPos = 0
 	r.returnFlag = false
 	r.returnCode = core.ExitSuccess
 	r.exitFlag = false
@@ -1307,6 +1310,7 @@ func (r *runner) runSubshell(inner string) int {
 	r.breakCount = savedBreakCount
 	r.continueCount = savedContinueCount
 	r.loopDepth = savedLoopDepth
+	r.getoptsPos = savedGetoptsPos
 	r.returnFlag = savedReturn
 	r.returnCode = savedReturnCode
 	r.exitFlag = savedExitFlag
@@ -2343,36 +2347,108 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		if len(argsList) == 0 {
 			argsList = r.positional
 		}
+		silent := false
+		if strings.HasPrefix(optStr, ":") {
+			silent = true
+			optStr = optStr[1:]
+		}
+		optErr := true
+		if v := r.vars["OPTERR"]; v == "0" {
+			optErr = false
+		}
 		index := 1
 		if v := r.vars["OPTIND"]; v != "" {
-			if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
-				index = parsed
+			if parsed, err := strconv.Atoi(v); err == nil {
+				if parsed <= 0 {
+					index = 1
+					r.getoptsPos = 0
+				} else {
+					index = parsed
+					if parsed == 1 {
+						r.getoptsPos = 0
+					}
+				}
 			}
+		} else {
+			r.getoptsPos = 0
 		}
-		if index > len(argsList) {
-			r.vars[name] = "?"
-			return core.ExitFailure, false
-		}
-		arg := argsList[index-1]
-		if !strings.HasPrefix(arg, "-") || arg == "-" || arg == "--" {
-			r.vars[name] = "?"
-			return core.ExitFailure, false
-		}
-		opt := string(arg[1])
-		r.vars["OPTIND"] = strconv.Itoa(index + 1)
-		r.vars[name] = opt
-		if strings.Contains(optStr, opt+":") {
-			if index >= len(argsList) {
-				r.vars["OPTARG"] = ""
+		for {
+			if index > len(argsList) {
 				r.vars[name] = "?"
+				r.vars["OPTARG"] = ""
 				return core.ExitFailure, false
 			}
-			r.vars["OPTARG"] = argsList[index]
-			r.vars["OPTIND"] = strconv.Itoa(index + 2)
-		} else {
-			delete(r.vars, "OPTARG")
+			arg := argsList[index-1]
+			if r.getoptsPos <= 0 {
+				if !strings.HasPrefix(arg, "-") || arg == "-" {
+					r.vars[name] = "?"
+					r.vars["OPTARG"] = ""
+					return core.ExitFailure, false
+				}
+				if arg == "--" {
+					r.vars["OPTIND"] = strconv.Itoa(index + 1)
+					r.getoptsPos = 0
+					r.vars[name] = "?"
+					r.vars["OPTARG"] = ""
+					return core.ExitFailure, false
+				}
+				r.getoptsPos = 1
+			}
+			if r.getoptsPos >= len(arg) {
+				index++
+				r.getoptsPos = 0
+				continue
+			}
+			opt := string(arg[r.getoptsPos])
+			r.getoptsPos++
+			if r.getoptsPos >= len(arg) {
+				r.vars["OPTIND"] = strconv.Itoa(index + 1)
+				r.getoptsPos = 0
+			} else {
+				r.vars["OPTIND"] = strconv.Itoa(index)
+			}
+			pos := strings.Index(optStr, opt)
+			if pos == -1 {
+				if optErr && !silent {
+					fmt.Fprintf(stderr, "Illegal option -%s\n", opt)
+				}
+				r.vars[name] = "?"
+				if silent {
+					r.vars["OPTARG"] = opt
+				} else {
+					r.vars["OPTARG"] = ""
+				}
+				return core.ExitSuccess, false
+			}
+			r.vars[name] = opt
+			if pos+1 < len(optStr) && optStr[pos+1] == ':' {
+				if r.getoptsPos > 0 && r.getoptsPos < len(arg) {
+					r.vars["OPTARG"] = arg[r.getoptsPos:]
+					r.vars["OPTIND"] = strconv.Itoa(index + 1)
+					r.getoptsPos = 0
+					return core.ExitSuccess, false
+				}
+				if index >= len(argsList) {
+					if optErr && !silent {
+						fmt.Fprintf(stderr, "Option requires an argument -%s\n", opt)
+					}
+					if silent {
+						r.vars[name] = ":"
+						r.vars["OPTARG"] = opt
+						return core.ExitSuccess, false
+					}
+					r.vars[name] = "?"
+					r.vars["OPTARG"] = ""
+					return core.ExitSuccess, false
+				}
+				r.vars["OPTARG"] = argsList[index]
+				r.vars["OPTIND"] = strconv.Itoa(index + 2)
+				r.getoptsPos = 0
+				return core.ExitSuccess, false
+			}
+			r.vars["OPTARG"] = ""
+			return core.ExitSuccess, false
 		}
-		return core.ExitSuccess, false
 	case "printf":
 		// printf builtin
 		if len(cmdSpec.args) < 2 {
@@ -3461,7 +3537,8 @@ func splitCommands(script string) []commandEntry {
 			}
 			if c == '&' && !inSingle && !inDouble && !inBrace && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
 				if i+1 < len(line) && line[i+1] == '&' {
-					buf.WriteByte(c)
+					buf.WriteString("&&")
+					i++
 					continue
 				}
 				if i > 0 && line[i-1] == '>' {
