@@ -3262,7 +3262,15 @@ func (r *runner) runPipeline(segments []string) int {
 				return
 			}
 			command := exec.CommandContext(ctx, path, cmdArgs...) // #nosec G204 -- ash executes user command
-			command.Stdin = s.prevReader
+			stdin := s.prevReader
+			if len(cmdSpec.hereDocs) > 0 {
+				for _, doc := range cmdSpec.hereDocs {
+					if doc.fd == 0 {
+						stdin = strings.NewReader(doc.content)
+					}
+				}
+			}
+			command.Stdin = stdin
 			command.Stdout = stdout
 			command.Stderr = r.stdio.Err
 			command.Env = buildEnv(r.vars)
