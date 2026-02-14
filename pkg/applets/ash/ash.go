@@ -3263,6 +3263,9 @@ func (r *runner) runPipeline(segments []string) int {
 			}
 			command := exec.CommandContext(ctx, path, cmdArgs...) // #nosec G204 -- ash executes user command
 			stdin := s.prevReader
+			outWriter := stdout
+			errWriter := r.stdio.Err
+			var closers []io.Closer
 			if len(cmdSpec.hereDocs) > 0 {
 				for _, doc := range cmdSpec.hereDocs {
 					if doc.fd == 0 {
@@ -3270,12 +3273,72 @@ func (r *runner) runPipeline(segments []string) int {
 					}
 				}
 			}
+			if cmdSpec.redirIn != "" {
+				file, err := os.Open(cmdSpec.redirIn)
+				if err != nil {
+					r.stdio.Errorf("ash: %v\n", err)
+					if s.writer != nil {
+						_ = s.writer.Close()
+					}
+					done <- core.ExitFailure
+					return
+				}
+				stdin = file
+				closers = append(closers, file)
+			}
+			if cmdSpec.redirOut != "" {
+				flags := os.O_CREATE | os.O_WRONLY
+				if cmdSpec.redirOutAppend {
+					flags |= os.O_APPEND
+				} else {
+					flags |= os.O_TRUNC
+				}
+				file, err := os.OpenFile(cmdSpec.redirOut, flags, 0o644)
+				if err != nil {
+					r.stdio.Errorf("ash: %v\n", err)
+					if s.writer != nil {
+						_ = s.writer.Close()
+					}
+					done <- core.ExitFailure
+					return
+				}
+				outWriter = file
+				closers = append(closers, file)
+			}
+			if cmdSpec.redirErr != "" {
+				flags := os.O_CREATE | os.O_WRONLY
+				if cmdSpec.redirErrAppend {
+					flags |= os.O_APPEND
+				} else {
+					flags |= os.O_TRUNC
+				}
+				file, err := os.OpenFile(cmdSpec.redirErr, flags, 0o644)
+				if err != nil {
+					r.stdio.Errorf("ash: %v\n", err)
+					if s.writer != nil {
+						_ = s.writer.Close()
+					}
+					done <- core.ExitFailure
+					return
+				}
+				errWriter = file
+				closers = append(closers, file)
+			}
+			if cmdSpec.closeStdout {
+				outWriter = io.Discard
+			}
+			if cmdSpec.closeStderr {
+				errWriter = io.Discard
+			}
 			command.Stdin = stdin
-			command.Stdout = stdout
-			command.Stderr = r.stdio.Err
+			command.Stdout = outWriter
+			command.Stderr = errWriter
 			command.Env = buildEnv(r.vars)
 			if r.options["x"] {
 				fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args, " "))
+			}
+			for _, closer := range closers {
+				defer closer.Close()
 			}
 			err := command.Run()
 			if s.writer != nil {
