@@ -264,8 +264,7 @@ type runner struct {
 	inSubshell      bool
 	pendingHereDocs []string
 	fdReaders       map[int]*bufio.Reader
-	readBuf         *bufio.Reader
-	readStdin       io.Reader
+	readBufs        map[io.Reader]*bufio.Reader
 }
 
 type job struct {
@@ -2316,11 +2315,17 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		if len(cmdSpec.args) > 1 {
 			varName = cmdSpec.args[1]
 		}
-		reader := r.readBuf
-		if reader == nil || r.readStdin != stdin {
-			reader = bufio.NewReader(stdin)
-			r.readBuf = reader
-			r.readStdin = stdin
+		if r.readBufs == nil {
+			r.readBufs = make(map[io.Reader]*bufio.Reader)
+		}
+		reader := r.readBufs[stdin]
+		if reader == nil {
+			if br, ok := stdin.(*bufio.Reader); ok {
+				reader = br
+			} else {
+				reader = bufio.NewReader(stdin)
+			}
+			r.readBufs[stdin] = reader
 		}
 		lineCh := make(chan struct {
 			line string
