@@ -6353,7 +6353,7 @@ func expandCommandSubs(tok string, vars map[string]string) string {
 			break
 		}
 		cmdStr := tok[start+2 : end-1]
-		output := escapeCommandSubOutput(runCommandSub(cmdStr, vars))
+		output := escapeCommandSubOutput(runCommandSub(cmdStr, vars), false)
 		tok = tok[:start] + output + tok[end:]
 	}
 	// Handle backticks
@@ -6367,7 +6367,7 @@ func expandCommandSubs(tok string, vars map[string]string) string {
 			break
 		}
 		cmdStr := unescapeBacktickCommand(tok[start+1 : end])
-		output := escapeCommandSubOutput(runCommandSub(cmdStr, vars))
+		output := escapeCommandSubOutput(runCommandSub(cmdStr, vars), true)
 		tok = tok[:start] + output + tok[end+1:]
 	}
 	return tok
@@ -6395,7 +6395,7 @@ func (r *runner) expandCommandSubsWithRunner(tok string) string {
 			break
 		}
 		cmdStr := tok[start+2 : end-1]
-		output := escapeCommandSubOutput(r.runCommandSubWithRunner(cmdStr))
+		output := escapeCommandSubOutput(r.runCommandSubWithRunner(cmdStr), false)
 		tok = tok[:start] + output + tok[end:]
 	}
 	// Handle backticks
@@ -6409,13 +6409,16 @@ func (r *runner) expandCommandSubsWithRunner(tok string) string {
 			break
 		}
 		cmdStr := unescapeBacktickCommand(tok[start+1 : end])
-		output := escapeCommandSubOutput(r.runCommandSubWithRunner(cmdStr))
+		output := escapeCommandSubOutput(r.runCommandSubWithRunner(cmdStr), true)
 		tok = tok[:start] + output + tok[end+1:]
 	}
 	return tok
 }
 
-func escapeCommandSubOutput(output string) string {
+func escapeCommandSubOutput(output string, dropEscapedQuote bool) string {
+	if dropEscapedQuote {
+		output = strings.ReplaceAll(output, "\\\"", "\"")
+	}
 	output = strings.ReplaceAll(output, "\\", string(commandSubBackslashMarker))
 	output = strings.ReplaceAll(output, "'", string(commandSubSingleQuoteMarker))
 	output = strings.ReplaceAll(output, "\"", string(commandSubDoubleQuoteMarker))
@@ -6424,7 +6427,6 @@ func escapeCommandSubOutput(output string) string {
 }
 
 func restoreCommandSubMarkers(value string) string {
-	value = strings.ReplaceAll(value, string(commandSubBackslashMarker)+string(commandSubDoubleQuoteMarker), string(commandSubDoubleQuoteMarker))
 	replacer := strings.NewReplacer(
 		string(commandSubBackslashMarker), "\\",
 		string(commandSubSingleQuoteMarker), "'",
