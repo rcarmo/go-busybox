@@ -6182,12 +6182,28 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 
 // expandCommandSubs expands $(...) and `...` command substitutions
 func findBacktickEnd(tok string, start int) int {
+	inSingle := false
+	inDouble := false
+	escape := false
 	for i := start + 1; i < len(tok); i++ {
-		if tok[i] == '\\' && i+1 < len(tok) {
-			i++
+		c := tok[i]
+		if escape {
+			escape = false
 			continue
 		}
-		if tok[i] == '`' {
+		if c == '\\' && !inSingle {
+			escape = true
+			continue
+		}
+		if c == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if c == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if c == '`' && !inSingle && !inDouble {
 			return i
 		}
 	}
