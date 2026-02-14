@@ -564,7 +564,7 @@ func (r *runner) runScript(script string) int {
 			case "{":
 				terminator = "}"
 			}
-			if terminator != "" && indexToken(tokens, terminator) == -1 {
+			if terminator != "" && !compoundComplete(tokens) {
 				compound := cmd
 				for i+1 < len(commands) {
 					i++
@@ -576,7 +576,7 @@ func (r *runner) runScript(script string) int {
 					}
 					compound = compound + "; " + nextCmd
 					tokens = tokenizeScript(compound)
-					if indexToken(tokens, terminator) != -1 {
+					if compoundComplete(tokens) {
 						break
 					}
 				}
@@ -810,7 +810,7 @@ func (r *runner) runWhileScript(script string) (int, bool) {
 		return 0, false
 	}
 	doIdx := indexToken(tokens, "do")
-	doneIdx := indexToken(tokens, "done")
+	doneIdx := findMatchingTerminator(tokens, 0)
 	if doIdx == -1 || doneIdx == -1 || doneIdx < doIdx {
 		return 0, false
 	}
@@ -865,7 +865,7 @@ func (r *runner) runUntilScript(script string) (int, bool) {
 		return 0, false
 	}
 	doIdx := indexToken(tokens, "do")
-	doneIdx := indexToken(tokens, "done")
+	doneIdx := findMatchingTerminator(tokens, 0)
 	if doIdx == -1 || doneIdx == -1 || doneIdx < doIdx {
 		return 0, false
 	}
@@ -925,7 +925,7 @@ func (r *runner) runForScript(script string) (int, bool) {
 	varName := tokens[1]
 	inIdx := indexToken(tokens, "in")
 	doIdx := indexToken(tokens, "do")
-	doneIdx := indexToken(tokens, "done")
+	doneIdx := findMatchingTerminator(tokens, 0)
 	if inIdx == -1 || doIdx == -1 || doneIdx == -1 || doneIdx < doIdx {
 		return 0, false
 	}
@@ -3295,6 +3295,51 @@ func indexToken(tokens []string, target string) int {
 			if rest != "" && isTerminatorSuffix(rest) {
 				return i
 			}
+		}
+	}
+	return -1
+}
+
+var compoundStarters = map[string]string{
+	"while": "done",
+	"until": "done",
+	"for":   "done",
+	"if":    "fi",
+	"case":  "esac",
+	"{":     "}",
+}
+
+func compoundComplete(tokens []string) bool {
+	return findMatchingTerminator(tokens, 0) != -1
+}
+
+func findMatchingTerminator(tokens []string, start int) int {
+	stack := []string{}
+	startOfCmd := true
+	for i := start; i < len(tokens); i++ {
+		tok := tokens[i]
+		if tok == ";" || tok == "\n" || tok == ";;" {
+			startOfCmd = true
+			continue
+		}
+		if startOfCmd {
+			if term, ok := compoundStarters[tok]; ok {
+				stack = append(stack, term)
+			}
+		}
+		if startOfCmd && len(stack) > 0 && tok == stack[len(stack)-1] {
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 {
+				return i
+			}
+			startOfCmd = true
+			continue
+		}
+		switch tok {
+		case "then", "do", "else", "elif", "in":
+			startOfCmd = true
+		default:
+			startOfCmd = false
 		}
 	}
 	return -1
