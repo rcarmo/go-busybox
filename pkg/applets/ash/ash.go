@@ -1737,14 +1737,6 @@ func (r *runner) runCommand(cmd string) (int, bool) {
 		}
 		return core.ExitSuccess, exit
 	}
-	if len(cmd) > 2 && cmd[0] == '{' && cmd[len(cmd)-1] == '}' {
-		inner := strings.TrimSpace(cmd[1 : len(cmd)-1])
-		code := r.runScript(inner)
-		if r.exitFlag {
-			return r.exitCode, true
-		}
-		return code, false
-	}
 	background := false
 	if strings.HasSuffix(cmd, "&") {
 		if !strings.HasSuffix(cmd, "&&") {
