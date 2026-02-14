@@ -3949,7 +3949,7 @@ func normalizeGlobPattern(pattern string) (string, bool) {
 		if marker {
 			marker = false
 			if c == '\\' {
-				escape = true
+				buf.WriteString("[\\\\]")
 				continue
 			}
 		}
@@ -4087,7 +4087,8 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 						continue
 					}
 				}
-				buf.WriteByte(c)
+				buf.WriteByte(varEscapeMarker)
+				buf.WriteByte('\\')
 				continue
 			}
 			escape = true
@@ -5183,7 +5184,8 @@ func expandVars(tok string, vars map[string]string) string {
 						continue
 					}
 				}
-				buf.WriteByte(c)
+				buf.WriteByte(varEscapeMarker)
+				buf.WriteByte('\\')
 				continue
 			}
 			escape = true
