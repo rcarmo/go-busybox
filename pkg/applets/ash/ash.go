@@ -6029,7 +6029,7 @@ const (
 	literalBackslashMarker = '\x1d'
 	globEscapeMarker       = '\x1e'
 	varEscapeMarker        = '\x1f'
-	commandSubDollarMarker = '\x20'
+	commandSubDollarMarker = '\x19'
 )
 
 func isGlobChar(c byte) bool {
