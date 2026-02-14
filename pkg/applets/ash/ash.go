@@ -633,6 +633,24 @@ func (r *runner) runScript(script string) int {
 		}
 
 		trimmedCmd := strings.TrimSpace(cmd)
+		if strings.HasSuffix(trimmedCmd, "&&") || strings.HasSuffix(trimmedCmd, "||") {
+			nextIdx := cmdEndIdx + 1
+			if skipFrom >= 0 && nextIdx == skipFrom {
+				nextIdx = skipTo
+			}
+			if nextIdx < len(commands) {
+				nextCmd := commands[nextIdx].cmd
+				if aliasTokens := splitTokens(nextCmd); len(aliasTokens) > 0 {
+					if _, ok := r.aliases[aliasTokens[0]]; ok {
+						nextCmd = r.expandAliases(nextCmd)
+					}
+				}
+				cmd = cmd + " " + nextCmd
+				cmdEndIdx = nextIdx
+				i = nextIdx
+				trimmedCmd = strings.TrimSpace(cmd)
+			}
+		}
 		if strings.HasSuffix(trimmedCmd, "&") && !strings.HasSuffix(trimmedCmd, "&&") {
 			bgCmd := strings.TrimSpace(strings.TrimSuffix(trimmedCmd, "&"))
 			bgTokens := tokenizeScript(bgCmd)
