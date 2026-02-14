@@ -1788,7 +1788,7 @@ func (r *runner) runCommand(cmd string) (int, bool) {
 		return core.ExitSuccess, exit
 	}
 	if tokens := splitTokens(cmd); len(tokens) > 0 && isReservedWord(tokens[0]) {
-		r.stdio.Errorf("ash: syntax error: unexpected %s\n", tokens[0])
+		r.stdio.Errorf("%s: line %d: syntax error: unexpected \"%s\"\n", r.scriptName, r.currentLine, tokens[0])
 		return 2, false
 	}
 	if len(cmd) > 2 && cmd[0] == '{' && cmd[len(cmd)-1] == '}' {
@@ -4731,7 +4731,7 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 	}
 	// Then expand command substitutions
 	tok = r.expandCommandSubsWithRunner(tok)
-	if !strings.Contains(tok, "$") && !strings.Contains(tok, "'") && !strings.Contains(tok, "\"") && !strings.ContainsRune(tok, commandSubDollarMarker) {
+	if !strings.Contains(tok, "$") && !strings.Contains(tok, "'") && !strings.Contains(tok, "\"") && !containsCommandSubMarker(tok) {
 		return tok
 	}
 	var buf strings.Builder
@@ -4875,8 +4875,7 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 		buf.WriteString(maybeEscapeBackslashes(r.vars[name], inDouble))
 		i = j - 1
 	}
-	result := buf.String()
-	return strings.ReplaceAll(result, string(commandSubDollarMarker), "$")
+	return restoreCommandSubMarkers(buf.String())
 }
 
 func (r *runner) expandVarsWithRunnerNoQuotes(tok string) string {
@@ -4892,7 +4891,7 @@ func (r *runner) expandVarsWithRunnerNoQuotes(tok string) string {
 	}
 	// Then expand command substitutions
 	tok = r.expandCommandSubsWithRunner(tok)
-	if !strings.Contains(tok, "$") && !strings.ContainsRune(tok, commandSubDollarMarker) {
+	if !strings.Contains(tok, "$") && !containsCommandSubMarker(tok) {
 		return tok
 	}
 	var buf strings.Builder
@@ -4977,8 +4976,7 @@ func (r *runner) expandVarsWithRunnerNoQuotes(tok string) string {
 		buf.WriteString(r.vars[name])
 		i = j - 1
 	}
-	result := buf.String()
-	return strings.ReplaceAll(result, string(commandSubDollarMarker), "$")
+	return restoreCommandSubMarkers(buf.String())
 }
 
 func (r *runner) expandHereDoc(content string) string {
@@ -6015,13 +6013,16 @@ func escapeGlobChars(value string) string {
 }
 
 const (
-	hereDocDollarMarker    = '\x1a'
-	hereDocBacktickMarker  = '\x1b'
-	hereDocBackslashMarker = '\x1c'
-	literalBackslashMarker = '\x1d'
-	globEscapeMarker       = '\x1e'
-	varEscapeMarker        = '\x1f'
-	commandSubDollarMarker = '\x19'
+	hereDocDollarMarker         = '\x1a'
+	hereDocBacktickMarker       = '\x1b'
+	hereDocBackslashMarker      = '\x1c'
+	literalBackslashMarker      = '\x1d'
+	globEscapeMarker            = '\x1e'
+	varEscapeMarker             = '\x1f'
+	commandSubBackslashMarker   = '\x16'
+	commandSubSingleQuoteMarker = '\x17'
+	commandSubDoubleQuoteMarker = '\x18'
+	commandSubDollarMarker      = '\x19'
 )
 
 func isGlobChar(c byte) bool {
@@ -6287,10 +6288,28 @@ func (r *runner) expandCommandSubsWithRunner(tok string) string {
 }
 
 func escapeCommandSubOutput(output string) string {
-	output = strings.ReplaceAll(output, "'", "\\'")
-	output = strings.ReplaceAll(output, "\"", "\\\"")
+	output = strings.ReplaceAll(output, "\\", string(commandSubBackslashMarker))
+	output = strings.ReplaceAll(output, "'", string(commandSubSingleQuoteMarker))
+	output = strings.ReplaceAll(output, "\"", string(commandSubDoubleQuoteMarker))
 	output = strings.ReplaceAll(output, "$", string(commandSubDollarMarker))
 	return output
+}
+
+func restoreCommandSubMarkers(value string) string {
+	replacer := strings.NewReplacer(
+		string(commandSubBackslashMarker), "\\",
+		string(commandSubSingleQuoteMarker), "'",
+		string(commandSubDoubleQuoteMarker), "\"",
+		string(commandSubDollarMarker), "$",
+	)
+	return replacer.Replace(value)
+}
+
+func containsCommandSubMarker(value string) bool {
+	return strings.ContainsRune(value, commandSubBackslashMarker) ||
+		strings.ContainsRune(value, commandSubSingleQuoteMarker) ||
+		strings.ContainsRune(value, commandSubDoubleQuoteMarker) ||
+		strings.ContainsRune(value, commandSubDollarMarker)
 }
 
 func runCommandSub(cmdStr string, vars map[string]string) string {
