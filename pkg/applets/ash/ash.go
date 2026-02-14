@@ -1254,6 +1254,15 @@ func hasEmbeddedHereDoc(cmd string, req hereDocRequest) bool {
 	return false
 }
 
+func isReservedWord(tok string) bool {
+	switch tok {
+	case "then", "do", "else", "elif", "fi", "done", "esac":
+		return true
+	default:
+		return false
+	}
+}
+
 func findMatchingBrace(script string, start int) int {
 	depth := 0
 	inSingle := false
@@ -1777,6 +1786,10 @@ func (r *runner) runCommand(cmd string) (int, bool) {
 			return core.ExitFailure, exit
 		}
 		return core.ExitSuccess, exit
+	}
+	if tokens := splitTokens(cmd); len(tokens) > 0 && isReservedWord(tokens[0]) {
+		r.stdio.Errorf("ash: syntax error: unexpected %s\n", tokens[0])
+		return 2, false
 	}
 	if len(cmd) > 2 && cmd[0] == '{' && cmd[len(cmd)-1] == '}' {
 		inner := strings.TrimSpace(cmd[1 : len(cmd)-1])
