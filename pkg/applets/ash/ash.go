@@ -4883,7 +4883,8 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 		buf.WriteString(maybeEscapeBackslashes(r.vars[name], inDouble))
 		i = j - 1
 	}
-	return buf.String()
+	result := buf.String()
+	return strings.ReplaceAll(result, string(commandSubDollarMarker), "$")
 }
 
 func (r *runner) expandVarsWithRunnerNoQuotes(tok string) string {
@@ -4984,7 +4985,8 @@ func (r *runner) expandVarsWithRunnerNoQuotes(tok string) string {
 		buf.WriteString(r.vars[name])
 		i = j - 1
 	}
-	return buf.String()
+	result := buf.String()
+	return strings.ReplaceAll(result, string(commandSubDollarMarker), "$")
 }
 
 func (r *runner) expandHereDoc(content string) string {
@@ -6027,6 +6029,7 @@ const (
 	literalBackslashMarker = '\x1d'
 	globEscapeMarker       = '\x1e'
 	varEscapeMarker        = '\x1f'
+	commandSubDollarMarker = '\x20'
 )
 
 func isGlobChar(c byte) bool {
@@ -6267,6 +6270,7 @@ func (r *runner) expandCommandSubsWithRunner(tok string) string {
 func escapeCommandSubOutput(output string) string {
 	output = strings.ReplaceAll(output, "'", "\\'")
 	output = strings.ReplaceAll(output, "\"", "\\\"")
+	output = strings.ReplaceAll(output, "$", string(commandSubDollarMarker))
 	return output
 }
 
