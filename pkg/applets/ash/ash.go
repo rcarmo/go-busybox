@@ -4552,7 +4552,6 @@ func normalizePrintfFormat(format string) string {
 
 func unescapeGlob(pattern string) string {
 	var buf strings.Builder
-	escape := false
 	marker := false
 	literalMarker := false
 	for i := 0; i < len(pattern); i++ {
@@ -4582,19 +4581,11 @@ func unescapeGlob(pattern string) string {
 		if c == globEscapeMarker {
 			continue
 		}
-		if escape {
-			buf.WriteByte(c)
-			escape = false
-			continue
-		}
 		if c == '\\' {
-			escape = true
+			buf.WriteByte('\\')
 			continue
 		}
 		buf.WriteByte(c)
-	}
-	if escape {
-		buf.WriteByte('\\')
 	}
 	return buf.String()
 }
