@@ -4079,6 +4079,17 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 			continue
 		}
 		if c == '\\' && !inSingle {
+			if inDouble {
+				if i+1 < len(tok) {
+					next := tok[i+1]
+					if next == '$' || next == '`' || next == '"' || next == '\\' || next == '\n' {
+						escape = true
+						continue
+					}
+				}
+				buf.WriteByte(c)
+				continue
+			}
 			escape = true
 			continue
 		}
@@ -5164,6 +5175,17 @@ func expandVars(tok string, vars map[string]string) string {
 			continue
 		}
 		if c == '\\' && !inSingle {
+			if inDouble {
+				if i+1 < len(tok) {
+					next := tok[i+1]
+					if next == '$' || next == '`' || next == '"' || next == '\\' || next == '\n' {
+						escape = true
+						continue
+					}
+				}
+				buf.WriteByte(c)
+				continue
+			}
 			escape = true
 			continue
 		}
