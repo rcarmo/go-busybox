@@ -511,6 +511,7 @@ func (r *runner) runScript(script string) int {
 		}()
 	}
 	commands := splitCommands(script)
+	scriptLines := strings.Split(script, "\n")
 	hereDocLine := 0
 	skipFrom := -1
 	skipTo := -1
@@ -590,7 +591,7 @@ func (r *runner) runScript(script string) int {
 				startIdx = cmdEndIdx + 1
 			}
 			if len(reqs) > 0 {
-				contents, endIdx := r.readHereDocContents(reqs, commands, startIdx)
+				contents, endIdx := r.readHereDocContents(reqs, commands, scriptLines, startIdx)
 				r.pendingHereDocs = contents
 				hereDocLine = entry.line
 				skipFrom = startIdx
@@ -4285,14 +4286,17 @@ func extractHereDocRequests(cmd string) []hereDocRequest {
 	return reqs
 }
 
-func (r *runner) readHereDocContents(reqs []hereDocRequest, commands []commandEntry, start int) ([]string, int) {
+func (r *runner) readHereDocContents(reqs []hereDocRequest, commands []commandEntry, scriptLines []string, startIdx int) ([]string, int) {
 	contents := make([]string, 0, len(reqs))
-	j := start
+	lineIdx := len(scriptLines)
+	if startIdx < len(commands) {
+		lineIdx = commands[startIdx].line - 1
+	}
 	for _, req := range reqs {
 		var buf strings.Builder
 		continuation := false
-		for j < len(commands) {
-			line := commands[j].raw
+		for lineIdx < len(scriptLines) {
+			line := scriptLines[lineIdx]
 			if req.stripTabs {
 				line = strings.TrimLeft(line, "\t")
 			}
@@ -4303,24 +4307,32 @@ func (r *runner) readHereDocContents(reqs []hereDocRequest, commands []commandEn
 				line = strings.TrimSuffix(line, "\\")
 				buf.WriteString(line)
 				continuation = true
-				j++
+				lineIdx++
 				continue
 			}
 			buf.WriteString(line)
 			buf.WriteByte('\n')
 			continuation = false
-			j++
+			lineIdx++
 		}
 		content := buf.String()
 		if !req.quoted {
 			content = r.expandHereDoc(content)
 		}
 		contents = append(contents, content)
-		if j < len(commands) {
-			j++
+		if lineIdx < len(scriptLines) {
+			lineIdx++
 		}
 	}
-	return contents, j
+	endLine := lineIdx + 1
+	endIdx := len(commands)
+	for idx := startIdx; idx < len(commands); idx++ {
+		if commands[idx].line >= endLine {
+			endIdx = idx
+			break
+		}
+	}
+	return contents, endIdx
 }
 
 func parsePrintfVerbs(format string) []rune {
