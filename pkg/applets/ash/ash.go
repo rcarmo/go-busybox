@@ -2522,6 +2522,14 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		}
 		return code, false
 	}
+	if len(cmdSpec.args) >= 2 && cmdSpec.args[0] == "(" && cmdSpec.args[len(cmdSpec.args)-1] == ")" {
+		inner := strings.Join(cmdSpec.args[1:len(cmdSpec.args)-1], " ")
+		savedStdio := r.stdio
+		r.stdio = &core.Stdio{In: stdin, Out: stdout, Err: stderr}
+		code := r.runSubshell(inner)
+		r.stdio = savedStdio
+		return code, false
+	}
 	// Check if it's a user-defined function
 	if body, ok := r.funcs[cmdSpec.args[0]]; ok {
 		// Save and set positional parameters
