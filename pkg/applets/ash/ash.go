@@ -228,43 +228,44 @@ type pendingSignal struct {
 }
 
 type runner struct {
-	stdio          *core.Stdio
-	vars           map[string]string
-	exported       map[string]bool
-	funcs          map[string]string
-	aliases        map[string]string
-	traps          map[string]string
-	ignored        map[os.Signal]bool
-	positional     []string // $1, $2, etc.
-	scriptName     string   // $0
-	breakCount     int
-	continueCount  int
-	loopDepth      int
-	getoptsPos     int
-	returnFlag     bool
-	returnCode     int
-	exitFlag       bool
-	exitCode       int
-	options        map[string]bool
-	restricted     bool
-	lastStatus     int
-	lastBgPid      int
-	currentLine    int
-	lineOffset     int
-	inTrap         bool
-	trapStatus     int
-	arithFailed    bool
-	jobs           map[int]*job
-	jobOrder       []int
-	jobByPid       map[int]int
-	nextJobID      int
-	signalCh       chan os.Signal
-	forwardSignal  chan os.Signal
-	pendingSignals []pendingSignal
-	inSubshell     bool
-	pendingHereDoc string
-	readBuf        *bufio.Reader
-	readStdin      io.Reader
+	stdio           *core.Stdio
+	vars            map[string]string
+	exported        map[string]bool
+	funcs           map[string]string
+	aliases         map[string]string
+	traps           map[string]string
+	ignored         map[os.Signal]bool
+	positional      []string // $1, $2, etc.
+	scriptName      string   // $0
+	breakCount      int
+	continueCount   int
+	loopDepth       int
+	getoptsPos      int
+	returnFlag      bool
+	returnCode      int
+	exitFlag        bool
+	exitCode        int
+	options         map[string]bool
+	restricted      bool
+	lastStatus      int
+	lastBgPid       int
+	currentLine     int
+	lineOffset      int
+	inTrap          bool
+	trapStatus      int
+	arithFailed     bool
+	jobs            map[int]*job
+	jobOrder        []int
+	jobByPid        map[int]int
+	nextJobID       int
+	signalCh        chan os.Signal
+	forwardSignal   chan os.Signal
+	pendingSignals  []pendingSignal
+	inSubshell      bool
+	pendingHereDocs []string
+	fdReaders       map[int]*bufio.Reader
+	readBuf         *bufio.Reader
+	readStdin       io.Reader
 }
 
 type job struct {
@@ -520,27 +521,43 @@ func (r *runner) runScript(script string) int {
 				cmd = r.expandAliases(cmd)
 			}
 		}
-		if marker, stripTabs := extractHereDocMarker(cmd); marker != "" {
-			var lines []string
+		if reqs := extractHereDocRequests(cmd); len(reqs) > 0 {
+			var contents []string
 			j := i + 1
-			for j < len(commands) {
-				line := commands[j].cmd
-				if strings.TrimSpace(line) == marker {
-					break
+			for _, req := range reqs {
+				var buf strings.Builder
+				continuation := false
+				for j < len(commands) {
+					line := commands[j].raw
+					if req.stripTabs {
+						line = strings.TrimLeft(line, "\t")
+					}
+					if !continuation && line == req.marker {
+						break
+					}
+					if !req.quoted && strings.HasSuffix(line, "\\") {
+						line = strings.TrimSuffix(line, "\\")
+						buf.WriteString(line)
+						continuation = true
+						j++
+						continue
+					}
+					buf.WriteString(line)
+					buf.WriteByte('\n')
+					continuation = false
+					j++
 				}
-				if stripTabs {
-					line = strings.TrimLeft(line, "\t")
+				content := buf.String()
+				if !req.quoted {
+					content = r.expandHereDoc(content)
 				}
-				lines = append(lines, line)
-				j++
+				contents = append(contents, content)
+				if j < len(commands) {
+					j++
+				}
 			}
-			if j < len(commands) {
-				r.pendingHereDoc = strings.Join(lines, "\n")
-				if len(lines) > 0 {
-					r.pendingHereDoc += "\n"
-				}
-				i = j
-			}
+			r.pendingHereDocs = contents
+			i = j - 1
 		}
 		r.currentLine = entry.line + r.lineOffset
 		r.handleSignalsNonBlocking()
@@ -1286,6 +1303,17 @@ func copySignalMap(src map[os.Signal]bool) map[os.Signal]bool {
 	return dst
 }
 
+func copyFdReaders(src map[int]*bufio.Reader) map[int]*bufio.Reader {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[int]*bufio.Reader, len(src))
+	for key, val := range src {
+		dst[key] = val
+	}
+	return dst
+}
+
 func subshellTraps(src map[string]string) (map[string]string, map[os.Signal]bool) {
 	traps := map[string]string{}
 	ignored := map[os.Signal]bool{}
@@ -1328,6 +1356,8 @@ func (r *runner) runSubshell(inner string) int {
 	savedCurrentLine := r.currentLine
 	savedSignalCh := r.signalCh
 	savedInSubshell := r.inSubshell
+	savedPendingHereDocs := r.pendingHereDocs
+	savedFdReaders := r.fdReaders
 
 	r.vars = copyStringMap(savedVars)
 	r.exported = copyBoolMap(savedExported)
@@ -1351,6 +1381,8 @@ func (r *runner) runSubshell(inner string) int {
 	r.returnCode = core.ExitSuccess
 	r.exitFlag = false
 	r.exitCode = core.ExitSuccess
+	r.pendingHereDocs = nil
+	r.fdReaders = copyFdReaders(savedFdReaders)
 	r.lineOffset = 0
 	if savedCurrentLine > 0 {
 		r.lineOffset = savedCurrentLine - 1
@@ -1383,6 +1415,8 @@ func (r *runner) runSubshell(inner string) int {
 	r.returnCode = savedReturnCode
 	r.exitFlag = savedExitFlag
 	r.exitCode = savedExitCode
+	r.pendingHereDocs = savedPendingHereDocs
+	r.fdReaders = savedFdReaders
 	r.lineOffset = savedLineOffset
 	r.currentLine = savedCurrentLine
 	r.signalCh = savedSignalCh
@@ -1541,9 +1575,12 @@ func (r *runner) startBackground(cmd string) int {
 		stdout := r.stdio.Out
 		stderr := r.stdio.Err
 		var closers []io.Closer
-		if cmdSpec.hereDoc != "" && r.pendingHereDoc != "" {
-			stdin = strings.NewReader(r.pendingHereDoc)
-			r.pendingHereDoc = ""
+		if len(cmdSpec.hereDocs) > 0 {
+			for _, doc := range cmdSpec.hereDocs {
+				if doc.fd == 0 {
+					stdin = strings.NewReader(doc.content)
+				}
+			}
 		}
 		if cmdSpec.closeStdout {
 			stdout = io.Discard
@@ -1551,7 +1588,19 @@ func (r *runner) startBackground(cmd string) int {
 		if cmdSpec.closeStderr {
 			stderr = io.Discard
 		}
-		if cmdSpec.redirIn != "" {
+		if strings.HasPrefix(cmdSpec.redirIn, "&") {
+			fd, err := strconv.Atoi(strings.TrimPrefix(cmdSpec.redirIn, "&"))
+			if err != nil {
+				r.stdio.Errorf("ash: %v\n", err)
+				return core.ExitFailure
+			}
+			if reader, ok := r.fdReaders[fd]; ok {
+				stdin = reader
+			} else {
+				r.stdio.Errorf("ash: bad file descriptor\n")
+				return core.ExitFailure
+			}
+		} else if cmdSpec.redirIn != "" {
 			file, err := os.Open(cmdSpec.redirIn)
 			if err != nil {
 				r.stdio.Errorf("ash: %v\n", err)
@@ -1739,7 +1788,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		return core.ExitFailure, false
 	}
 	if len(cmdSpec.args) == 0 {
-		if cmdSpec.redirIn == "" && cmdSpec.redirOut == "" && cmdSpec.redirErr == "" && !cmdSpec.closeStdout && !cmdSpec.closeStderr && cmdSpec.hereDoc == "" {
+		if cmdSpec.redirIn == "" && cmdSpec.redirOut == "" && cmdSpec.redirErr == "" && !cmdSpec.closeStdout && !cmdSpec.closeStderr && len(cmdSpec.hereDocs) == 0 {
 			return core.ExitSuccess, false
 		}
 		cmdSpec.args = []string{":"}
@@ -1751,11 +1800,37 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 	if r.options["x"] {
 		fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args, " "))
 	}
-	if cmdSpec.hereDoc != "" && r.pendingHereDoc != "" {
-		stdin = strings.NewReader(r.pendingHereDoc)
-		r.pendingHereDoc = ""
+	if len(cmdSpec.hereDocs) > 0 {
+		savedFdReaders := r.fdReaders
+		fdReaders := make(map[int]*bufio.Reader)
+		for fd, reader := range savedFdReaders {
+			fdReaders[fd] = reader
+		}
+		for _, doc := range cmdSpec.hereDocs {
+			if doc.fd == 0 {
+				stdin = strings.NewReader(doc.content)
+				continue
+			}
+			fdReaders[doc.fd] = bufio.NewReader(strings.NewReader(doc.content))
+		}
+		r.fdReaders = fdReaders
+		defer func() {
+			r.fdReaders = savedFdReaders
+		}()
 	}
-	if cmdSpec.redirIn != "" {
+	if strings.HasPrefix(cmdSpec.redirIn, "&") {
+		fd, err := strconv.Atoi(strings.TrimPrefix(cmdSpec.redirIn, "&"))
+		if err != nil {
+			r.stdio.Errorf("ash: %v\n", err)
+			return core.ExitFailure, false
+		}
+		reader, ok := r.fdReaders[fd]
+		if !ok {
+			r.stdio.Errorf("ash: bad file descriptor\n")
+			return core.ExitFailure, false
+		}
+		stdin = reader
+	} else if cmdSpec.redirIn != "" {
 		file, err := os.Open(cmdSpec.redirIn)
 		if err != nil {
 			r.stdio.Errorf("ash: %v\n", err)
@@ -2811,6 +2886,7 @@ func (r *runner) runPipeline(segments []string) int {
 				jobs:       map[int]*job{},
 				jobByPid:   map[int]int{},
 				nextJobID:  1,
+				fdReaders:  copyFdReaders(r.fdReaders),
 				signalCh:   make(chan os.Signal, 8),
 			}
 			code, _ := sub.runSimpleCommand(s.seg, input, out, r.stdio.Err)
@@ -2841,7 +2917,7 @@ func (r *runner) runPipeline(segments []string) int {
 		}
 		seg := s.seg
 		cmdTokens := splitTokens(seg)
-		cmdSpec, err := parseCommandSpec(cmdTokens, r.vars)
+		cmdSpec, err := r.parseCommandSpecWithRunner(cmdTokens)
 		if err != nil {
 			r.stdio.Errorf("ash: %v\n", err)
 			if s.writer != nil {
@@ -2942,6 +3018,7 @@ func (r *runner) runPipeline(segments []string) int {
 				jobs:       map[int]*job{},
 				jobByPid:   map[int]int{},
 				nextJobID:  1,
+				fdReaders:  copyFdReaders(r.fdReaders),
 				signalCh:   make(chan os.Signal, 8),
 			}
 			code, _ := sub.runSimpleCommand(seg, s.prevReader, stdout, r.stdio.Err)
@@ -3121,7 +3198,12 @@ type commandSpec struct {
 	redirErrAppend bool
 	closeStdout    bool
 	closeStderr    bool
-	hereDoc        string // content for <<EOF
+	hereDocs       []hereDocSpec
+}
+
+type hereDocSpec struct {
+	fd      int
+	content string
 }
 
 func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error) {
@@ -3130,19 +3212,36 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 	seenCmd := false
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
-		// Handle here-document <<EOF or <<'EOF' or <<-EOF
-		if strings.HasPrefix(tok, "<<") {
-			marker := strings.TrimPrefix(tok, "<<")
-			marker = strings.TrimPrefix(marker, "-") // <<- strips leading tabs
-			marker = strings.Trim(marker, "'\"")
-			if marker == "" && i+1 < len(tokens) {
-				marker = strings.Trim(tokens[i+1], "'\"")
+		next := ""
+		if i+1 < len(tokens) {
+			next = tokens[i+1]
+		}
+		if req, usedNext, ok := parseHereDocToken(tok, next); ok {
+			if usedNext {
 				i++
 			}
-			// Here-doc content should be in subsequent tokens until marker
-			// For now, store marker and handle in execution
-			spec.hereDoc = marker
+			content := ""
+			if len(r.pendingHereDocs) > 0 {
+				content = r.pendingHereDocs[0]
+				r.pendingHereDocs = r.pendingHereDocs[1:]
+			}
+			spec.hereDocs = append(spec.hereDocs, hereDocSpec{fd: req.fd, content: content})
 			continue
+		}
+		if idx := strings.Index(tok, "<&"); idx >= 0 {
+			fdStr := tok[:idx]
+			target := tok[idx+2:]
+			if fdStr == "" || fdStr == "0" {
+				if target == "" {
+					if i+1 >= len(tokens) {
+						return spec, fmt.Errorf("missing redirection target")
+					}
+					target = tokens[i+1]
+					i++
+				}
+				spec.redirIn = "&" + target
+				continue
+			}
 		}
 		switch tok {
 		case "2>&1":
@@ -3231,6 +3330,32 @@ func parseCommandSpec(tokens []string, vars map[string]string) (commandSpec, err
 	seenCmd := false
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
+		next := ""
+		if i+1 < len(tokens) {
+			next = tokens[i+1]
+		}
+		if _, usedNext, ok := parseHereDocToken(tok, next); ok {
+			if usedNext {
+				i++
+			}
+			spec.hereDocs = append(spec.hereDocs, hereDocSpec{})
+			continue
+		}
+		if idx := strings.Index(tok, "<&"); idx >= 0 {
+			fdStr := tok[:idx]
+			target := tok[idx+2:]
+			if fdStr == "" || fdStr == "0" {
+				if target == "" {
+					if i+1 >= len(tokens) {
+						return spec, fmt.Errorf("missing redirection target")
+					}
+					target = tokens[i+1]
+					i++
+				}
+				spec.redirIn = "&" + target
+				continue
+			}
+		}
 		switch tok {
 		case "2>&1":
 			spec.redirErr = "&1"
@@ -3538,6 +3663,7 @@ func isTerminatorSuffix(s string) bool {
 
 type commandEntry struct {
 	cmd  string
+	raw  string
 	line int
 }
 
@@ -3634,8 +3760,9 @@ func splitCommands(script string) []commandEntry {
 				continue
 			}
 			if c == ';' && !inSingle && !inDouble && !inBrace && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
-				if cmd := strings.TrimSpace(buf.String()); cmd != "" {
-					cmds = append(cmds, commandEntry{cmd: cmd, line: startLine})
+				raw := buf.String()
+				if cmd := strings.TrimSpace(raw); cmd != "" {
+					cmds = append(cmds, commandEntry{cmd: cmd, raw: raw, line: startLine})
 				}
 				buf.Reset()
 				startLine = lineNo
@@ -3652,8 +3779,9 @@ func splitCommands(script string) []commandEntry {
 					continue
 				}
 				buf.WriteByte('&')
-				if cmd := strings.TrimSpace(buf.String()); cmd != "" {
-					cmds = append(cmds, commandEntry{cmd: cmd, line: startLine})
+				raw := buf.String()
+				if cmd := strings.TrimSpace(raw); cmd != "" {
+					cmds = append(cmds, commandEntry{cmd: cmd, raw: raw, line: startLine})
 				}
 				buf.Reset()
 				startLine = lineNo
@@ -3671,16 +3799,19 @@ func splitCommands(script string) []commandEntry {
 			continue
 		}
 		if !inSingle && !inDouble && !inBrace && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
-			if cmd := strings.TrimSpace(buf.String()); cmd != "" {
-				cmds = append(cmds, commandEntry{cmd: cmd, line: startLine})
+			raw := buf.String()
+			cmd := strings.TrimSpace(raw)
+			if cmd != "" || raw != "" || line == "" {
+				cmds = append(cmds, commandEntry{cmd: cmd, raw: raw, line: startLine})
 			}
 			buf.Reset()
 		} else {
 			buf.WriteByte('\n')
 		}
 	}
-	if tail := strings.TrimSpace(buf.String()); tail != "" {
-		cmds = append(cmds, commandEntry{cmd: tail, line: startLine})
+	raw := buf.String()
+	if tail := strings.TrimSpace(raw); tail != "" {
+		cmds = append(cmds, commandEntry{cmd: tail, raw: raw, line: startLine})
 	}
 	return cmds
 }
@@ -3827,23 +3958,70 @@ func splitInlineRedir(tok string) (string, string, bool) {
 	return "", "", false
 }
 
-func extractHereDocMarker(cmd string) (string, bool) {
-	tokens := splitTokens(cmd)
-	for i, tok := range tokens {
-		if strings.HasPrefix(tok, "<<") {
-			stripTabs := strings.HasPrefix(tok, "<<-")
-			marker := strings.TrimPrefix(tok, "<<")
-			if stripTabs {
-				marker = strings.TrimPrefix(marker, "-")
-			}
-			marker = strings.Trim(marker, "'\"")
-			if marker == "" && i+1 < len(tokens) {
-				marker = strings.Trim(tokens[i+1], "'\"")
-			}
-			return marker, stripTabs
+type hereDocRequest struct {
+	fd        int
+	marker    string
+	stripTabs bool
+	quoted    bool
+}
+
+func parseHereDocToken(tok string, next string) (hereDocRequest, bool, bool) {
+	if tok == "" || tok[0] == '\'' || tok[0] == '"' {
+		return hereDocRequest{}, false, false
+	}
+	idx := strings.Index(tok, "<<")
+	if idx < 0 {
+		return hereDocRequest{}, false, false
+	}
+	fd := 0
+	if idx > 0 {
+		fdStr := tok[:idx]
+		n, err := strconv.Atoi(fdStr)
+		if err != nil {
+			return hereDocRequest{}, false, false
+		}
+		fd = n
+	}
+	rest := tok[idx+2:]
+	stripTabs := false
+	if strings.HasPrefix(rest, "-") {
+		stripTabs = true
+		rest = strings.TrimPrefix(rest, "-")
+	}
+	usedNext := false
+	if rest == "" && next != "" {
+		rest = next
+		usedNext = true
+	}
+	quoted := false
+	marker := rest
+	if len(rest) >= 2 {
+		if (rest[0] == '\'' && rest[len(rest)-1] == '\'') || (rest[0] == '"' && rest[len(rest)-1] == '"') {
+			quoted = true
+			marker = rest[1 : len(rest)-1]
 		}
 	}
-	return "", false
+	return hereDocRequest{fd: fd, marker: marker, stripTabs: stripTabs, quoted: quoted}, usedNext, true
+}
+
+func extractHereDocRequests(cmd string) []hereDocRequest {
+	tokens := splitTokens(cmd)
+	var reqs []hereDocRequest
+	for i := 0; i < len(tokens); i++ {
+		next := ""
+		if i+1 < len(tokens) {
+			next = tokens[i+1]
+		}
+		req, usedNext, ok := parseHereDocToken(tokens[i], next)
+		if !ok {
+			continue
+		}
+		reqs = append(reqs, req)
+		if usedNext {
+			i++
+		}
+	}
+	return reqs
 }
 
 func parsePrintfVerbs(format string) []rune {
@@ -4337,6 +4515,44 @@ func (r *runner) expandVarsWithRunnerNoQuotes(tok string) string {
 		i = j - 1
 	}
 	return buf.String()
+}
+
+func (r *runner) expandHereDoc(content string) string {
+	var buf strings.Builder
+	for i := 0; i < len(content); i++ {
+		c := content[i]
+		if c == '\\' && i+1 < len(content) {
+			next := content[i+1]
+			switch next {
+			case '$':
+				buf.WriteByte(hereDocDollarMarker)
+				i++
+				continue
+			case '`':
+				buf.WriteByte(hereDocBacktickMarker)
+				i++
+				continue
+			case '\\':
+				buf.WriteByte(hereDocBackslashMarker)
+				i++
+				continue
+			case '\n':
+				i++
+				continue
+			}
+		}
+		buf.WriteByte(c)
+	}
+	expanded := r.expandVarsWithRunnerNoQuotes(buf.String())
+	if expanded == "" {
+		return expanded
+	}
+	replacer := strings.NewReplacer(
+		string(hereDocDollarMarker), "$",
+		string(hereDocBacktickMarker), "`",
+		string(hereDocBackslashMarker), "\\",
+	)
+	return replacer.Replace(expanded)
 }
 
 // expandBraceExprWithRunner handles ${VAR:-default} etc with positional param support
@@ -5335,6 +5551,9 @@ func escapeGlobChars(value string) string {
 }
 
 const (
+	hereDocDollarMarker    = '\x1a'
+	hereDocBacktickMarker  = '\x1b'
+	hereDocBackslashMarker = '\x1c'
 	literalBackslashMarker = '\x1d'
 	globEscapeMarker       = '\x1e'
 	varEscapeMarker        = '\x1f'
