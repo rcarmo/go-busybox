@@ -522,6 +522,8 @@ func (r *runner) runScript(script string) int {
 			continue
 		}
 		entry := commands[i]
+		cmdStartIdx := i
+		cmdEndIdx := i
 		cmd := entry.cmd
 		if aliasTokens := splitTokens(cmd); len(aliasTokens) > 0 {
 			if _, ok := r.aliases[aliasTokens[0]]; ok {
@@ -570,6 +572,7 @@ func (r *runner) runScript(script string) int {
 				cmd = compound
 			}
 		}
+		cmdEndIdx = i
 
 		if entry.line != hereDocLine {
 			hereDocLine = 0
@@ -578,16 +581,20 @@ func (r *runner) runScript(script string) int {
 		}
 		if hereDocLine == 0 {
 			reqs := extractHereDocRequests(cmd)
-			k := i + 1
-			for k < len(commands) && commands[k].line == entry.line {
-				reqs = append(reqs, extractHereDocRequests(commands[k].cmd)...)
-				k++
+			lineEndIdx := cmdStartIdx + 1
+			for lineEndIdx < len(commands) && commands[lineEndIdx].line == entry.line {
+				reqs = append(reqs, extractHereDocRequests(commands[lineEndIdx].cmd)...)
+				lineEndIdx++
+			}
+			startIdx := lineEndIdx
+			if cmdEndIdx+1 > startIdx {
+				startIdx = cmdEndIdx + 1
 			}
 			if len(reqs) > 0 {
-				contents, endIdx := r.readHereDocContents(reqs, commands, k)
+				contents, endIdx := r.readHereDocContents(reqs, commands, startIdx)
 				r.pendingHereDocs = contents
 				hereDocLine = entry.line
-				skipFrom = k
+				skipFrom = startIdx
 				skipTo = endIdx
 			}
 		}
