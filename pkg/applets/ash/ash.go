@@ -571,6 +571,27 @@ func (r *runner) runScript(script string) int {
 				}
 				cmd = compound
 			}
+			if len(tokens) > 0 && strings.HasSuffix(tokens[0], "()") {
+				bracePos := strings.Index(cmd, "{")
+				if bracePos == -1 || findMatchingBrace(cmd, bracePos) == -1 {
+					compound := cmd
+					for i+1 < len(commands) {
+						i++
+						nextCmd := commands[i].cmd
+						if aliasTokens := splitTokens(nextCmd); len(aliasTokens) > 0 {
+							if _, ok := r.aliases[aliasTokens[0]]; ok {
+								nextCmd = r.expandAliases(nextCmd)
+							}
+						}
+						compound = compound + "; " + nextCmd
+						bracePos = strings.Index(compound, "{")
+						if bracePos >= 0 && findMatchingBrace(compound, bracePos) != -1 {
+							cmd = compound
+							break
+						}
+					}
+				}
+			}
 		}
 		cmdEndIdx = i
 
