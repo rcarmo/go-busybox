@@ -609,6 +609,15 @@ func (r *runner) runScript(script string) int {
 					reqs = append(reqs, extractHereDocRequests(commands[lineEndIdx].cmd)...)
 					lineEndIdx++
 				}
+				if len(reqs) > 0 {
+					filtered := reqs[:0]
+					for _, req := range reqs {
+						if !hasEmbeddedHereDoc(cmd, req) {
+							filtered = append(filtered, req)
+						}
+					}
+					reqs = filtered
+				}
 				startIdx := lineEndIdx
 				if cmdEndIdx+1 > startIdx {
 					startIdx = cmdEndIdx + 1
@@ -1213,6 +1222,20 @@ func isFuncDefCommand(script string) bool {
 	return name != "" && isName(name)
 }
 
+func hasEmbeddedHereDoc(cmd string, req hereDocRequest) bool {
+	lines := strings.Split(cmd, "\n")
+	for _, line := range lines[1:] {
+		check := line
+		if req.stripTabs {
+			check = strings.TrimLeft(check, "\t")
+		}
+		if check == req.marker {
+			return true
+		}
+	}
+	return false
+}
+
 func findMatchingBrace(script string, start int) int {
 	depth := 0
 	inSingle := false
@@ -1740,7 +1763,9 @@ func (r *runner) runCommand(cmd string) (int, bool) {
 	if len(cmd) > 2 && cmd[0] == '{' && cmd[len(cmd)-1] == '}' {
 		inner := strings.TrimSpace(cmd[1 : len(cmd)-1])
 		savedSkip := r.skipHereDocRead
-		r.skipHereDocRead = true
+		if len(r.pendingHereDocs) > 0 {
+			r.skipHereDocRead = true
+		}
 		code := r.runScript(inner)
 		r.skipHereDocRead = savedSkip
 		if r.exitFlag {
@@ -2132,7 +2157,9 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		savedStdio := r.stdio
 		savedSkip := r.skipHereDocRead
 		r.stdio = &core.Stdio{In: stdin, Out: stdout, Err: stderr}
-		r.skipHereDocRead = true
+		if len(r.pendingHereDocs) > 0 {
+			r.skipHereDocRead = true
+		}
 		code := r.runScript(inner)
 		r.skipHereDocRead = savedSkip
 		r.stdio = savedStdio
@@ -2901,7 +2928,9 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		savedStdio := r.stdio
 		savedSkip := r.skipHereDocRead
 		r.stdio = &core.Stdio{In: stdin, Out: stdout, Err: stderr}
-		r.skipHereDocRead = true
+		if len(r.pendingHereDocs) > 0 {
+			r.skipHereDocRead = true
+		}
 		code := r.runScript(inner)
 		r.skipHereDocRead = savedSkip
 		r.stdio = savedStdio
