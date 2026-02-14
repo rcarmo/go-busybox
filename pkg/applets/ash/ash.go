@@ -6181,6 +6181,19 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 }
 
 // expandCommandSubs expands $(...) and `...` command substitutions
+func findBacktickEnd(tok string, start int) int {
+	for i := start + 1; i < len(tok); i++ {
+		if tok[i] == '\\' && i+1 < len(tok) {
+			i++
+			continue
+		}
+		if tok[i] == '`' {
+			return i
+		}
+	}
+	return -1
+}
+
 func expandCommandSubs(tok string, vars map[string]string) string {
 	// Handle $(...) first
 	for {
@@ -6212,11 +6225,10 @@ func expandCommandSubs(tok string, vars map[string]string) string {
 		if start == -1 {
 			break
 		}
-		end := strings.IndexByte(tok[start+1:], '`')
+		end := findBacktickEnd(tok, start)
 		if end == -1 {
 			break
 		}
-		end += start + 1
 		cmdStr := tok[start+1 : end]
 		output := escapeCommandSubOutput(runCommandSub(cmdStr, vars))
 		tok = tok[:start] + output + tok[end+1:]
@@ -6255,11 +6267,10 @@ func (r *runner) expandCommandSubsWithRunner(tok string) string {
 		if start == -1 {
 			break
 		}
-		end := strings.IndexByte(tok[start+1:], '`')
+		end := findBacktickEnd(tok, start)
 		if end == -1 {
 			break
 		}
-		end += start + 1
 		cmdStr := tok[start+1 : end]
 		output := escapeCommandSubOutput(r.runCommandSubWithRunner(cmdStr))
 		tok = tok[:start] + output + tok[end+1:]
