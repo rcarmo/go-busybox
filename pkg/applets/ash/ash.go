@@ -4407,10 +4407,14 @@ func parseHereDocToken(tok string, next string) (hereDocRequest, bool, bool) {
 	rest = strings.TrimRight(rest, ";&")
 	quoted := false
 	marker := rest
+	containsBacktick := strings.Contains(rest, "`")
 	if strings.ContainsAny(rest, "'\"") {
 		quoted = true
 		marker = strings.ReplaceAll(rest, "'", "")
 		marker = strings.ReplaceAll(marker, "\"", "")
+	}
+	if containsBacktick {
+		quoted = true
 	}
 	return hereDocRequest{fd: fd, marker: marker, stripTabs: stripTabs, quoted: quoted}, usedNext, true
 }
