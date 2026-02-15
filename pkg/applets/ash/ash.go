@@ -4150,7 +4150,12 @@ func (r *runner) runPipeline(segments []string) int {
 		}
 		seg := s.seg
 		cmdTokens := splitTokens(seg)
+		savedVars := copyStringMap(r.vars)
+		savedExported := copyBoolMap(r.exported)
 		cmdSpec, err := r.parseCommandSpecWithRunner(cmdTokens)
+		// Restore runner vars/exported (prefix assigns shouldn't leak into pipeline parsing)
+		r.vars = savedVars
+		r.exported = savedExported
 		if err != nil {
 			r.stdio.Errorf("ash: %v\n", err)
 			if s.writer != nil {
@@ -4268,7 +4273,17 @@ func (r *runner) runPipeline(segments []string) int {
 			command.Stdin = stdin
 			command.Stdout = outWriter
 			command.Stderr = errWriter
-			command.Env = buildEnv(r.vars, r.exported)
+			envVars := r.vars
+			exportedVars := r.exported
+			if len(cmdSpec.prefixAssigns) > 0 {
+				envVars = copyStringMap(r.vars)
+				exportedVars = copyBoolMap(r.exported)
+				for _, pa := range cmdSpec.prefixAssigns {
+					envVars[pa.name] = pa.newVal
+					exportedVars[pa.name] = true
+				}
+			}
+			command.Env = buildEnv(envVars, exportedVars)
 			if r.options["x"] {
 				fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args, " "))
 			}
