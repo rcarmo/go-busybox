@@ -4595,7 +4595,7 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 				continue
 			}
 			expanded := expandTokenWithRunner(tok, r)
-			if expanded == "" && !isQuotedToken(tok) && hasCommandSub(tok) {
+			if expanded == "" && !isQuotedToken(tok) && (hasCommandSub(tok) || strings.ContainsAny(tok, "$")) {
 				continue
 			}
 			expandedArgs := []string{expanded}
@@ -7703,8 +7703,20 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		pattern := rest
 		replacement := ""
 		if sepIdx := strings.Index(rest, "/"); sepIdx >= 0 {
-			pattern = rest[:sepIdx]
-			replacement = maybeStrip(rest[sepIdx+1:])
+			// If pattern starts with /, the separator is the second /
+			if sepIdx == 0 && len(rest) > 1 {
+				// Pattern starts with / - look for next /
+				nextSep := strings.Index(rest[1:], "/")
+				if nextSep >= 0 {
+					pattern = rest[:nextSep+1]
+					replacement = maybeStrip(rest[nextSep+2:])
+				} else {
+					pattern = rest
+				}
+			} else {
+				pattern = rest[:sepIdx]
+				replacement = maybeStrip(rest[sepIdx+1:])
+			}
 		}
 		val := vars[name]
 		if val == "" && pattern != "*" && pattern != "" {
