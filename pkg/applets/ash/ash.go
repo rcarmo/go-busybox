@@ -585,6 +585,12 @@ func (r *runner) runScript(script string) int {
 			continue
 		}
 		entry := commands[i]
+		if entry.cmd == "__SYNTAX_ERROR_UNTERMINATED_QUOTE__" {
+			fmt.Fprintf(r.stdio.Err, "%s: line %d: syntax error: unterminated quoted string\n", r.scriptName, entry.line)
+			r.exitFlag = true
+			r.exitCode = 2
+			return 2
+		}
 		cmdStartIdx := i
 		cmdEndIdx := i
 		cmd := entry.cmd
@@ -4619,6 +4625,14 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 				}
 				continue
 			}
+			// Handle N>&- (close fd N) patterns
+			if len(tok) >= 4 && tok[len(tok)-1] == '-' && strings.Contains(tok, ">&") {
+				fdPart := tok[:strings.Index(tok, ">&")]
+				if _, err := strconv.Atoi(fdPart); err == nil {
+					// Valid fd close: silently ignore (we don't track arbitrary fds)
+					continue
+				}
+			}
 			if name, val, ok := parseAssignment(tok); ok && !seenCmd {
 				expandedVal := expandTokenWithRunner(val, r)
 				oldVal, oldExists := r.vars[name]
@@ -5349,6 +5363,11 @@ func splitCommands(script string) []commandEntry {
 		buf.WriteByte('\\')
 	}
 	raw := buf.String()
+	if inSingle || inDouble {
+		// Unterminated quoted string
+		cmds = append(cmds, commandEntry{cmd: "__SYNTAX_ERROR_UNTERMINATED_QUOTE__", raw: raw, line: startLine})
+		return cmds
+	}
 	if tail := strings.TrimSpace(raw); tail != "" {
 		appendCommand(tail, raw, startLine)
 	}
