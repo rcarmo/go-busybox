@@ -5794,6 +5794,22 @@ func normalizePrintfFormat(format string) string {
 	return buf.String()
 }
 
+func unescapeBackslashes(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var buf strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+			buf.WriteByte(s[i])
+		} else {
+			buf.WriteByte(s[i])
+		}
+	}
+	return buf.String()
+}
+
 func unescapeGlob(pattern string) string {
 	var buf strings.Builder
 	marker := false
@@ -5902,6 +5918,25 @@ func normalizeGlobPattern(pattern string) (string, bool) {
 		buf.WriteByte('\\')
 	}
 	return buf.String(), hasGlob
+}
+
+func expandDollarSingleQuoteInExpr(expr string) string {
+	var result strings.Builder
+	for i := 0; i < len(expr); i++ {
+		if i+2 < len(expr) && expr[i] == '$' && expr[i+1] == '\'' {
+			// Find the closing '
+			end := strings.IndexByte(expr[i+2:], '\'')
+			if end >= 0 {
+				inner := expr[i+2 : i+2+end]
+				expanded := expandDollarSingleQuote("$'" + inner + "'")
+				result.WriteString(expanded)
+				i = i + 2 + end
+				continue
+			}
+		}
+		result.WriteByte(expr[i])
+	}
+	return result.String()
 }
 
 func expandDollarSingleQuote(s string) string {
@@ -6519,6 +6554,10 @@ func (r *runner) expandBraceExprWithRunner(expr string, mode braceQuoteMode) (st
 		return strconv.Itoa(len(r.positional)), false
 	}
 	// Delegate to expandBraceExpr for other cases
+	// If expr contains $'...', expand ANSI-C quotes
+	if strings.Contains(expr, "$'") {
+		expr = expandDollarSingleQuoteInExpr(expr)
+	}
 	// If expr contains ${...}, handle substring/operations with nested expansions
 	if strings.Contains(expr, "${") {
 		// Find the first : that isn't part of ${...}
@@ -7758,7 +7797,13 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 				replacement = maybeStrip(rest[sepIdx+1:])
 			}
 		}
-		val := vars[name]
+		// Unescape backslashes in pattern and replacement
+		pattern = unescapeBackslashes(pattern)
+		replacement = unescapeBackslashes(replacement)
+		val, isSet := vars[name]
+		if !isSet {
+			return "", true
+		}
 		if val == "" && pattern != "*" && pattern != "" {
 			return "", true
 		}
