@@ -5084,6 +5084,7 @@ func splitCommands(script string) []commandEntry {
 	parenDepth := 0
 	cmdSubDepth := 0
 	arithDepth := 0
+	braceExpDepth := 0 // tracks ${...} nesting
 	escape := false
 	pendingHereDocs := []hereDocRequest{}
 	appendCommand := func(cmd, raw string, line int) {
@@ -5119,7 +5120,7 @@ func splitCommands(script string) []commandEntry {
 				escape = false
 				continue
 			}
-			if c == '#' && !inSingle && !inDouble && !inBacktick && cmdSubDepth == 0 {
+			if c == '#' && !inSingle && !inDouble && !inBacktick && cmdSubDepth == 0 && braceExpDepth == 0 {
 				if i == 0 || unicode.IsSpace(rune(line[i-1])) {
 					break
 				}
@@ -5141,6 +5142,27 @@ func splitCommands(script string) []commandEntry {
 				buf.WriteByte('(')
 				cmdSubDepth++
 				i++
+				continue
+			}
+			// Track ${...} nesting
+			if c == '$' && i+1 < len(line) && line[i+1] == '{' && !inSingle {
+				buf.WriteString("${")
+				braceExpDepth++
+				i++
+				continue
+			}
+			// Also catch { after $ when $ was at end of previous continued line
+			if c == '{' && !inSingle && buf.Len() > 0 {
+				s := buf.String()
+				if s[len(s)-1] == '$' {
+					braceExpDepth++
+					buf.WriteByte(c)
+					continue
+				}
+			}
+			if c == '}' && braceExpDepth > 0 && !inSingle {
+				braceExpDepth--
+				buf.WriteByte(c)
 				continue
 			}
 			// Track single quotes (preserve the quote char)
@@ -5191,12 +5213,12 @@ func splitCommands(script string) []commandEntry {
 				}
 			}
 			// Split on semicolons outside quotes and subshells
-			if c == ';' && i+1 < len(line) && line[i+1] == ';' && !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
+			if c == ';' && i+1 < len(line) && line[i+1] == ';' && !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
 				buf.WriteString(";;")
 				i++
 				continue
 			}
-			if c == ';' && !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
+			if c == ';' && !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
 				raw := buf.String()
 				if cmd := strings.TrimSpace(raw); cmd != "" {
 					appendCommand(cmd, raw, startLine)
@@ -5205,13 +5227,18 @@ func splitCommands(script string) []commandEntry {
 				startLine = lineNo
 				continue
 			}
-			if c == '&' && !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
+			if c == '&' && !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
 				if i+1 < len(line) && line[i+1] == '&' {
 					buf.WriteString("&&")
 					i++
 					continue
 				}
 				if i > 0 && (line[i-1] == '>' || line[i-1] == '<') {
+					buf.WriteByte(c)
+					continue
+				}
+				// If & is followed by \ at end of line, it's a continuation (forming && with next line)
+				if i+1 < len(line) && line[i+1] == '\\' && i+2 >= len(line) {
 					buf.WriteByte(c)
 					continue
 				}
@@ -5237,7 +5264,7 @@ func splitCommands(script string) []commandEntry {
 			continue
 		}
 		lastLineContinued = false
-		if !inSingle && !inDouble && !inBacktick && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
+		if !inSingle && !inDouble && !inBacktick && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
 			trimmed := strings.TrimSpace(buf.String())
 			// If line ends with | or || or && (operator continuation), join next line
 			if strings.HasSuffix(trimmed, "|") || strings.HasSuffix(trimmed, "&&") {
@@ -6390,6 +6417,31 @@ func (r *runner) expandBraceExprWithRunner(expr string, mode braceQuoteMode) (st
 	}
 	// ${#}
 	if expr == "#" {
+		return strconv.Itoa(len(r.positional)), false
+	}
+	// ${#N} - length of positional param N
+	if len(expr) > 1 && expr[0] == '#' && expr[1] >= '0' && expr[1] <= '9' {
+		name := expr[1:]
+		idx, err := strconv.Atoi(name)
+		if err == nil {
+			var val string
+			if idx == 0 {
+				val = r.scriptName
+			} else if idx-1 < len(r.positional) {
+				val = r.positional[idx-1]
+			}
+			lang := r.vars["LANG"]
+			lcAll := r.vars["LC_ALL"]
+			if strings.Contains(lang, "UTF-8") || strings.Contains(lang, "utf-8") ||
+				strings.Contains(lcAll, "UTF-8") || strings.Contains(lcAll, "utf-8") {
+				return strconv.Itoa(utf8.RuneCountInString(val)), false
+			}
+			return strconv.Itoa(len(val)), false
+		}
+	}
+	// ${#@} - length of each positional param (special)
+	// ${#*} - number of positional params (same as $#)
+	if expr == "#@" || expr == "#*" {
 		return strconv.Itoa(len(r.positional)), false
 	}
 	// Delegate to expandBraceExpr for other cases
