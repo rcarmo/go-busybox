@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/rcarmo/go-busybox/pkg/core"
@@ -2420,7 +2421,14 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		return core.ExitFailure, false
 	}
 	// Defer restoration of prefix assignments (for non-assignment-only commands)
-	if len(cmdSpec.prefixAssigns) > 0 && len(cmdSpec.args) > 0 {
+	isSpecialBuiltin := false
+	if len(cmdSpec.args) > 0 {
+		switch cmdSpec.args[0] {
+		case "exec", "eval", ".", "source", "export", "readonly", "return", "set", "shift", "trap", "unset", "exit", "break", "continue", ":":
+			isSpecialBuiltin = true
+		}
+	}
+	if len(cmdSpec.prefixAssigns) > 0 && len(cmdSpec.args) > 0 && !isSpecialBuiltin {
 		defer func() {
 			for _, pa := range cmdSpec.prefixAssigns {
 				if pa.oldExist {
@@ -2710,6 +2718,24 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			if cmdSpec.redirOut != "" {
 				if cmdSpec.redirOut == "&2" {
 					r.stdio.Out = r.stdio.Err
+				} else if strings.HasPrefix(cmdSpec.redirOut, "&") {
+					fdStr := cmdSpec.redirOut[1:]
+					fdNum, err := strconv.Atoi(fdStr)
+					if err == nil {
+						switch fdNum {
+						case 1:
+							// >&1 is a no-op for stdout
+						case 2:
+							r.stdio.Out = r.stdio.Err
+						default:
+							newFd, err := syscall.Dup(fdNum)
+							if err != nil {
+								r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
+								return core.ExitFailure, false
+							}
+							r.stdio.Out = os.NewFile(uintptr(newFd), fmt.Sprintf("fd%d", fdNum))
+						}
+					}
 				} else {
 					flags := os.O_CREATE | os.O_WRONLY
 					if cmdSpec.redirOutAppend {
@@ -3135,12 +3161,13 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 					} else {
 						frame.saved[name] = savedVar{isSet: false}
 					}
+					// local without assignment: unset the variable in this scope (first time only)
+					delete(r.vars, name)
+					if r.exported[name] {
+						_ = os.Unsetenv(name)
+					}
 				}
-				// local without assignment: unset the variable in this scope
-				delete(r.vars, name)
-				if r.exported[name] {
-					_ = os.Unsetenv(name)
-				}
+				// If already saved (second local for same var), keep current value
 			}
 		}
 		return core.ExitSuccess, false
@@ -7522,10 +7549,18 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		}
 		return "", false
 	}
-	// ${#VAR} - length
+	// ${#VAR} - length (character count, not byte count)
 	if strings.HasPrefix(expr, "#") {
 		name := expr[1:]
-		return strconv.Itoa(len(vars[name])), false
+		val := vars[name]
+		// Check if LANG/LC_ALL indicate UTF-8
+		lang := vars["LANG"]
+		lcAll := vars["LC_ALL"]
+		if strings.Contains(lang, "UTF-8") || strings.Contains(lang, "utf-8") ||
+			strings.Contains(lcAll, "UTF-8") || strings.Contains(lcAll, "utf-8") {
+			return strconv.Itoa(utf8.RuneCountInString(val)), false
+		}
+		return strconv.Itoa(len(val)), false
 	}
 	// ${VAR/pattern/replacement} - first match replacement
 	// ${VAR//pattern/replacement} - all matches replacement
