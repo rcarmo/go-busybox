@@ -2324,6 +2324,10 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		}
 		return code, false
 	}
+	// Check for subshell
+	if inner, ok := subshellInner(trimmedCmd); ok {
+		return r.runSubshell(inner), false
+	}
 	if strings.HasPrefix(trimmedCmd, "#") {
 		return core.ExitSuccess, false
 	}
@@ -2816,9 +2820,59 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		}
 		return core.ExitSuccess, false
 	case "read":
-		varName := "REPLY"
-		if len(cmdSpec.args) > 1 {
-			varName = cmdSpec.args[1]
+		args := cmdSpec.args[1:]
+		rawMode := false
+		nChars := -1
+		delim := byte('\n')
+		timeout := -1.0
+		// Parse options
+		for len(args) > 0 && strings.HasPrefix(args[0], "-") {
+			opt := args[0]
+			args = args[1:]
+			for j := 1; j < len(opt); j++ {
+				switch opt[j] {
+				case 'r':
+					rawMode = true
+				case 'n':
+					// -n NUM
+					nStr := opt[j+1:]
+					if nStr == "" && len(args) > 0 {
+						nStr = args[0]
+						args = args[1:]
+					}
+					if n, err := strconv.Atoi(nStr); err == nil {
+						nChars = n
+					}
+					j = len(opt) // done with this flag
+				case 'd':
+					dStr := opt[j+1:]
+					if dStr == "" && len(args) > 0 {
+						dStr = args[0]
+						args = args[1:]
+					}
+					if len(dStr) > 0 {
+						delim = dStr[0]
+					} else {
+						delim = 0
+					}
+					j = len(opt)
+				case 't':
+					tStr := opt[j+1:]
+					if tStr == "" && len(args) > 0 {
+						tStr = args[0]
+						args = args[1:]
+					}
+					if t, err := strconv.ParseFloat(tStr, 64); err == nil {
+						timeout = t
+					}
+					j = len(opt)
+				}
+			}
+		}
+		varNames := args
+		noVarGiven := len(varNames) == 0
+		if noVarGiven {
+			varNames = []string{"REPLY"}
 		}
 		if r.readBufs == nil {
 			r.readBufs = make(map[io.Reader]*bufio.Reader)
@@ -2832,32 +2886,111 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			}
 			r.readBufs[stdin] = reader
 		}
-		lineCh := make(chan struct {
-			line string
+		type readResult struct {
+			data string
 			err  error
-		}, 1)
-		go func() {
-			line, err := reader.ReadString('\n')
-			lineCh <- struct {
-				line string
-				err  error
-			}{line: line, err: err}
-		}()
-		var line string
-		var err error
-		select {
-		case res := <-lineCh:
-			line = res.line
-			err = res.err
-		case sig := <-r.signalCh:
-			r.runTrap(sig)
-			return signalExitStatus(sig), true
 		}
-		if err != nil && line == "" {
+		readCh := make(chan readResult, 1)
+		go func() {
+			if nChars >= 0 {
+				buf := make([]byte, nChars)
+				n, err := io.ReadFull(reader, buf)
+				readCh <- readResult{data: string(buf[:n]), err: err}
+				return
+			}
+			line, err := reader.ReadString(delim)
+			readCh <- readResult{data: line, err: err}
+		}()
+		var data string
+		var readErr error
+		if timeout >= 0 {
+			dur := time.Duration(timeout * float64(time.Second))
+			if dur == 0 {
+				// Check if data is available
+				select {
+				case res := <-readCh:
+					data = res.data
+					readErr = res.err
+				default:
+					return core.ExitFailure, false
+				}
+			} else {
+				select {
+				case res := <-readCh:
+					data = res.data
+					readErr = res.err
+				case <-time.After(dur):
+					return core.ExitFailure, false
+				case sig := <-r.signalCh:
+					r.runTrap(sig)
+					return signalExitStatus(sig), true
+				}
+			}
+		} else {
+			select {
+			case res := <-readCh:
+				data = res.data
+				readErr = res.err
+			case sig := <-r.signalCh:
+				r.runTrap(sig)
+				return signalExitStatus(sig), true
+			}
+		}
+		if readErr != nil && data == "" {
 			return core.ExitFailure, false
 		}
-		line = strings.TrimSuffix(line, "\n")
-		r.vars[varName] = line
+		// Strip trailing delimiter
+		if nChars < 0 {
+			data = strings.TrimSuffix(data, string(delim))
+		}
+		// Handle backslash continuation (unless -r)
+		if !rawMode && nChars < 0 {
+			data = strings.ReplaceAll(data, "\\", "")
+		}
+		// Determine if we're in "default REPLY" mode (no vars given by user)
+		// Split on IFS for multiple variables
+		if len(varNames) == 1 {
+			if noVarGiven {
+				// REPLY mode: preserve the entire line including leading/trailing whitespace
+				r.vars[varNames[0]] = data
+			} else {
+				// Named variable: strip leading/trailing IFS whitespace
+				ifs := r.vars["IFS"]
+				if ifs == "" {
+					ifs = " \t\n"
+				}
+				stripped := data
+				for len(stripped) > 0 && strings.ContainsRune(ifs, rune(stripped[0])) {
+					stripped = stripped[1:]
+				}
+				for len(stripped) > 0 && strings.ContainsRune(ifs, rune(stripped[len(stripped)-1])) {
+					stripped = stripped[:len(stripped)-1]
+				}
+				r.vars[varNames[0]] = stripped
+			}
+		} else {
+			ifs := r.vars["IFS"]
+			if ifs == "" {
+				ifs = " \t\n"
+			}
+			fields := splitReadFields(data, ifs)
+			for i, name := range varNames {
+				if i < len(fields) {
+					if i == len(varNames)-1 && i < len(fields)-1 {
+						// Last variable gets the rest
+						remaining := strings.Join(fields[i:], string(ifs[0]))
+						r.vars[name] = remaining
+					} else {
+						r.vars[name] = fields[i]
+					}
+				} else {
+					r.vars[name] = ""
+				}
+			}
+		}
+		if readErr != nil {
+			return core.ExitFailure, false
+		}
 		return core.ExitSuccess, false
 	case "local":
 		if len(r.localStack) == 0 {
@@ -3182,7 +3315,18 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 				}
 				return core.ExitSuccess, false
 			}
-			path, err := exec.LookPath(name)
+			var path string
+			var err error
+			if useDefaultPath {
+				// Use a default system PATH for -p
+				defaultPath := "/usr/sbin:/usr/bin:/sbin:/bin"
+				origPath := os.Getenv("PATH")
+				os.Setenv("PATH", defaultPath)
+				path, err = exec.LookPath(name)
+				os.Setenv("PATH", origPath)
+			} else {
+				path, err = exec.LookPath(name)
+			}
 			if err == nil {
 				if describeMode == "V" {
 					fmt.Fprintf(stdout, "%s is %s\n", name, path)
@@ -3397,8 +3541,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			return core.ExitSuccess, false
 		}
 		format := cmdSpec.args[1]
-		format = strings.ReplaceAll(format, "\\n", "\n")
-		format = strings.ReplaceAll(format, "\\t", "\t")
+		format = expandPrintfEscapes(format)
 		verbs := parsePrintfVerbs(format)
 		format = normalizePrintfFormat(format)
 		fmtArgs := make([]interface{}, len(cmdSpec.args)-2)
@@ -4120,6 +4263,11 @@ func (r *runner) waitBuiltin(args []string) int {
 }
 
 func isBuiltinSegment(cmd string) bool {
+	trimmed := strings.TrimSpace(cmd)
+	// Subshells and brace groups are builtins
+	if strings.HasPrefix(trimmed, "(") || strings.HasPrefix(trimmed, "{") {
+		return true
+	}
 	tokens := splitTokens(cmd)
 	if len(tokens) == 0 {
 		return false
@@ -5219,6 +5367,92 @@ func (r *runner) readHereDocContents(reqs []hereDocRequest, commands []commandEn
 	return contents, endIdx
 }
 
+func expandPrintfEscapes(s string) string {
+	var buf strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' {
+			buf.WriteByte(s[i])
+			continue
+		}
+		if i+1 >= len(s) {
+			buf.WriteByte('\\')
+			continue
+		}
+		i++
+		switch s[i] {
+		case 'n':
+			buf.WriteByte('\n')
+		case 't':
+			buf.WriteByte('\t')
+		case 'r':
+			buf.WriteByte('\r')
+		case 'a':
+			buf.WriteByte('\a')
+		case 'b':
+			buf.WriteByte('\b')
+		case 'f':
+			buf.WriteByte('\f')
+		case 'v':
+			buf.WriteByte('\v')
+		case '\\':
+			buf.WriteByte('\\')
+		case 'x':
+			// Hex escape
+			end := i + 1
+			for end < len(s) && end < i+3 && ((s[end] >= '0' && s[end] <= '9') || (s[end] >= 'a' && s[end] <= 'f') || (s[end] >= 'A' && s[end] <= 'F')) {
+				end++
+			}
+			if end > i+1 {
+				if val, err := strconv.ParseUint(s[i+1:end], 16, 8); err == nil {
+					buf.WriteByte(byte(val))
+					i = end - 1
+				} else {
+					buf.WriteByte('\\')
+					buf.WriteByte('x')
+				}
+			} else {
+				buf.WriteByte('\\')
+				buf.WriteByte('x')
+			}
+		case '0':
+			// Octal escape \0NNN
+			end := i + 1
+			for end < len(s) && end < i+4 && s[end] >= '0' && s[end] <= '7' {
+				end++
+			}
+			if end > i+1 {
+				if val, err := strconv.ParseUint(s[i+1:end], 8, 8); err == nil {
+					buf.WriteByte(byte(val))
+					i = end - 1
+				} else {
+					buf.WriteByte(0)
+				}
+			} else {
+				buf.WriteByte(0)
+			}
+		default:
+			// Octal escape \NNN (without leading 0)
+			if s[i] >= '1' && s[i] <= '7' {
+				end := i + 1
+				for end < len(s) && end < i+3 && s[end] >= '0' && s[end] <= '7' {
+					end++
+				}
+				if val, err := strconv.ParseUint(s[i:end], 8, 8); err == nil {
+					buf.WriteByte(byte(val))
+					i = end - 1
+				} else {
+					buf.WriteByte('\\')
+					buf.WriteByte(s[i])
+				}
+			} else {
+				buf.WriteByte('\\')
+				buf.WriteByte(s[i])
+			}
+		}
+	}
+	return buf.String()
+}
+
 func parsePrintfVerbs(format string) []rune {
 	var verbs []rune
 	inVerb := false
@@ -5451,6 +5685,50 @@ func expandDollarSingleQuote(s string) string {
 		}
 	}
 	return buf.String()
+}
+
+func splitReadFields(s string, ifs string) []string {
+	if ifs == "" {
+		return []string{s}
+	}
+	var fields []string
+	var buf strings.Builder
+	isIFS := func(c byte) bool {
+		return strings.IndexByte(ifs, c) >= 0
+	}
+	isWhitespaceIFS := func(c byte) bool {
+		return (c == ' ' || c == '\t' || c == '\n') && isIFS(c)
+	}
+	i := 0
+	// Skip leading IFS whitespace
+	for i < len(s) && isWhitespaceIFS(s[i]) {
+		i++
+	}
+	for i < len(s) {
+		if isIFS(s[i]) {
+			fields = append(fields, buf.String())
+			buf.Reset()
+			// Skip IFS whitespace
+			for i < len(s) && isWhitespaceIFS(s[i]) {
+				i++
+			}
+			// Skip one non-whitespace IFS char
+			if i < len(s) && isIFS(s[i]) && !isWhitespaceIFS(s[i]) {
+				i++
+				// Skip more IFS whitespace
+				for i < len(s) && isWhitespaceIFS(s[i]) {
+					i++
+				}
+			}
+		} else {
+			buf.WriteByte(s[i])
+			i++
+		}
+	}
+	if buf.Len() > 0 || len(fields) > 0 {
+		fields = append(fields, buf.String())
+	}
+	return fields
 }
 
 func splitOnIFS(s string, ifs string) []string {
