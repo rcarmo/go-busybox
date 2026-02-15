@@ -6326,20 +6326,9 @@ func splitOnIFSWithQuotes(s string, ifs string) []string {
 	var buf strings.Builder
 	inSingle := false
 	inDouble := false
-	escape := false
 	tokenStarted := false
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if escape {
-			buf.WriteByte(c)
-			escape = false
-			tokenStarted = true
-			continue
-		}
-		if c == '\\' && !inSingle {
-			escape = true
-			continue
-		}
 		if c == '\'' && !inDouble {
 			inSingle = !inSingle
 			tokenStarted = true
