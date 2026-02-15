@@ -3111,16 +3111,10 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			if ifs == "" {
 				ifs = " \t\n"
 			}
-			fields := splitReadFields(data, ifs)
+			fields := splitReadFields(data, ifs, len(varNames))
 			for i, name := range varNames {
 				if i < len(fields) {
-					if i == len(varNames)-1 && i < len(fields)-1 {
-						// Last variable gets the rest
-						remaining := strings.Join(fields[i:], string(ifs[0]))
-						r.vars[name] = remaining
-					} else {
-						r.vars[name] = fields[i]
-					}
+					r.vars[name] = fields[i]
 				} else {
 					r.vars[name] = ""
 				}
@@ -5909,7 +5903,7 @@ func expandDollarSingleQuote(s string) string {
 	return buf.String()
 }
 
-func splitReadFields(s string, ifs string) []string {
+func splitReadFields(s string, ifs string, maxFields int) []string {
 	if ifs == "" {
 		return []string{s}
 	}
@@ -5927,6 +5921,17 @@ func splitReadFields(s string, ifs string) []string {
 		i++
 	}
 	for i < len(s) {
+		// If we've collected enough fields, put the rest in the last field
+		if maxFields > 0 && len(fields) == maxFields-1 {
+			// Strip trailing IFS whitespace from remainder
+			rest := s[i:]
+			end := len(rest)
+			for end > 0 && isWhitespaceIFS(rest[end-1]) {
+				end--
+			}
+			fields = append(fields, rest[:end])
+			return fields
+		}
 		if isIFS(s[i]) {
 			fields = append(fields, buf.String())
 			buf.Reset()
