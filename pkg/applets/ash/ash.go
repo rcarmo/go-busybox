@@ -961,7 +961,7 @@ func (r *runner) runIfScript(script string) (int, bool) {
 		}
 		return code, true
 	}
-	return lastCond, true
+	return 0, true
 }
 
 func (r *runner) withRedirections(spec commandSpec, fn func() (int, bool)) (int, bool) {
@@ -2345,6 +2345,18 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		r.arithFailed = false
 		return core.ExitFailure, false
 	}
+	// Defer restoration of prefix assignments (for non-assignment-only commands)
+	if len(cmdSpec.prefixAssigns) > 0 && len(cmdSpec.args) > 0 {
+		defer func() {
+			for _, pa := range cmdSpec.prefixAssigns {
+				if pa.oldExist {
+					r.vars[pa.name] = pa.oldVal
+				} else {
+					delete(r.vars, pa.name)
+				}
+			}
+		}()
+	}
 	if len(cmdSpec.args) == 0 {
 		if cmdSpec.redirIn == "" && cmdSpec.redirOut == "" && cmdSpec.redirErr == "" && !cmdSpec.closeStdout && !cmdSpec.closeStderr && len(cmdSpec.hereDocs) == 0 {
 			return core.ExitSuccess, false
@@ -2850,7 +2862,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 	case "local":
 		if len(r.localStack) == 0 {
 			fmt.Fprintf(stderr, "%s: local: line %d: not in a function\n", r.scriptName, r.currentLine)
-			return core.ExitFailure, false
+			return 2, false
 		}
 		frame := &r.localStack[len(r.localStack)-1]
 		for _, arg := range cmdSpec.args[1:] {
@@ -3444,9 +3456,18 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			r.positional = cmdSpec.args[2:]
 			code := r.runScript(string(data))
 			r.positional = savedPositional
+			if r.returnFlag {
+				r.returnFlag = false
+				code = r.returnCode
+			}
 			return code, false
 		}
-		return r.runScript(string(data)), false
+		code := r.runScript(string(data))
+		if r.returnFlag {
+			r.returnFlag = false
+			code = r.returnCode
+		}
+		return code, false
 	case ":":
 		return core.ExitSuccess, false
 	case "eval":
@@ -4126,6 +4147,14 @@ type commandSpec struct {
 	closeStdout    bool
 	closeStderr    bool
 	hereDocs       []hereDocSpec
+	prefixAssigns  []prefixAssign // prefix assignments to restore after function call
+}
+
+type prefixAssign struct {
+	name     string
+	newVal   string
+	oldVal   string
+	oldExist bool
 }
 
 type hereDocSpec struct {
@@ -4244,7 +4273,13 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 				continue
 			}
 			if name, val, ok := parseAssignment(tok); ok && !seenCmd {
-				r.vars[name] = expandTokenWithRunner(val, r)
+				expandedVal := expandTokenWithRunner(val, r)
+				oldVal, oldExists := r.vars[name]
+				spec.prefixAssigns = append(spec.prefixAssigns, prefixAssign{
+					name: name, newVal: expandedVal,
+					oldVal: oldVal, oldExist: oldExists,
+				})
+				r.vars[name] = expandedVal
 				continue
 			}
 			expanded := expandTokenWithRunner(tok, r)
@@ -7293,9 +7328,21 @@ func expandCommandSubs(tok string, vars map[string]string) string {
 }
 
 func (r *runner) expandCommandSubsWithRunner(tok string) string {
-	// Handle $(...) first
+	// Handle $(...) first (skip when inside single quotes)
 	for {
-		start := strings.Index(tok, "$(")
+		// Find $( that's not inside single quotes
+		start := -1
+		inSQ := false
+		for j := 0; j < len(tok)-1; j++ {
+			if tok[j] == '\'' {
+				inSQ = !inSQ
+				continue
+			}
+			if tok[j] == '$' && tok[j+1] == '(' && !inSQ {
+				start = j
+				break
+			}
+		}
 		if start == -1 {
 			break
 		}
@@ -7317,9 +7364,20 @@ func (r *runner) expandCommandSubsWithRunner(tok string) string {
 		output := escapeCommandSubOutput(r.runCommandSubWithRunner(cmdStr), false)
 		tok = tok[:start] + output + tok[end:]
 	}
-	// Handle backticks
+	// Handle backticks (but not inside single quotes)
 	for {
-		start := strings.IndexByte(tok, '`')
+		start := -1
+		inSQ := false
+		for j := 0; j < len(tok); j++ {
+			if tok[j] == '\'' {
+				inSQ = !inSQ
+				continue
+			}
+			if tok[j] == '`' && !inSQ {
+				start = j
+				break
+			}
+		}
 		if start == -1 {
 			break
 		}
