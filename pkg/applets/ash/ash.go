@@ -614,6 +614,29 @@ func (r *runner) runScript(script string) int {
 			case "{":
 				terminator = "}"
 			}
+			// Also check if any pipeline segment has an incomplete compound command
+			if terminator == "" && strings.Contains(cmd, "|") {
+				pipeParts := splitPipelines(cmd)
+				for _, part := range pipeParts {
+					partTokens := tokenizeScript(strings.TrimSpace(part))
+					if len(partTokens) > 0 {
+						switch partTokens[0] {
+						case "while", "for", "until":
+							if !compoundComplete(partTokens) {
+								terminator = "done"
+							}
+						case "if":
+							if !compoundComplete(partTokens) {
+								terminator = "fi"
+							}
+						case "case":
+							if !compoundComplete(partTokens) {
+								terminator = "esac"
+							}
+						}
+					}
+				}
+			}
 			if terminator != "" && !compoundComplete(tokens) {
 				compound := cmd
 				for i+1 < len(commands) {
@@ -660,47 +683,6 @@ func (r *runner) runScript(script string) int {
 					if isFuncDefCommand(compound) {
 						cmd = compound
 						break
-					}
-				}
-			}
-			// Accumulate incomplete compound commands in pipeline segments
-			if strings.Contains(cmd, "|") {
-				pipeParts := splitPipelines(cmd)
-				needsMore := false
-				for _, part := range pipeParts {
-					partTokens := tokenizeScript(strings.TrimSpace(part))
-					if len(partTokens) > 0 {
-						switch partTokens[0] {
-						case "while", "for", "until", "if", "case":
-							if !compoundComplete(partTokens) {
-								needsMore = true
-							}
-						}
-					}
-				}
-				if needsMore {
-					compound := cmd
-					for i+1 < len(commands) {
-						i++
-						nextCmd := commands[i].cmd
-						compound = compound + "; " + nextCmd
-						pp := splitPipelines(compound)
-						allComplete := true
-						for _, part := range pp {
-							partTokens := tokenizeScript(strings.TrimSpace(part))
-							if len(partTokens) > 0 {
-								switch partTokens[0] {
-								case "while", "for", "until", "if", "case":
-									if !compoundComplete(partTokens) {
-										allComplete = false
-									}
-								}
-							}
-						}
-						if allComplete {
-							cmd = compound
-							break
-						}
 					}
 				}
 			}
@@ -1352,17 +1334,26 @@ func (r *runner) runForScript(script string) (int, bool) {
 	bodyTokens := tokens[forDoIdx+1 : doneIdx]
 	bodyScript := tokensToScript(bodyTokens)
 	loopFn := func() (int, bool) {
-		// Expand the word list with word splitting
+		// Expand the word list with word splitting and glob expansion
 		var expandedWords []string
 		for _, word := range words {
 			exp := r.expandVarsWithRunner(word)
-			if !isQuotedToken(word) && strings.ContainsAny(word, "$`") && strings.ContainsAny(exp, " \t\n") {
-				split := splitOnIFS(exp, r.vars["IFS"])
-				expandedWords = append(expandedWords, split...)
-			} else {
-				if exp != "" || isQuotedToken(word) {
-					expandedWords = append(expandedWords, exp)
+			if !isQuotedToken(word) {
+				// Glob expansion
+				globbed := expandGlobs(exp)
+				if len(globbed) > 1 || (len(globbed) == 1 && globbed[0] != exp) {
+					expandedWords = append(expandedWords, globbed...)
+					continue
 				}
+				// Word splitting for variable expansions
+				if strings.ContainsAny(word, "$`") && strings.ContainsAny(exp, " \t\n") {
+					split := splitOnIFS(exp, r.vars["IFS"])
+					expandedWords = append(expandedWords, split...)
+					continue
+				}
+			}
+			if exp != "" || isQuotedToken(word) {
+				expandedWords = append(expandedWords, exp)
 			}
 		}
 		status := core.ExitSuccess
@@ -4709,7 +4700,7 @@ func findMatchingTerminator(tokens []string, start int) int {
 			continue
 		}
 		switch tok {
-		case "then", "do", "else", "elif", "in":
+		case "then", "do", "else", "elif", "in", "|":
 			startOfCmd = true
 			inForList = false
 		default:
