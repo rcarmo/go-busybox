@@ -2845,7 +2845,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				return exitErr.ExitCode(), true
 			}
-			if errors.Is(err, exec.ErrNotFound) {
+			if errors.Is(err, exec.ErrNotFound) || isNotFoundError(err) {
 				r.reportExecBuiltinError(cmdSpec.args[1], "not found", stderr)
 				return 127, true
 			}
