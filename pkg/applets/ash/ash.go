@@ -3701,30 +3701,65 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		format = expandPrintfEscapes(format)
 		verbs := parsePrintfVerbs(format)
 		format = normalizePrintfFormat(format)
-		fmtArgs := make([]interface{}, len(cmdSpec.args)-2)
-		for i, arg := range cmdSpec.args[2:] {
-			if i < len(verbs) {
-				switch verbs[i] {
-				case 'd', 'i':
-					if v, err := strconv.ParseInt(arg, 0, 64); err == nil {
-						fmtArgs[i] = v
-					} else {
-						fmtArgs[i] = int64(0)
-					}
-				case 'u':
-					if v, err := strconv.ParseUint(arg, 0, 64); err == nil {
-						fmtArgs[i] = v
-					} else {
-						fmtArgs[i] = uint64(0)
-					}
-				default:
-					fmtArgs[i] = arg
+		fmtArgs := make([]interface{}, len(verbs))
+		for i := 0; i < len(verbs); i++ {
+			var arg string
+			if i < len(cmdSpec.args)-2 {
+				arg = cmdSpec.args[i+2]
+			}
+			switch verbs[i] {
+			case 'd', 'i':
+				if v, err := strconv.ParseInt(arg, 0, 64); err == nil {
+					fmtArgs[i] = v
+				} else {
+					fmtArgs[i] = int64(0)
 				}
-			} else {
+			case 'u':
+				if v, err := strconv.ParseUint(arg, 0, 64); err == nil {
+					fmtArgs[i] = v
+				} else {
+					fmtArgs[i] = uint64(0)
+				}
+			default:
 				fmtArgs[i] = arg
 			}
 		}
-		fmt.Fprintf(stdout, format, fmtArgs...)
+		if len(verbs) == 0 {
+			fmt.Fprint(stdout, format)
+		} else {
+			argIdx := 0
+			totalArgs := len(cmdSpec.args) - 2
+			for {
+				iterArgs := make([]interface{}, len(verbs))
+				for i := 0; i < len(verbs); i++ {
+					var arg string
+					if argIdx < totalArgs {
+						arg = cmdSpec.args[argIdx+2]
+					}
+					switch verbs[i] {
+					case 'd', 'i':
+						if v, err := strconv.ParseInt(arg, 0, 64); err == nil {
+							iterArgs[i] = v
+						} else {
+							iterArgs[i] = int64(0)
+						}
+					case 'u':
+						if v, err := strconv.ParseUint(arg, 0, 64); err == nil {
+							iterArgs[i] = v
+						} else {
+							iterArgs[i] = uint64(0)
+						}
+					default:
+						iterArgs[i] = arg
+					}
+					argIdx++
+				}
+				fmt.Fprintf(stdout, format, iterArgs...)
+				if argIdx >= totalArgs {
+					break
+				}
+			}
+		}
 		return core.ExitSuccess, false
 	case "source", ".":
 		if len(cmdSpec.args) < 2 {
