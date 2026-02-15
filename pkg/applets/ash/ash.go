@@ -4497,12 +4497,12 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 			if redir, target, ok := splitInlineRedir(tok); ok {
 				target = expandTokenWithRunner(target, r)
 				switch redir {
-				case "<":
+				case "<", "0<":
 					spec.redirIn = target
-				case ">":
+				case ">", "1>":
 					spec.redirOut = target
 					spec.redirOutAppend = false
-				case ">>":
+				case ">>", "1>>":
 					spec.redirOut = target
 					spec.redirOutAppend = true
 				case "2>":
@@ -4629,12 +4629,12 @@ func parseCommandSpec(tokens []string, vars map[string]string) (commandSpec, err
 			if redir, target, ok := splitInlineRedir(tok); ok {
 				target = expandToken(target, func(s string) string { return expandVars(s, vars) }, func(s string) string { return expandVarsNoQuotes(s, vars) })
 				switch redir {
-				case "<":
+				case "<", "0<":
 					spec.redirIn = target
-				case ">":
+				case ">", "1>":
 					spec.redirOut = target
 					spec.redirOutAppend = false
-				case ">>":
+				case ">>", "1>>":
 					spec.redirOut = target
 					spec.redirOutAppend = true
 				case "2>":
@@ -4968,7 +4968,9 @@ func findMatchingTerminator(tokens []string, start int) int {
 		if startOfCmd {
 			if term, ok := compoundStarters[tok]; ok {
 				stack = append(stack, term)
+				startOfCmd = tok == "{" || tok == "(" // After { or (, next token is start of command
 				if tok == "for" {
+					startOfCmd = false
 					// Look ahead for "in" - if found, mark as for list
 					for j := i + 1; j < len(tokens); j++ {
 						if tokens[j] == ";" || tokens[j] == "\n" {
@@ -4983,6 +4985,7 @@ func findMatchingTerminator(tokens []string, start int) int {
 						}
 					}
 				}
+				continue
 			}
 		}
 		if startOfCmd && len(stack) > 0 && tok == stack[len(stack)-1] {
@@ -5334,6 +5337,21 @@ func parseAssignment(tok string) (string, string, bool) {
 }
 
 func splitInlineRedir(tok string) (string, string, bool) {
+	// Check for fd number redirects like 1>/path, 2>>/path, etc.
+	if len(tok) >= 3 && tok[0] >= '0' && tok[0] <= '9' {
+		if strings.HasPrefix(tok[1:], ">>") && len(tok) > 3 {
+			fd := string(tok[0])
+			return fd + ">>", tok[3:], true
+		}
+		if tok[1] == '>' && len(tok) > 2 {
+			fd := string(tok[0])
+			return fd + ">", tok[2:], true
+		}
+		if tok[1] == '<' && len(tok) > 2 {
+			fd := string(tok[0])
+			return fd + "<", tok[2:], true
+		}
+	}
 	switch {
 	case strings.HasPrefix(tok, "2>>") && len(tok) > 3:
 		return "2>>", tok[3:], true
