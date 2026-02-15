@@ -5906,6 +5906,55 @@ func unescapeParamExpansionValue(s string) string {
 	return buf.String()
 }
 
+func splitPatternReplacement(rest string) (string, string) {
+	start := 0
+	if strings.HasPrefix(rest, "/") {
+		start = 1
+	}
+	escaped := false
+	for i := start; i < len(rest); i++ {
+		c := rest[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			continue
+		}
+		if c == '/' {
+			pattern := rest[:i]
+			replacement := rest[i+1:]
+			pattern = strings.ReplaceAll(pattern, "\\/", "/")
+			return pattern, replacement
+		}
+	}
+	pattern := strings.ReplaceAll(rest, "\\/", "/")
+	return pattern, ""
+}
+
+func unescapeReplacement(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var buf strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			next := s[i+1]
+			if next == '/' {
+				buf.WriteByte('\\')
+				buf.WriteByte('/')
+			} else {
+				buf.WriteByte(next)
+			}
+			i++
+			continue
+		}
+		buf.WriteByte(s[i])
+	}
+	return buf.String()
+}
+
 func unescapeGlob(pattern string) string {
 	var buf strings.Builder
 	marker := false
@@ -7875,27 +7924,11 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 			suffixMode = true
 			rest = rest[1:]
 		}
-		pattern := rest
-		replacement := ""
-		if sepIdx := strings.Index(rest, "/"); sepIdx >= 0 {
-			// If pattern starts with /, the separator is the second /
-			if sepIdx == 0 && len(rest) > 1 {
-				// Pattern starts with / - look for next /
-				nextSep := strings.Index(rest[1:], "/")
-				if nextSep >= 0 {
-					pattern = rest[:nextSep+1]
-					replacement = maybeStrip(rest[nextSep+2:])
-				} else {
-					pattern = rest
-				}
-			} else {
-				pattern = rest[:sepIdx]
-				replacement = maybeStrip(rest[sepIdx+1:])
-			}
-		}
+		pattern, replacement := splitPatternReplacement(rest)
+		replacement = maybeStrip(replacement)
 		// Unescape backslashes in pattern and replacement
 		pattern = unescapeBackslashes(pattern)
-		replacement = unescapeBackslashes(replacement)
+		replacement = unescapeReplacement(replacement)
 		val, isSet := vars[name]
 		if !isSet {
 			return "", true
