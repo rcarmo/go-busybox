@@ -592,6 +592,7 @@ func (r *runner) runScript(script string) int {
 			}
 		}
 		r.currentLine = entry.line + r.lineOffset
+		r.vars["LINENO"] = strconv.Itoa(r.currentLine)
 		r.handleSignalsNonBlocking()
 		if r.returnFlag {
 			return r.returnCode
@@ -2659,6 +2660,10 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			return core.ExitSuccess, false
 		}
 		cmdArgs := append([]string{}, cmdSpec.args[2:]...)
+		if cmdSpec.args[1] == "" {
+			r.reportExecBuiltinError("", "Permission denied", stderr)
+			return 126, true
+		}
 		if r.restricted && strings.Contains(cmdSpec.args[1], "/") {
 			r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.args[1])
 			return core.ExitFailure, true
@@ -3553,6 +3558,11 @@ runFunction:
 	if r.restricted && strings.Contains(cmdSpec.args[0], "/") {
 		r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.args[0])
 		return core.ExitFailure, false
+	}
+	// Handle empty command name
+	if cmdSpec.args[0] == "" {
+		r.reportExecError("", "Permission denied", stderr)
+		return 127, false
 	}
 	if strings.HasSuffix(cmdSpec.args[0], ".tests") {
 		cmdArgs = append([]string{cmdSpec.args[0]}, cmdArgs...)
