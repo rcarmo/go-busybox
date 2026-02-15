@@ -5881,6 +5881,28 @@ func unescapeBackslashes(s string) string {
 	return buf.String()
 }
 
+func unescapeParamExpansionValue(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var buf strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			next := s[i+1]
+			if isGlobChar(next) {
+				buf.WriteByte(globEscapeMarker)
+				buf.WriteByte(next)
+			} else {
+				buf.WriteByte(next)
+			}
+			i++
+			continue
+		}
+		buf.WriteByte(s[i])
+	}
+	return buf.String()
+}
+
 func unescapeGlob(pattern string) string {
 	var buf strings.Builder
 	marker := false
@@ -7744,7 +7766,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR:-default}
 	if idx := strings.Index(expr, ":-"); idx > 0 {
 		name := expr[:idx]
-		defVal := maybeStrip(expr[idx+2:])
+		defVal := unescapeParamExpansionValue(maybeStrip(expr[idx+2:]))
 		if val, ok := vars[name]; ok && val != "" {
 			return val, true
 		}
@@ -7753,7 +7775,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR:=default}
 	if idx := strings.Index(expr, ":="); idx > 0 {
 		name := expr[:idx]
-		defVal := maybeStrip(expr[idx+2:])
+		defVal := unescapeParamExpansionValue(maybeStrip(expr[idx+2:]))
 		if val, ok := vars[name]; ok && val != "" {
 			return val, true
 		}
@@ -7763,7 +7785,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR=default}
 	if idx := strings.Index(expr, "="); idx > 0 {
 		name := expr[:idx]
-		defVal := maybeStrip(expr[idx+1:])
+		defVal := unescapeParamExpansionValue(maybeStrip(expr[idx+1:]))
 		if val, ok := vars[name]; ok {
 			return val, true
 		}
@@ -7773,7 +7795,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR:+alt}
 	if idx := strings.Index(expr, ":+"); idx > 0 {
 		name := expr[:idx]
-		alt := maybeStrip(expr[idx+2:])
+		alt := unescapeParamExpansionValue(maybeStrip(expr[idx+2:]))
 		if val, ok := vars[name]; ok && val != "" {
 			return alt, false
 		}
@@ -7782,7 +7804,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR:?error}
 	if idx := strings.Index(expr, ":?"); idx > 0 {
 		name := expr[:idx]
-		msg := maybeStrip(expr[idx+2:])
+		msg := unescapeParamExpansionValue(maybeStrip(expr[idx+2:]))
 		if val, ok := vars[name]; ok && val != "" {
 			return val, true
 		}
@@ -7794,7 +7816,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR-default} (no colon - only applies when unset, not when empty)
 	if idx := strings.Index(expr, "-"); idx > 0 && !strings.Contains(expr[:idx], ":") && !strings.Contains(expr[:idx], "/") && !strings.Contains(expr[:idx], "#") && !strings.Contains(expr[:idx], "%") {
 		name := expr[:idx]
-		defVal := maybeStrip(expr[idx+1:])
+		defVal := unescapeParamExpansionValue(maybeStrip(expr[idx+1:]))
 		if _, ok := vars[name]; ok {
 			return vars[name], true
 		}
@@ -7803,7 +7825,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR+alt} (no colon - only applies when set)
 	if idx := strings.Index(expr, "+"); idx > 0 && !strings.Contains(expr[:idx], ":") && !strings.Contains(expr[:idx], "/") && !strings.Contains(expr[:idx], "#") && !strings.Contains(expr[:idx], "%") {
 		name := expr[:idx]
-		alt := maybeStrip(expr[idx+1:])
+		alt := unescapeParamExpansionValue(maybeStrip(expr[idx+1:]))
 		if _, ok := vars[name]; ok {
 			return alt, false
 		}
