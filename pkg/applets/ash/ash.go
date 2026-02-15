@@ -122,11 +122,61 @@ func (r *runner) commandNotFound(name string, stderr io.Writer) {
 		fmt.Fprintf(stderr, "%s: %s: not found\n", script, name)
 		return
 	}
-	if r.currentLine > 0 {
-		fmt.Fprintf(stderr, "ash: line %d: %s: not found\n", r.currentLine, name)
+	fmt.Fprintf(stderr, "ash: %s: not found\n", name)
+}
+
+func (r *runner) reportExecError(name string, msg string, stderr io.Writer) {
+	script := r.scriptName
+	if script != "" && script != "ash" {
+		if r.currentLine > 0 {
+			fmt.Fprintf(stderr, "%s: line %d: %s: %s\n", script, r.currentLine, name, msg)
+			return
+		}
+		fmt.Fprintf(stderr, "%s: %s: %s\n", script, name, msg)
 		return
 	}
-	fmt.Fprintf(stderr, "ash: %s: not found\n", name)
+	fmt.Fprintf(stderr, "ash: %s: %s\n", name, msg)
+}
+
+func (r *runner) reportExecBuiltinError(name string, msg string, stderr io.Writer) {
+	script := r.scriptName
+	if script != "" && script != "ash" {
+		fmt.Fprintf(stderr, "%s: exec: line %d: %s: %s\n", script, r.currentLine, name, msg)
+		return
+	}
+	fmt.Fprintf(stderr, "ash: exec: line %d: %s: %s\n", r.currentLine, name, msg)
+}
+
+func isPermissionError(err error) bool {
+	if errors.Is(err, os.ErrPermission) {
+		return true
+	}
+	if errors.Is(err, syscall.EACCES) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "permission denied") || strings.Contains(msg, "Permission denied")
+}
+
+func isNotFoundError(err error) bool {
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	if errors.Is(err, syscall.ENOENT) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "no such file or directory")
+}
+
+func cleanExecError(err error) string {
+	msg := err.Error()
+	// Remove "fork/exec <path>: " prefix that Go adds
+	if idx := strings.LastIndex(msg, ": "); idx >= 0 {
+		suffix := msg[idx+2:]
+		return suffix
+	}
+	return msg
 }
 
 func (r *runner) reportArithError(msg string) {
@@ -227,6 +277,15 @@ type pendingSignal struct {
 	resetStatus bool
 }
 
+type localFrame struct {
+	saved    map[string]savedVar
+}
+
+type savedVar struct {
+	val   string
+	isSet bool
+}
+
 type runner struct {
 	stdio           *core.Stdio
 	vars            map[string]string
@@ -266,6 +325,7 @@ type runner struct {
 	skipHereDocRead bool
 	fdReaders       map[int]*bufio.Reader
 	readBufs        map[io.Reader]*bufio.Reader
+	localStack      []localFrame
 }
 
 type job struct {
@@ -2287,6 +2347,10 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		}
 		return code, false
 	}
+	// Functions take priority over builtins (except special builtins)
+	if _, isFunc := r.funcs[cmdSpec.args[0]]; isFunc {
+		goto runFunction
+	}
 	switch cmdSpec.args[0] {
 	case "echo":
 		args := cmdSpec.args[1:]
@@ -2402,7 +2466,70 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		return code, true
 	case "exec":
 		if len(cmdSpec.args) < 2 {
-			return core.ExitSuccess, true
+			// exec with no command but possibly redirections
+			if cmdSpec.redirOut != "" {
+				if cmdSpec.redirOut == "&2" {
+					r.stdio.Out = r.stdio.Err
+				} else {
+					flags := os.O_CREATE | os.O_WRONLY
+					if cmdSpec.redirOutAppend {
+						flags |= os.O_APPEND
+					} else {
+						flags |= os.O_TRUNC
+					}
+					file, err := os.OpenFile(cmdSpec.redirOut, flags, 0600)
+					if err != nil {
+						r.stdio.Errorf("ash: %v\n", err)
+						return core.ExitFailure, false
+					}
+					r.stdio.Out = file
+				}
+			}
+			if cmdSpec.redirErr != "" {
+				if cmdSpec.redirErr == "&1" {
+					r.stdio.Err = r.stdio.Out
+				} else {
+					flags := os.O_CREATE | os.O_WRONLY
+					if cmdSpec.redirErrAppend {
+						flags |= os.O_APPEND
+					} else {
+						flags |= os.O_TRUNC
+					}
+					file, err := os.OpenFile(cmdSpec.redirErr, flags, 0600)
+					if err != nil {
+						r.stdio.Errorf("ash: %v\n", err)
+						return core.ExitFailure, false
+					}
+					r.stdio.Err = file
+				}
+			}
+			if cmdSpec.redirIn != "" {
+				if strings.HasPrefix(cmdSpec.redirIn, "&") {
+					fd, err := strconv.Atoi(strings.TrimPrefix(cmdSpec.redirIn, "&"))
+					if err == nil {
+						if reader, ok := r.fdReaders[fd]; ok {
+							r.stdio.In = reader
+						}
+					}
+				} else {
+					file, err := os.Open(cmdSpec.redirIn)
+					if err != nil {
+						r.stdio.Errorf("ash: %v\n", err)
+						return core.ExitFailure, false
+					}
+					r.stdio.In = file
+				}
+			}
+			if cmdSpec.closeStdout {
+				r.stdio.Out = io.Discard
+			}
+			if cmdSpec.closeStderr {
+				devNull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+				if devNull != nil {
+					r.stdio.Err = devNull
+				}
+			}
+			return core.ExitSuccess, false
 		}
 		cmdArgs := append([]string{}, cmdSpec.args[2:]...)
 		if r.restricted && strings.Contains(cmdSpec.args[1], "/") {
@@ -2425,11 +2552,15 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 				return exitErr.ExitCode(), true
 			}
 			if errors.Is(err, exec.ErrNotFound) {
-				r.commandNotFound(cmdSpec.args[1], stderr)
+				r.reportExecBuiltinError(cmdSpec.args[1], "not found", stderr)
 				return 127, true
 			}
-			r.stdio.Errorf("ash: %v\n", err)
-			return core.ExitFailure, true
+			if isPermissionError(err) {
+				r.reportExecBuiltinError(cmdSpec.args[1], "Permission denied", stderr)
+				return 126, true
+			}
+			r.reportExecBuiltinError(cmdSpec.args[1], cleanExecError(err), stderr)
+			return 126, true
 		}
 		return core.ExitSuccess, true
 	case "true":
@@ -2585,9 +2716,42 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		r.vars[varName] = line
 		return core.ExitSuccess, false
 	case "local":
+		if len(r.localStack) == 0 {
+			fmt.Fprintf(stderr, "%s: local: line %d: not in a function\n", r.scriptName, r.currentLine)
+			return core.ExitFailure, false
+		}
+		frame := &r.localStack[len(r.localStack)-1]
 		for _, arg := range cmdSpec.args[1:] {
 			if name, val, ok := parseAssignment(arg); ok {
+				// Save the old value if not already saved in this frame
+				if _, alreadySaved := frame.saved[name]; !alreadySaved {
+					if oldVal, isSet := r.vars[name]; isSet {
+						frame.saved[name] = savedVar{val: oldVal, isSet: true}
+					} else {
+						frame.saved[name] = savedVar{isSet: false}
+					}
+				}
 				r.vars[name] = val
+				if r.exported[name] {
+					_ = os.Setenv(name, val)
+				}
+			} else {
+				name := strings.TrimLeft(arg, "-")
+				if name == "" {
+					continue
+				}
+				if _, alreadySaved := frame.saved[name]; !alreadySaved {
+					if oldVal, isSet := r.vars[name]; isSet {
+						frame.saved[name] = savedVar{val: oldVal, isSet: true}
+					} else {
+						frame.saved[name] = savedVar{isSet: false}
+					}
+				}
+				// local without assignment: unset the variable in this scope
+				delete(r.vars, name)
+				if r.exported[name] {
+					_ = os.Unsetenv(name)
+				}
 			}
 		}
 		return core.ExitSuccess, false
@@ -2883,7 +3047,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 				}
 				return core.ExitSuccess, false
 			}
-			r.commandNotFound(name, stderr)
+			fmt.Fprintf(stderr, "%s: not found\n", name)
 			return 127, false
 		}
 		// Execute the command, skipping functions and aliases
@@ -3177,6 +3341,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		r.stdio = savedStdio
 		return code, false
 	}
+runFunction:
 	// Check if it's a user-defined function
 	if body, ok := r.funcs[cmdSpec.args[0]]; ok {
 		// Save and set positional parameters
@@ -3190,7 +3355,25 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		r.returnFlag = false
 		r.returnCode = core.ExitSuccess
 		r.stdio = &core.Stdio{In: stdin, Out: stdout, Err: stderr}
+		// Push a local variable frame
+		r.localStack = append(r.localStack, localFrame{saved: map[string]savedVar{}})
 		code := r.runScript(body)
+		// Pop the local variable frame and restore locals
+		frame := r.localStack[len(r.localStack)-1]
+		r.localStack = r.localStack[:len(r.localStack)-1]
+		for name, sv := range frame.saved {
+			if sv.isSet {
+				r.vars[name] = sv.val
+				if r.exported[name] {
+					_ = os.Setenv(name, sv.val)
+				}
+			} else {
+				delete(r.vars, name)
+				if r.exported[name] {
+					_ = os.Unsetenv(name)
+				}
+			}
+		}
 		r.stdio = savedStdio
 		exitFlag := r.exitFlag
 		exitCode := r.exitCode
@@ -3241,8 +3424,16 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			r.commandNotFound(cmdSpec.args[0], stderr)
 			return 127, false
 		}
-		r.stdio.Errorf("ash: %v\n", err)
-		return core.ExitFailure, false
+		if isPermissionError(err) {
+			r.reportExecError(cmdSpec.args[0], "Permission denied", stderr)
+			return 126, false
+		}
+		if isNotFoundError(err) {
+			r.commandNotFound(cmdSpec.args[0], stderr)
+			return 127, false
+		}
+		r.reportExecError(cmdSpec.args[0], cleanExecError(err), stderr)
+		return 126, false
 	}
 	done := make(chan error, 1)
 	go func() {
