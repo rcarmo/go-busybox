@@ -2111,6 +2111,7 @@ func (r *runner) runCommand(cmd string) (int, bool) {
 	cmd = strings.TrimSpace(cmd)
 	if parts, ops := splitAndOr(cmd); len(ops) > 0 {
 		status, exit := r.runCommand(parts[0])
+		r.lastStatus = status
 		for i, op := range ops {
 			if exit {
 				return status, exit
@@ -2119,10 +2120,12 @@ func (r *runner) runCommand(cmd string) (int, bool) {
 			case "&&":
 				if status == core.ExitSuccess {
 					status, exit = r.runCommand(parts[i+1])
+					r.lastStatus = status
 				}
 			case "||":
 				if status != core.ExitSuccess {
 					status, exit = r.runCommand(parts[i+1])
+					r.lastStatus = status
 				}
 			}
 		}
@@ -2135,9 +2138,18 @@ func (r *runner) runCommand(cmd string) (int, bool) {
 		}
 		return core.ExitSuccess, exit
 	}
-	if tokens := splitTokens(cmd); len(tokens) > 0 && isReservedWord(tokens[0]) {
-		r.stdio.Errorf("%s: line %d: syntax error: unexpected \"%s\"\n", r.scriptName, r.currentLine, tokens[0])
-		return 2, false
+	if tokens := splitTokens(cmd); len(tokens) > 0 {
+		switch tokens[0] {
+		case "case":
+			if c, ok := r.runCaseScript(cmd); ok {
+				return c, false
+			}
+		case "if", "while", "until", "for":
+			return r.runScript(cmd), false
+		case "then", "do", "else", "elif", "fi", "done", "esac":
+			r.stdio.Errorf("%s: line %d: syntax error: unexpected \"%s\"\n", r.scriptName, r.currentLine, tokens[0])
+			return 2, false
+		}
 	}
 	if len(cmd) > 2 && cmd[0] == '{' && cmd[len(cmd)-1] == '}' {
 		inner := strings.TrimSpace(cmd[1 : len(cmd)-1])
