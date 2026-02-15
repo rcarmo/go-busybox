@@ -2493,6 +2493,29 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 	if cmdSpec.redirOut != "" {
 		if cmdSpec.redirOut == "&2" {
 			stdout = stderr
+		} else if strings.HasPrefix(cmdSpec.redirOut, "&") {
+			// Duplicate fd: >&N
+			fdStr := cmdSpec.redirOut[1:]
+			fdNum, err := strconv.Atoi(fdStr)
+			if err != nil || fdNum < 0 {
+				r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
+				return core.ExitFailure, false
+			}
+			if rdr, ok := r.fdReaders[fdNum]; ok {
+				_ = rdr
+				// fd exists as a reader, can't redirect output to it in normal sense
+				r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
+				return core.ExitFailure, false
+			}
+			// Try to dup the fd
+			newFd, err := syscall.Dup(fdNum)
+			if err != nil {
+				r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
+				return core.ExitFailure, false
+			}
+			f := os.NewFile(uintptr(newFd), fmt.Sprintf("fd%d", fdNum))
+			defer f.Close()
+			stdout = f
 		} else {
 			if r.restricted && strings.Contains(cmdSpec.redirOut, "/") {
 				r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.redirOut)
@@ -6159,11 +6182,30 @@ func (r *runner) expandVarsWithRunnerNoQuotes(tok string) string {
 	}
 	// Then expand command substitutions
 	tok = r.expandCommandSubsWithRunner(tok)
-	if !strings.Contains(tok, "$") && !containsCommandSubMarker(tok) {
+	if !strings.Contains(tok, "$") && !strings.Contains(tok, "\\") && !containsCommandSubMarker(tok) {
 		return tok
 	}
 	var buf strings.Builder
 	for i := 0; i < len(tok); i++ {
+		// Handle backslash escapes inside double quotes
+		// Only \$, \`, \\, \" and \newline are special
+		if tok[i] == '\\' && i+1 < len(tok) {
+			next := tok[i+1]
+			switch next {
+			case '$', '`', '\\', '"':
+				buf.WriteByte(next)
+				i++
+				continue
+			case '\n':
+				// Line continuation - skip both
+				i++
+				continue
+			default:
+				// Keep the backslash
+				buf.WriteByte('\\')
+				continue
+			}
+		}
 		if tok[i] != '$' || i+1 >= len(tok) {
 			buf.WriteByte(tok[i])
 			continue
