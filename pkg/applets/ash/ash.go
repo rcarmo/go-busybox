@@ -549,7 +549,9 @@ func (r *runner) runScript(script string) int {
 	if isTop {
 		r.options["__trap_exit"] = true
 		r.loadConfigEnv()
-		r.vars["CONFIG_FEATURE_FANCY_ECHO"] = "y"
+		// Don't set CONFIG_FEATURE_FANCY_ECHO as a shell variable
+		// It's an internal compile-time config of busybox
+		// Our echo always supports -n, -e, -E flags
 		defer func() {
 			if action, ok := r.traps["EXIT"]; ok && action != "" {
 				savedInTrap := r.inTrap
@@ -843,9 +845,8 @@ func (r *runner) runScript(script string) int {
 }
 
 func (r *runner) loadConfigEnv() {
-	if _, ok := r.vars["CONFIG_FEATURE_FANCY_ECHO"]; ok {
-		return
-	}
+	// Our echo always supports fancy echo features (-n, -e, -E)
+	// No need to check CONFIG_FEATURE_FANCY_ECHO
 	if path := os.Getenv("BUSYBOX_CONFIG"); path != "" {
 		r.loadConfigFile(path)
 		return
@@ -5114,7 +5115,7 @@ func splitCommands(script string) []commandEntry {
 				escape = false
 				continue
 			}
-			if c == '#' && !inSingle && !inDouble && !inBacktick && cmdSubDepth == 0 && braceExpDepth == 0 {
+			if c == '#' && !inSingle && !inBacktick && braceExpDepth == 0 && !(inDouble && cmdSubDepth == 0) {
 				if i == 0 || unicode.IsSpace(rune(line[i-1])) {
 					break
 				}
@@ -5205,6 +5206,10 @@ func splitCommands(script string) []commandEntry {
 						parenDepth--
 					}
 				}
+			}
+			// Also track ) for $() even inside double quotes
+			if !inSingle && inDouble && c == ')' && cmdSubDepth > 0 {
+				cmdSubDepth--
 			}
 			// Split on semicolons outside quotes and subshells
 			if c == ';' && i+1 < len(line) && line[i+1] == ';' && !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
