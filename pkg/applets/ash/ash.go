@@ -1659,7 +1659,9 @@ func (r *runner) runCaseScript(script string) (int, bool) {
 	if inIdx < 2 {
 		return 0, false
 	}
-	word := expandVars(tokens[1], r.vars)
+	word := r.expandVarsWithRunner(tokens[1])
+	// Strip quotes from word
+	word, _ = stripOuterQuotes(word)
 	// Parse patterns and bodies between 'in' and 'esac'
 	body := tokens[inIdx+1 : esacIdx]
 	filtered := body[:0]
@@ -1670,6 +1672,22 @@ func (r *runner) runCaseScript(script string) (int, bool) {
 		filtered = append(filtered, tok)
 	}
 	body = filtered
+	// Split tokens that contain ) but don't end with ) (e.g., "w)echo" -> "w)", "echo")
+	var splitBody []string
+	for _, tok := range body {
+		if tok == ";;" {
+			splitBody = append(splitBody, tok)
+			continue
+		}
+		if idx := strings.Index(tok, ")"); idx >= 0 && idx < len(tok)-1 {
+			// Has ) in the middle
+			splitBody = append(splitBody, tok[:idx+1])
+			splitBody = append(splitBody, tok[idx+1:])
+		} else {
+			splitBody = append(splitBody, tok)
+		}
+	}
+	body = splitBody
 	status := core.ExitSuccess
 	i := 0
 	for i < len(body) {
@@ -1688,7 +1706,11 @@ func (r *runner) runCaseScript(script string) (int, bool) {
 		patParts := body[i : patEnd+1]
 		pattern := strings.Join(patParts, " ")
 		pattern = strings.TrimSuffix(pattern, ")")
+		pattern = strings.TrimPrefix(pattern, "(") // optional leading (
 		pattern = strings.TrimSpace(pattern)
+		// Expand variables in pattern
+		pattern = expandVars(pattern, r.vars)
+		pattern = r.expandCommandSubsWithRunner(pattern)
 		// Find ;; terminator
 		cmdStart := patEnd + 1
 		cmdEnd := cmdStart
@@ -1710,26 +1732,50 @@ func (r *runner) runCaseScript(script string) (int, bool) {
 }
 
 func matchPattern(word, pattern string) bool {
-	if pattern == "*" {
-		return true
-	}
-	// Simple prefix/suffix glob
-	if strings.HasPrefix(pattern, "*") && strings.HasSuffix(pattern, "*") {
-		return strings.Contains(word, pattern[1:len(pattern)-1])
-	}
-	if strings.HasPrefix(pattern, "*") {
-		return strings.HasSuffix(word, pattern[1:])
-	}
-	if strings.HasSuffix(pattern, "*") {
-		return strings.HasPrefix(word, pattern[:len(pattern)-1])
-	}
 	// Support | for alternation
-	for _, alt := range strings.Split(pattern, "|") {
-		if strings.TrimSpace(alt) == word {
+	for _, alt := range splitPatternAlternatives(pattern) {
+		alt = strings.TrimSpace(alt)
+		alt, _ = stripOuterQuotes(alt)
+		if alt == "*" {
+			return true
+		}
+		if matched, err := filepath.Match(alt, word); err == nil && matched {
+			return true
+		}
+		if alt == word {
 			return true
 		}
 	}
-	return pattern == word
+	return false
+}
+
+func splitPatternAlternatives(pattern string) []string {
+	var result []string
+	var buf strings.Builder
+	inSingle := false
+	inDouble := false
+	for i := 0; i < len(pattern); i++ {
+		c := pattern[i]
+		if c == '\'' && !inDouble {
+			inSingle = !inSingle
+			buf.WriteByte(c)
+			continue
+		}
+		if c == '"' && !inSingle {
+			inDouble = !inDouble
+			buf.WriteByte(c)
+			continue
+		}
+		if c == '|' && !inSingle && !inDouble {
+			result = append(result, buf.String())
+			buf.Reset()
+			continue
+		}
+		buf.WriteByte(c)
+	}
+	// Always include final part (even empty string)
+	result = append(result, buf.String())
+	return result
 }
 
 func subshellInner(cmd string) (string, bool) {
@@ -4767,6 +4813,7 @@ func tokenizeScript(script string) []string {
 	var buf strings.Builder
 	var inSingle bool
 	var inDouble bool
+	var inBacktick bool
 	escape := false
 	flush := func() {
 		if buf.Len() > 0 {
@@ -4796,19 +4843,25 @@ func tokenizeScript(script string) []string {
 			buf.WriteByte(c)
 			continue
 		}
+		// Track backticks
+		if c == '`' && !inSingle {
+			inBacktick = !inBacktick
+			buf.WriteByte(c)
+			continue
+		}
 		// Handle ;; as a single token (for case/esac)
-		if !inSingle && !inDouble && c == ';' && i+1 < len(script) && script[i+1] == ';' {
+		if !inSingle && !inDouble && !inBacktick && c == ';' && i+1 < len(script) && script[i+1] == ';' {
 			flush()
 			tokens = append(tokens, ";;")
 			i++
 			continue
 		}
-		if !inSingle && !inDouble && (c == ';' || c == '\n') {
+		if !inSingle && !inDouble && !inBacktick && (c == ';' || c == '\n') {
 			flush()
 			tokens = append(tokens, string(c))
 			continue
 		}
-		if !inSingle && !inDouble && unicode.IsSpace(rune(c)) {
+		if !inSingle && !inDouble && !inBacktick && unicode.IsSpace(rune(c)) {
 			flush()
 			continue
 		}
