@@ -1659,6 +1659,8 @@ func (r *runner) runCaseScript(script string) (int, bool) {
 	word := r.expandVarsWithRunner(tokens[1])
 	// Strip quotes from word
 	word, _ = stripOuterQuotes(word)
+	// Remove variable escape markers while preserving backslashes
+	word = unescapeGlob(word)
 	// Parse patterns and bodies between 'in' and 'esac'
 	body := tokens[inIdx+1 : esacIdx]
 	filtered := body[:0]
