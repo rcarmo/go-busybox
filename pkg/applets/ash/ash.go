@@ -1922,6 +1922,25 @@ func (r *runner) runSubshell(inner string) int {
 
 	code := r.runScript(inner)
 
+	// Run EXIT trap if set in this subshell
+	if exitTrap, ok := r.traps["EXIT"]; ok && exitTrap != "" {
+		savedExitFlag2 := r.exitFlag
+		savedExitCode2 := r.exitCode
+		r.exitFlag = false
+		trapStatus := code
+		if savedExitFlag2 {
+			trapStatus = savedExitCode2
+		}
+		r.lastStatus = trapStatus
+		r.vars["?"] = strconv.Itoa(trapStatus)
+		r.runScript(exitTrap)
+		if !r.exitFlag {
+			code = trapStatus
+		} else {
+			code = r.exitCode
+		}
+	}
+
 	r.vars = savedVars
 	r.exported = savedExported
 	r.funcs = savedFuncs
@@ -3910,7 +3929,9 @@ func (r *runner) runPipeline(segments []string) int {
 				code, _ = sub.runSimpleCommand(s.seg, input, out, r.stdio.Err)
 			}
 			if i == len(stages)-1 {
-				status = code
+				if !r.options["pipefail"] || status == core.ExitSuccess {
+					status = code
+				}
 				if r.options["pipefail"] && code != core.ExitSuccess {
 					status = code
 				}
@@ -4124,7 +4145,9 @@ func (r *runner) runPipeline(segments []string) int {
 	for i, wait := range waits {
 		code := wait()
 		if i == len(waits)-1 {
-			status = code
+			if !r.options["pipefail"] || status == core.ExitSuccess {
+				status = code
+			}
 		}
 		if r.options["pipefail"] && code != core.ExitSuccess {
 			status = code
@@ -5994,6 +6017,9 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 		name := tok[i+1 : j]
 		buf.WriteString(maybeEscapeBackslashes(r.vars[name], inDouble))
 		i = j - 1
+	}
+	if escape {
+		buf.WriteByte('\\')
 	}
 	return restoreCommandSubMarkers(buf.String())
 }
