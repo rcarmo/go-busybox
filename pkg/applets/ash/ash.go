@@ -129,11 +129,15 @@ func (r *runner) commandNotFound(name string, stderr io.Writer) {
 func (r *runner) reportExecError(name string, msg string, stderr io.Writer) {
 	script := r.scriptName
 	if script != "" && script != "ash" {
+		prefix := ""
+		if len(r.scriptStack) > 0 {
+			prefix = r.scriptStack[len(r.scriptStack)-1] + ": "
+		}
 		if r.currentLine > 0 {
-			fmt.Fprintf(stderr, "%s: line %d: %s: %s\n", script, r.currentLine, name, msg)
+			fmt.Fprintf(stderr, "%s%s: line %d: %s: %s\n", prefix, script, r.currentLine, name, msg)
 			return
 		}
-		fmt.Fprintf(stderr, "%s: %s: %s\n", script, name, msg)
+		fmt.Fprintf(stderr, "%s%s: %s: %s\n", prefix, script, name, msg)
 		return
 	}
 	fmt.Fprintf(stderr, "ash: %s: %s\n", name, msg)
@@ -304,6 +308,7 @@ type runner struct {
 	ignored         map[os.Signal]bool
 	positional      []string // $1, $2, etc.
 	scriptName      string   // $0
+	scriptStack     []string
 	breakCount      int
 	continueCount   int
 	loopDepth       int
@@ -3819,8 +3824,13 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		// If source has extra args, save and set positional params
 		if len(cmdSpec.args) > 2 {
 			savedPositional := r.positional
+			savedScriptName := r.scriptName
 			r.positional = cmdSpec.args[2:]
+			r.scriptStack = append(r.scriptStack, savedScriptName)
+			r.scriptName = sourcePath
 			code := r.runScript(string(data))
+			r.scriptName = savedScriptName
+			r.scriptStack = r.scriptStack[:len(r.scriptStack)-1]
 			r.positional = savedPositional
 			if r.returnFlag {
 				r.returnFlag = false
@@ -3828,7 +3838,12 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			}
 			return code, false
 		}
+		savedScriptName := r.scriptName
+		r.scriptStack = append(r.scriptStack, savedScriptName)
+		r.scriptName = sourcePath
 		code := r.runScript(string(data))
+		r.scriptName = savedScriptName
+		r.scriptStack = r.scriptStack[:len(r.scriptStack)-1]
 		if r.returnFlag {
 			r.returnFlag = false
 			code = r.returnCode
