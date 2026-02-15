@@ -1979,7 +1979,13 @@ func (r *runner) runSubshell(inner string) int {
 		}
 		r.lastStatus = trapStatus
 		r.vars["?"] = strconv.Itoa(trapStatus)
+		savedInTrap := r.inTrap
+		savedTrapStatus := r.trapStatus
+		r.inTrap = true
+		r.trapStatus = trapStatus
 		r.runScript(exitTrap)
+		r.inTrap = savedInTrap
+		r.trapStatus = savedTrapStatus
 		if !r.exitFlag {
 			code = trapStatus
 		} else {
@@ -2664,7 +2670,10 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		}
 		return core.ExitFailure, false
 	case "exit":
-		code := core.ExitSuccess
+		code := r.lastStatus
+		if r.inTrap {
+			code = r.trapStatus
+		}
 		if len(cmdSpec.args) > 1 {
 			if v, err := strconv.Atoi(cmdSpec.args[1]); err == nil {
 				code = v
@@ -5930,7 +5939,7 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 	}
 	// Then expand command substitutions
 	tok = r.expandCommandSubsWithRunner(tok)
-	if !strings.Contains(tok, "$") && !strings.Contains(tok, "'") && !strings.Contains(tok, "\"") && !containsCommandSubMarker(tok) {
+	if !strings.Contains(tok, "$") && !strings.Contains(tok, "'") && !strings.Contains(tok, "\"") && !strings.Contains(tok, "\\") && !containsCommandSubMarker(tok) {
 		return tok
 	}
 	var buf strings.Builder
