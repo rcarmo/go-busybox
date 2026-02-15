@@ -4946,6 +4946,7 @@ func splitCommands(script string) []commandEntry {
 	var buf strings.Builder
 	var inSingle bool
 	var inDouble bool
+	lastLineContinued := false
 	braceDepth := 0
 	parenDepth := 0
 	cmdSubDepth := 0
@@ -5083,6 +5084,7 @@ func splitCommands(script string) []commandEntry {
 		}
 		if escape {
 			escape = false
+			lastLineContinued = true
 			if buf.Len() > 0 {
 				bufStr := buf.String()
 				buf.Reset()
@@ -5090,6 +5092,7 @@ func splitCommands(script string) []commandEntry {
 			}
 			continue
 		}
+		lastLineContinued = false
 		if !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
 			raw := buf.String()
 			cmd := strings.TrimSpace(raw)
@@ -5100,6 +5103,10 @@ func splitCommands(script string) []commandEntry {
 		} else {
 			buf.WriteByte('\n')
 		}
+	}
+	if lastLineContinued {
+		// The last line ended with \ but there's no next line - restore the backslash
+		buf.WriteByte('\\')
 	}
 	raw := buf.String()
 	if tail := strings.TrimSpace(raw); tail != "" {
