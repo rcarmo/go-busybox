@@ -3,6 +3,7 @@ package ash_test
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAshBusyboxDiff(t *testing.T) {
@@ -203,13 +205,18 @@ func runAshTest(t *testing.T, shellPath, testFile, workDir, testRoot string, bas
 		}
 	}
 	env := buildEnv(baseEnv, configEnv, linkDir, testRoot, linkPath)
-	cmd := exec.Command(linkPath, "./"+filepath.Base(testFile))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, linkPath, "./"+filepath.Base(testFile))
 	cmd.Dir = workDir
 	cmd.Env = env
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("test timed out after 30s: %s", filepath.Base(testFile))
+	}
 	return filterOutput(output.String()), exitCode(err)
 }
 

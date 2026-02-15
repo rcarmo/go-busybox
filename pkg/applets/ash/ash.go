@@ -572,24 +572,34 @@ func (r *runner) runScript(script string) int {
 				}
 				cmd = compound
 			}
-			if len(tokens) > 0 && strings.HasSuffix(tokens[0], "()") {
-				bracePos := strings.Index(cmd, "{")
-				if bracePos == -1 || findMatchingBrace(cmd, bracePos) == -1 {
-					compound := cmd
-					for i+1 < len(commands) {
-						i++
-						nextCmd := commands[i].cmd
-						if aliasTokens := splitTokens(nextCmd); len(aliasTokens) > 0 {
-							if _, ok := r.aliases[aliasTokens[0]]; ok {
-								nextCmd = r.expandAliases(nextCmd)
-							}
+			// Accumulate multi-line function definitions
+			isFuncStart := false
+			if len(tokens) > 0 {
+				if strings.HasSuffix(tokens[0], "()") || (tokens[0] == "function" && len(tokens) > 1) {
+					isFuncStart = true
+				}
+				// Also handle "name ( )" form
+				if len(tokens) >= 3 && tokens[1] == "(" && tokens[2] == ")" {
+					isFuncStart = true
+				}
+				if len(tokens) >= 2 && tokens[1] == "()" {
+					isFuncStart = true
+				}
+			}
+			if isFuncStart && !isFuncDefCommand(cmd) {
+				compound := cmd
+				for i+1 < len(commands) {
+					i++
+					nextCmd := commands[i].cmd
+					if aliasTokens := splitTokens(nextCmd); len(aliasTokens) > 0 {
+						if _, ok := r.aliases[aliasTokens[0]]; ok {
+							nextCmd = r.expandAliases(nextCmd)
 						}
-						compound = compound + "\n" + nextCmd
-						bracePos = strings.Index(compound, "{")
-						if bracePos >= 0 && findMatchingBrace(compound, bracePos) != -1 {
-							cmd = compound
-							break
-						}
+					}
+					compound = compound + "\n" + nextCmd
+					if isFuncDefCommand(compound) {
+						cmd = compound
+						break
 					}
 				}
 			}
@@ -1204,55 +1214,118 @@ func (r *runner) runForScript(script string) (int, bool) {
 }
 
 // runFuncDef handles function definitions: name() { body }
-func (r *runner) runFuncDef(script string) (int, bool) {
+// parseFuncDef extracts function name and body from a function definition.
+// Supported forms:
+//
+//	f() { body; }
+//	f () { body; }
+//	f ( ) { body; }
+//	f() ( body )               -- subshell body
+//	f() for/while/until/if/case ...  -- compound body
+//	function f() { body; }     -- bash-style
+//	function f { body; }       -- bash-style without parens
+//	function f() ( body )      -- bash-style subshell
+//	function f() compound      -- bash-style compound body
+//	function f compound         -- bash-style compound body without parens
+func parseFuncDef(script string) (name string, body string, ok bool) {
 	trimmed := strings.TrimSpace(script)
-	bracePos := strings.Index(trimmed, "{")
-	if bracePos == -1 {
+
+	hasFunctionKeyword := false
+	rest := trimmed
+	if strings.HasPrefix(trimmed, "function ") {
+		hasFunctionKeyword = true
+		rest = strings.TrimSpace(trimmed[len("function "):])
+	}
+
+	// Extract the function name
+	funcName := ""
+	afterName := ""
+
+	if hasFunctionKeyword {
+		// "function f() ..." or "function f ..."
+		idx := strings.IndexAny(rest, " \t\n(){")
+		if idx == -1 {
+			return "", "", false
+		}
+		funcName = rest[:idx]
+		afterName = strings.TrimSpace(rest[idx:])
+		// Strip optional "()" after name
+		if strings.HasPrefix(afterName, "()") {
+			afterName = strings.TrimSpace(afterName[2:])
+		} else if strings.HasPrefix(afterName, "( )") {
+			afterName = strings.TrimSpace(afterName[3:])
+		}
+	} else {
+		// "f() ..." or "f () ..." or "f ( ) ..."
+		// Look for name followed by ()
+		if idx := strings.Index(rest, "()"); idx > 0 {
+			funcName = strings.TrimSpace(rest[:idx])
+			afterName = strings.TrimSpace(rest[idx+2:])
+		} else if idx := strings.Index(rest, "( )"); idx > 0 {
+			funcName = strings.TrimSpace(rest[:idx])
+			afterName = strings.TrimSpace(rest[idx+3:])
+		} else {
+			return "", "", false
+		}
+	}
+
+	if funcName == "" || !isName(funcName) {
+		return "", "", false
+	}
+
+	// Now parse the body - can be { ... }, ( ... ), or a compound command
+	if len(afterName) == 0 {
+		return "", "", false
+	}
+
+	if afterName[0] == '{' {
+		braceEnd := findMatchingBrace(afterName, 0)
+		if braceEnd == -1 {
+			return "", "", false
+		}
+		body = strings.TrimSpace(afterName[1:braceEnd])
+		return funcName, body, true
+	}
+
+	if afterName[0] == '(' {
+		parenEnd := findMatchingParen(afterName, 0)
+		if parenEnd == -1 {
+			return "", "", false
+		}
+		// Subshell body - wrap in subshell for execution
+		inner := strings.TrimSpace(afterName[1:parenEnd])
+		body = "( " + inner + " )"
+		return funcName, body, true
+	}
+
+	// Compound body: for/while/until/if/case
+	tokens := tokenizeScript(afterName)
+	if len(tokens) > 0 {
+		switch tokens[0] {
+		case "for", "while", "until", "if", "case":
+			if compoundComplete(tokens) {
+				return funcName, afterName, true
+			}
+			// Incomplete compound - not a valid func def yet
+			return "", "", false
+		}
+	}
+
+	return "", "", false
+}
+
+func (r *runner) runFuncDef(script string) (int, bool) {
+	name, body, ok := parseFuncDef(script)
+	if !ok {
 		return 0, false
 	}
-	header := strings.TrimSpace(trimmed[:bracePos])
-	fields := strings.Fields(header)
-	if len(fields) == 0 {
-		return 0, false
-	}
-	nameTok := fields[0]
-	name := ""
-	if strings.HasSuffix(nameTok, "()") {
-		name = strings.TrimSuffix(nameTok, "()")
-	} else if len(fields) > 1 && fields[1] == "()" {
-		name = nameTok
-	}
-	if name == "" || !isName(name) {
-		return 0, false
-	}
-	braceEnd := findMatchingBrace(trimmed, bracePos)
-	if braceEnd == -1 {
-		return 0, false
-	}
-	body := strings.TrimSpace(trimmed[bracePos+1 : braceEnd])
 	r.funcs[name] = body
 	return core.ExitSuccess, true
 }
 
 func isFuncDefCommand(script string) bool {
-	trimmed := strings.TrimSpace(script)
-	bracePos := strings.Index(trimmed, "{")
-	if bracePos == -1 {
-		return false
-	}
-	header := strings.TrimSpace(trimmed[:bracePos])
-	fields := strings.Fields(header)
-	if len(fields) == 0 {
-		return false
-	}
-	nameTok := fields[0]
-	name := ""
-	if strings.HasSuffix(nameTok, "()") {
-		name = strings.TrimSuffix(nameTok, "()")
-	} else if len(fields) > 1 && fields[1] == "()" {
-		name = nameTok
-	}
-	return name != "" && isName(name)
+	_, _, ok := parseFuncDef(script)
+	return ok
 }
 
 func hasEmbeddedHereDoc(cmd string, req hereDocRequest) bool {
@@ -2216,8 +2289,38 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 	}
 	switch cmdSpec.args[0] {
 	case "echo":
-		out := strings.Join(cmdSpec.args[1:], " ")
-		fmt.Fprintf(stdout, "%s\n", out)
+		args := cmdSpec.args[1:]
+		noNewline := false
+		interpretEscapes := false
+		// Parse echo flags (busybox echo with CONFIG_FEATURE_FANCY_ECHO)
+		for len(args) > 0 {
+			arg := args[0]
+			if arg == "-n" {
+				noNewline = true
+				args = args[1:]
+			} else if arg == "-e" {
+				interpretEscapes = true
+				args = args[1:]
+			} else if arg == "-en" || arg == "-ne" {
+				noNewline = true
+				interpretEscapes = true
+				args = args[1:]
+			} else if arg == "-E" {
+				interpretEscapes = false
+				args = args[1:]
+			} else {
+				break
+			}
+		}
+		out := strings.Join(args, " ")
+		if interpretEscapes {
+			out = interpretEchoEscapes(out)
+		}
+		if noNewline {
+			fmt.Fprint(stdout, out)
+		} else {
+			fmt.Fprintf(stdout, "%s\n", out)
+		}
 		return core.ExitSuccess, false
 	case "break":
 		levels := 1
@@ -2714,6 +2817,79 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			return core.ExitFailure, false
 		}
 		return core.ExitSuccess, false
+	case "command":
+		// command [-pVv] command [arg ...]
+		args := cmdSpec.args[1:]
+		useDefaultPath := false
+		describeMode := "" // "V" or "v"
+		for len(args) > 0 && strings.HasPrefix(args[0], "-") {
+			switch args[0] {
+			case "-p":
+				useDefaultPath = true
+				args = args[1:]
+			case "-V":
+				describeMode = "V"
+				args = args[1:]
+			case "-v":
+				describeMode = "v"
+				args = args[1:]
+			case "-pV", "-Vp":
+				useDefaultPath = true
+				describeMode = "V"
+				args = args[1:]
+			case "-pv", "-vp":
+				useDefaultPath = true
+				describeMode = "v"
+				args = args[1:]
+			default:
+				args = args[1:]
+			}
+		}
+		if len(args) == 0 {
+			return core.ExitSuccess, false
+		}
+		if describeMode != "" {
+			name := args[0]
+			if _, ok := r.funcs[name]; ok {
+				if describeMode == "V" {
+					fmt.Fprintf(stdout, "%s is a function\n", name)
+				} else {
+					fmt.Fprintf(stdout, "%s\n", name)
+				}
+				return core.ExitSuccess, false
+			}
+			if isBuiltinSegment(name) {
+				if describeMode == "V" {
+					fmt.Fprintf(stdout, "%s is a shell builtin\n", name)
+				} else {
+					fmt.Fprintf(stdout, "%s\n", name)
+				}
+				return core.ExitSuccess, false
+			}
+			if _, ok := r.aliases[name]; ok {
+				if describeMode == "V" {
+					fmt.Fprintf(stdout, "%s is an alias\n", name)
+				} else {
+					fmt.Fprintf(stdout, "%s\n", name)
+				}
+				return core.ExitSuccess, false
+			}
+			path, err := exec.LookPath(name)
+			if err == nil {
+				if describeMode == "V" {
+					fmt.Fprintf(stdout, "%s is %s\n", name, path)
+				} else {
+					fmt.Fprintf(stdout, "%s\n", path)
+				}
+				return core.ExitSuccess, false
+			}
+			r.commandNotFound(name, stderr)
+			return 127, false
+		}
+		// Execute the command, skipping functions and aliases
+		cmdLine := strings.Join(args, " ")
+		_ = useDefaultPath
+		return r.runSimpleCommand(cmdLine, stdin, stdout, stderr)
 	case "type":
 		// Describe command type
 		if len(cmdSpec.args) < 2 {
@@ -6736,6 +6912,79 @@ func evalTest(args []string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func interpretEchoEscapes(s string) string {
+	var buf strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case 'n':
+				buf.WriteByte('\n')
+				i++
+			case 't':
+				buf.WriteByte('\t')
+				i++
+			case 'r':
+				buf.WriteByte('\r')
+				i++
+			case 'a':
+				buf.WriteByte('\a')
+				i++
+			case 'b':
+				buf.WriteByte('\b')
+				i++
+			case 'f':
+				buf.WriteByte('\f')
+				i++
+			case 'v':
+				buf.WriteByte('\v')
+				i++
+			case '\\':
+				buf.WriteByte('\\')
+				i++
+			case '0':
+				// Octal
+				val := 0
+				j := i + 2
+				for k := 0; k < 3 && j < len(s) && s[j] >= '0' && s[j] <= '7'; k++ {
+					val = val*8 + int(s[j]-'0')
+					j++
+				}
+				buf.WriteByte(byte(val))
+				i = j - 1
+			case 'x':
+				// Hex
+				val := 0
+				j := i + 2
+				for k := 0; k < 2 && j < len(s); k++ {
+					c := s[j]
+					if c >= '0' && c <= '9' {
+						val = val*16 + int(c-'0')
+					} else if c >= 'a' && c <= 'f' {
+						val = val*16 + int(c-'a'+10)
+					} else if c >= 'A' && c <= 'F' {
+						val = val*16 + int(c-'A'+10)
+					} else {
+						break
+					}
+					j++
+				}
+				buf.WriteByte(byte(val))
+				i = j - 1
+			case 'c':
+				// Stop output
+				return buf.String()
+			default:
+				buf.WriteByte('\\')
+				buf.WriteByte(s[i+1])
+				i++
+			}
+		} else {
+			buf.WriteByte(s[i])
+		}
+	}
+	return buf.String()
 }
 
 func buildEnv(vars map[string]string) []string {
