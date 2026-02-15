@@ -3899,7 +3899,6 @@ func (r *runner) runPipeline(segments []string) int {
 	}
 
 	type waitFn func() int
-	var waits []waitFn
 
 	// Stage represents a pipeline segment with its I/O setup and type.
 	type stage struct {
@@ -3950,6 +3949,7 @@ func (r *runner) runPipeline(segments []string) int {
 		prevReader = nextReader
 	}
 
+	waits := make([]waitFn, len(stages))
 	allBuiltins := true
 	for _, s := range stages {
 		if !s.isBuiltin {
@@ -4018,7 +4018,7 @@ func (r *runner) runPipeline(segments []string) int {
 	}
 
 	// Start external commands first to ensure readers are ready for writers.
-	for _, s := range stages {
+	for stageIdx, s := range stages {
 		if s.isBuiltin {
 			continue
 		}
@@ -4040,7 +4040,7 @@ func (r *runner) runPipeline(segments []string) int {
 			if s.writer != nil {
 				_ = s.writer.Close()
 			}
-			waits = append(waits, func() int { return core.ExitSuccess })
+			waits[stageIdx] = func() int { return core.ExitSuccess }
 			continue
 		}
 		cmdArgs := append([]string{}, cmdSpec.args[1:]...)
@@ -4171,11 +4171,12 @@ func (r *runner) runPipeline(segments []string) int {
 			}
 			done <- core.ExitSuccess
 		}(s, cmdSpec)
-		waits = append(waits, func() int { return <-done })
+		idx := stageIdx
+		waits[idx] = func() int { return <-done }
 	}
 
 	// Now run builtin stages.
-	for _, s := range stages {
+	for stageIdx, s := range stages {
 		if !s.isBuiltin {
 			continue
 		}
@@ -4209,7 +4210,8 @@ func (r *runner) runPipeline(segments []string) int {
 			}
 			done <- code
 		}(s)
-		waits = append(waits, func() int { return <-done })
+		idx := stageIdx
+		waits[idx] = func() int { return <-done }
 	}
 
 	status := core.ExitSuccess
