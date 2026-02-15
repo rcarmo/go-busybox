@@ -858,25 +858,9 @@ func (r *runner) runScript(script string) int {
 }
 
 func (r *runner) loadConfigEnv() {
-	// Our echo always supports fancy echo features (-n, -e, -E)
-	// No need to check CONFIG_FEATURE_FANCY_ECHO
-	if path := os.Getenv("BUSYBOX_CONFIG"); path != "" {
-		r.loadConfigFile(path)
-		return
-	}
-	if cwd, err := os.Getwd(); err == nil {
-		candidates := []string{
-			filepath.Join(cwd, ".config"),
-			filepath.Join(cwd, "..", ".config"),
-			filepath.Join(cwd, "..", "..", ".config"),
-		}
-		for _, candidate := range candidates {
-			if _, err := os.Stat(candidate); err == nil {
-				r.loadConfigFile(candidate)
-				return
-			}
-		}
-	}
+	// Busybox compile-time configs are not exported as shell variables.
+	// Do not load .config or BUSYBOX_CONFIG into shell variables.
+	return
 }
 
 func (r *runner) loadConfigFile(path string) {
@@ -1353,22 +1337,21 @@ func (r *runner) runForScript(script string) (int, bool) {
 		var expandedWords []string
 		for _, word := range words {
 			exp := r.expandVarsWithRunner(word)
-			if !isQuotedToken(word) {
-				// Glob expansion
-				globbed := expandGlobs(exp)
-				if len(globbed) > 1 || (len(globbed) == 1 && globbed[0] != exp) {
-					expandedWords = append(expandedWords, globbed...)
-					continue
-				}
-				// Word splitting for variable expansions
-				if strings.ContainsAny(word, "$`") && strings.ContainsAny(exp, " \t\n") {
-					split := splitOnIFS(exp, r.vars["IFS"])
-					expandedWords = append(expandedWords, split...)
-					continue
-				}
+			parts := []string{exp}
+			if !isQuotedToken(word) && strings.ContainsAny(word, "$`") && strings.ContainsAny(exp, " \t\n") {
+				parts = splitOnIFS(exp, r.vars["IFS"])
 			}
-			if exp != "" || isQuotedToken(word) {
-				expandedWords = append(expandedWords, exp)
+			for _, part := range parts {
+				if !isQuotedToken(word) {
+					globbed := expandGlobs(part)
+					if len(globbed) > 1 || (len(globbed) == 1 && globbed[0] != part) {
+						expandedWords = append(expandedWords, globbed...)
+						continue
+					}
+				}
+				if part != "" || isQuotedToken(word) {
+					expandedWords = append(expandedWords, part)
+				}
 			}
 		}
 		status := core.ExitSuccess
