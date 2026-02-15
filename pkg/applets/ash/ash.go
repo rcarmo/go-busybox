@@ -1338,8 +1338,8 @@ func (r *runner) runForScript(script string) (int, bool) {
 		for _, word := range words {
 			exp := r.expandVarsWithRunner(word)
 			parts := []string{exp}
-			if !isQuotedToken(word) && strings.ContainsAny(word, "$`") && strings.ContainsAny(exp, " \t\n") {
-				parts = splitOnIFS(exp, r.vars["IFS"])
+			if !isQuotedToken(word) && strings.ContainsAny(word, "$`") && (strings.ContainsAny(exp, " \t\n") || strings.ContainsAny(exp, "'\"")) {
+				parts = splitOnIFSWithQuotes(exp, r.vars["IFS"])
 			}
 			for _, part := range parts {
 				if !isQuotedToken(word) {
@@ -4705,10 +4705,14 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 			expandedArgs := []string{expanded}
 			if !isQuotedToken(tok) {
 				// Word splitting on unquoted variable expansions
-				if strings.ContainsAny(tok, "$`") && strings.ContainsAny(expanded, " \t\n") {
-					split := splitOnIFS(expanded, r.vars["IFS"])
+				if strings.ContainsAny(tok, "$`") && (strings.ContainsAny(expanded, " \t\n") || strings.ContainsAny(expanded, "'\"")) {
+					split := splitOnIFSWithQuotes(expanded, r.vars["IFS"])
 					if len(split) > 0 {
 						expandedArgs = split
+					} else if strings.ContainsAny(expanded, "'\"") {
+						expandedArgs = []string{""}
+					} else {
+						expandedArgs = []string{}
 					}
 				}
 				// Glob expansion
@@ -6229,6 +6233,56 @@ func splitOnIFS(s string, ifs string) []string {
 	return result
 }
 
+func splitOnIFSWithQuotes(s string, ifs string) []string {
+	if ifs == "" {
+		ifs = " \t\n"
+	}
+	var result []string
+	var buf strings.Builder
+	inSingle := false
+	inDouble := false
+	escape := false
+	tokenStarted := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escape {
+			buf.WriteByte(c)
+			escape = false
+			tokenStarted = true
+			continue
+		}
+		if c == '\\' && !inSingle {
+			escape = true
+			continue
+		}
+		if c == '\'' && !inDouble {
+			inSingle = !inSingle
+			tokenStarted = true
+			continue
+		}
+		if c == '"' && !inSingle {
+			inDouble = !inDouble
+			tokenStarted = true
+			continue
+		}
+		if !inSingle && !inDouble && strings.ContainsRune(ifs, rune(c)) {
+			if tokenStarted {
+				result = append(result, buf.String())
+				buf.Reset()
+				tokenStarted = false
+			}
+			continue
+		}
+		buf.WriteByte(c)
+		tokenStarted = true
+	}
+	if tokenStarted {
+		result = append(result, buf.String())
+	}
+	return result
+}
+
+
 func expandGlobs(pattern string) []string {
 	orig := pattern
 	if strings.ContainsRune(pattern, literalBackslashMarker) {
@@ -7678,6 +7732,90 @@ func expandVars(tok string, vars map[string]string) string {
 	return buf.String()
 }
 
+func expandVarsPreserveQuotes(tok string, vars map[string]string) string {
+	// First expand command substitutions
+	tok = expandCommandSubs(tok, vars)
+	if !strings.Contains(tok, "$") {
+		return tok
+	}
+	var buf strings.Builder
+	inSingle := false
+	inDouble := false
+	escape := false
+	for i := 0; i < len(tok); i++ {
+		c := tok[i]
+		if escape {
+			buf.WriteByte(c)
+			escape = false
+			continue
+		}
+		if c == '\\' && !inSingle {
+			escape = true
+			buf.WriteByte(c)
+			continue
+		}
+		if c == '\'' && !inDouble {
+			inSingle = !inSingle
+			buf.WriteByte(c)
+			continue
+		}
+		if c == '"' && !inSingle {
+			inDouble = !inDouble
+			buf.WriteByte(c)
+			continue
+		}
+		if inSingle {
+			buf.WriteByte(c)
+			continue
+		}
+		if inDouble && c != '$' {
+			buf.WriteByte(c)
+			continue
+		}
+		if c != '$' || i+1 >= len(tok) {
+			buf.WriteByte(c)
+			continue
+		}
+		if tok[i+1] == '$' {
+			buf.WriteString(strconv.Itoa(os.Getpid()))
+			i++
+			continue
+		}
+		if tok[i+1] == '?' {
+			buf.WriteString(vars["?"])
+			i++
+			continue
+		}
+		if tok[i+1] == '#' {
+			buf.WriteString(vars["#"])
+			i++
+			continue
+		}
+		if tok[i+1] == '{' {
+			end := strings.IndexByte(tok[i+2:], '}')
+			if end >= 0 {
+				inner := tok[i+2 : i+2+end]
+				expanded, _ := expandBraceExpr(inner, vars, braceStripBoth)
+				buf.WriteString(expanded)
+				i += end + 2
+				continue
+			}
+		}
+		j := i + 1
+		for j < len(tok) && (unicode.IsLetter(rune(tok[j])) || unicode.IsDigit(rune(tok[j])) || tok[j] == '_') {
+			j++
+		}
+		if j == i+1 {
+			buf.WriteByte(tok[i])
+			continue
+		}
+		name := tok[i+1 : j]
+		buf.WriteString(vars[name])
+		i = j - 1
+	}
+	return buf.String()
+}
+
 type braceQuoteMode int
 
 const (
@@ -7702,6 +7840,65 @@ func escapeGlobChars(value string) string {
 			buf.WriteByte(globEscapeMarker)
 		}
 		buf.WriteByte(value[i])
+	}
+	return buf.String()
+}
+
+func escapeGlobCharsInQuotes(value string) string {
+	var buf strings.Builder
+	inSingle := false
+	inDouble := false
+	escape := false
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if escape {
+			buf.WriteByte(c)
+			escape = false
+			continue
+		}
+		if c == '\\' && !inSingle {
+			escape = true
+			buf.WriteByte(c)
+			continue
+		}
+		if c == '\'' && !inDouble {
+			inSingle = !inSingle
+			buf.WriteByte(c)
+			continue
+		}
+		if c == '"' && !inSingle {
+			inDouble = !inDouble
+			buf.WriteByte(c)
+			continue
+		}
+		if (inSingle || inDouble) && isGlobChar(c) {
+			buf.WriteByte(globEscapeMarker)
+		}
+		buf.WriteByte(c)
+	}
+	return buf.String()
+}
+
+func removeDoubleQuotes(value string) string {
+	var buf strings.Builder
+	inDouble := false
+	escape := false
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if escape {
+			buf.WriteByte(c)
+			escape = false
+			continue
+		}
+		if c == '\\' && inDouble {
+			escape = true
+			continue
+		}
+		if c == '"' {
+			inDouble = !inDouble
+			continue
+		}
+		buf.WriteByte(c)
 	}
 	return buf.String()
 }
@@ -7744,16 +7941,9 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	maybeStrip := func(value string) string {
 		switch mode {
 		case braceStripBoth:
-			stripped, quoted := stripOuterQuotes(value)
-			if quoted {
-				return escapeGlobChars(stripped)
-			}
-			return stripped
+			return escapeGlobCharsInQuotes(value)
 		case braceStripDouble:
-			if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
-				return value[1 : len(value)-1]
-			}
-			return value
+			return removeDoubleQuotes(value)
 		default:
 			return value
 		}
@@ -7818,7 +8008,8 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR:-default}
 	if idx := strings.Index(expr, ":-"); idx > 0 {
 		name := expr[:idx]
-		defVal := unescapeParamExpansionValue(maybeStrip(expr[idx+2:]))
+		expanded := expandVarsPreserveQuotes(expr[idx+2:], vars)
+		defVal := unescapeParamExpansionValue(maybeStrip(expanded))
 		if val, ok := vars[name]; ok && val != "" {
 			return val, true
 		}
@@ -7827,7 +8018,8 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR:=default}
 	if idx := strings.Index(expr, ":="); idx > 0 {
 		name := expr[:idx]
-		defVal := unescapeParamExpansionValue(maybeStrip(expr[idx+2:]))
+		expanded := expandVarsPreserveQuotes(expr[idx+2:], vars)
+		defVal := unescapeParamExpansionValue(maybeStrip(expanded))
 		if val, ok := vars[name]; ok && val != "" {
 			return val, true
 		}
@@ -7837,7 +8029,8 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR=default}
 	if idx := strings.Index(expr, "="); idx > 0 {
 		name := expr[:idx]
-		defVal := unescapeParamExpansionValue(maybeStrip(expr[idx+1:]))
+		expanded := expandVarsPreserveQuotes(expr[idx+1:], vars)
+		defVal := unescapeParamExpansionValue(maybeStrip(expanded))
 		if val, ok := vars[name]; ok {
 			return val, true
 		}
@@ -7847,7 +8040,8 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR:+alt}
 	if idx := strings.Index(expr, ":+"); idx > 0 {
 		name := expr[:idx]
-		alt := unescapeParamExpansionValue(maybeStrip(expr[idx+2:]))
+		expanded := expandVarsPreserveQuotes(expr[idx+2:], vars)
+		alt := unescapeParamExpansionValue(maybeStrip(expanded))
 		if val, ok := vars[name]; ok && val != "" {
 			return alt, false
 		}
@@ -7856,7 +8050,8 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR:?error}
 	if idx := strings.Index(expr, ":?"); idx > 0 {
 		name := expr[:idx]
-		msg := unescapeParamExpansionValue(maybeStrip(expr[idx+2:]))
+		expanded := expandVarsPreserveQuotes(expr[idx+2:], vars)
+		msg := unescapeParamExpansionValue(maybeStrip(expanded))
 		if val, ok := vars[name]; ok && val != "" {
 			return val, true
 		}
@@ -7868,7 +8063,8 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR-default} (no colon - only applies when unset, not when empty)
 	if idx := strings.Index(expr, "-"); idx > 0 && !strings.Contains(expr[:idx], ":") && !strings.Contains(expr[:idx], "/") && !strings.Contains(expr[:idx], "#") && !strings.Contains(expr[:idx], "%") {
 		name := expr[:idx]
-		defVal := unescapeParamExpansionValue(maybeStrip(expr[idx+1:]))
+		expanded := expandVarsPreserveQuotes(expr[idx+1:], vars)
+		defVal := unescapeParamExpansionValue(maybeStrip(expanded))
 		if _, ok := vars[name]; ok {
 			return vars[name], true
 		}
@@ -7877,7 +8073,8 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR+alt} (no colon - only applies when set)
 	if idx := strings.Index(expr, "+"); idx > 0 && !strings.Contains(expr[:idx], ":") && !strings.Contains(expr[:idx], "/") && !strings.Contains(expr[:idx], "#") && !strings.Contains(expr[:idx], "%") {
 		name := expr[:idx]
-		alt := unescapeParamExpansionValue(maybeStrip(expr[idx+1:]))
+		expanded := expandVarsPreserveQuotes(expr[idx+1:], vars)
+		alt := unescapeParamExpansionValue(maybeStrip(expanded))
 		if _, ok := vars[name]; ok {
 			return alt, false
 		}
