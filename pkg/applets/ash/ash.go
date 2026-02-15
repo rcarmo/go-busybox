@@ -2450,6 +2450,9 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		r.stdio.Errorf("ash: %v\n", err)
 		return core.ExitFailure, false
 	}
+	if r.exitFlag {
+		return r.exitCode, true
+	}
 	if r.arithFailed {
 		r.arithFailed = false
 		return core.ExitFailure, false
@@ -5056,6 +5059,25 @@ func tokenizeScript(script string) []string {
 			escape = true
 			continue
 		}
+		// Handle $'...' ANSI-C quoting as a single unit
+		if c == '$' && i+1 < len(script) && script[i+1] == '\'' && !inSingle && !inDouble {
+			buf.WriteString("$'")
+			j := i + 2
+			for ; j < len(script); j++ {
+				ch := script[j]
+				buf.WriteByte(ch)
+				if ch == '\\' && j+1 < len(script) {
+					j++
+					buf.WriteByte(script[j])
+					continue
+				}
+				if ch == '\'' {
+					break
+				}
+			}
+			i = j
+			continue
+		}
 		if c == '\'' && !inDouble {
 			inSingle = !inSingle
 			buf.WriteByte(c)
@@ -5312,6 +5334,25 @@ func splitCommands(script string) []commandEntry {
 				buf.WriteByte(c)
 				continue
 			}
+			// Handle $'...' ANSI-C quoting as a single unit
+			if c == '$' && i+1 < len(line) && line[i+1] == '\'' && !inSingle && !inDouble {
+				buf.WriteString("$'")
+				j := i + 2
+				for ; j < len(line); j++ {
+					ch := line[j]
+					buf.WriteByte(ch)
+					if ch == '\\' && j+1 < len(line) {
+						j++
+						buf.WriteByte(line[j])
+						continue
+					}
+					if ch == '\'' {
+						break
+					}
+				}
+				i = j
+				continue
+			}
 			// Track single quotes (preserve the quote char)
 			if c == '\'' && !inDouble {
 				inSingle = !inSingle
@@ -5509,6 +5550,25 @@ func splitTokens(cmd string) []string {
 		if c == '`' && !inSingle {
 			buf.WriteByte(c)
 			inBacktick = !inBacktick
+			continue
+		}
+		// Handle $'...' ANSI-C quoting as a single unit
+		if c == '$' && i+1 < len(cmd) && cmd[i+1] == '\'' && !inSingle && !inDouble {
+			buf.WriteString("$'")
+			j := i + 2
+			for ; j < len(cmd); j++ {
+				ch := cmd[j]
+				buf.WriteByte(ch)
+				if ch == '\\' && j+1 < len(cmd) {
+					j++
+					buf.WriteByte(cmd[j])
+					continue
+				}
+				if ch == '\'' {
+					break
+				}
+			}
+			i = j
 			continue
 		}
 		if c == '\'' && !inDouble && inCmdSub == 0 && !inBacktick {
@@ -6147,26 +6207,31 @@ func expandDollarSingleQuote(s string) string {
 			// Hex escape
 			if i+2 < len(s) {
 				if val, err := strconv.ParseUint(s[i+1:i+3], 16, 8); err == nil {
-					buf.WriteByte(byte(val))
+					if val != 0 {
+						buf.WriteByte(byte(val))
+					}
 					i += 2
 				} else if val, err := strconv.ParseUint(s[i+1:i+2], 16, 8); err == nil {
-					buf.WriteByte(byte(val))
+					if val != 0 {
+						buf.WriteByte(byte(val))
+					}
 					i++
 				}
 			}
-		case '0':
-			// Octal escape
+		case '0', '1', '2', '3', '4', '5', '6', '7':
+			// Octal escape (up to 3 digits, including current)
 			end := i + 1
-			for end < len(s) && end < i+4 && s[end] >= '0' && s[end] <= '7' {
+			for end < len(s) && end < i+3 && s[end] >= '0' && s[end] <= '7' {
 				end++
 			}
-			if end > i+1 {
-				if val, err := strconv.ParseUint(s[i+1:end], 8, 8); err == nil {
+			if val, err := strconv.ParseUint(s[i:end], 8, 8); err == nil {
+				if val != 0 {
 					buf.WriteByte(byte(val))
-					i = end - 1
 				}
+				i = end - 1
 			} else {
-				buf.WriteByte(0)
+				buf.WriteByte('\\')
+				buf.WriteByte(s[i])
 			}
 		default:
 			buf.WriteByte('\\')
@@ -6726,6 +6791,16 @@ func (r *runner) expandHereDoc(content string) string {
 
 // expandBraceExprWithRunner handles ${VAR:-default} etc with positional param support
 func (r *runner) expandBraceExprWithRunner(expr string, mode braceQuoteMode) (string, bool) {
+	if len(expr) == 0 || expr[0] == '+' || expr[0] == '-' || expr[0] == '=' || expr[0] == '?' || expr[0] == ':' {
+		line := r.currentLine
+		if line == 0 || (line == 1 && r.scriptName == "SHELL") {
+			line = 0
+		}
+		fmt.Fprintf(r.stdio.Err, "%s: line %d: syntax error: bad substitution\n", r.scriptName, line)
+		r.exitFlag = true
+		r.exitCode = 2
+		return "", false
+	}
 	// Handle positional params ${1}, ${10}, etc.
 	if len(expr) > 0 && expr[0] >= '0' && expr[0] <= '9' {
 		idx, err := strconv.Atoi(expr)
