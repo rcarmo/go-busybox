@@ -2287,7 +2287,7 @@ func (r *runner) startBackground(cmd string) int {
 	command.Stdout = r.stdio.Out
 	command.Stderr = r.stdio.Err
 	command.Stdin = r.stdio.In
-	command.Env = buildEnv(r.vars)
+	command.Env = buildEnv(r.vars, r.exported)
 	if err := command.Start(); err != nil {
 		r.stdio.Errorf("ash: %v\n", err)
 		return core.ExitFailure
@@ -2347,7 +2347,7 @@ func (r *runner) startPipelineBackground(segments []string) int {
 			prevReader = pr
 		}
 		command.Stderr = r.stdio.Err
-		command.Env = buildEnv(r.vars)
+		command.Env = buildEnv(r.vars, r.exported)
 		if r.options["x"] {
 			fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args, " "))
 		}
@@ -2437,8 +2437,19 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 				} else {
 					delete(r.vars, pa.name)
 				}
+				// Restore export state
+				if !pa.wasExported {
+					delete(r.exported, pa.name)
+				}
 			}
 		}()
+	}
+	// Temporarily export prefix assignments for external commands
+	if len(cmdSpec.prefixAssigns) > 0 && !isSpecialBuiltin {
+		for i := range cmdSpec.prefixAssigns {
+			cmdSpec.prefixAssigns[i].wasExported = r.exported[cmdSpec.prefixAssigns[i].name]
+			r.exported[cmdSpec.prefixAssigns[i].name] = true
+		}
 	}
 	if len(cmdSpec.args) == 0 {
 		if cmdSpec.redirIn == "" && cmdSpec.redirOut == "" && cmdSpec.redirErr == "" && !cmdSpec.closeStdout && !cmdSpec.closeStderr && len(cmdSpec.hereDocs) == 0 {
@@ -2814,7 +2825,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		command.Stdout = stdout
 		command.Stderr = stderr
 		command.Stdin = stdin
-		command.Env = buildEnv(r.vars)
+		command.Env = buildEnv(r.vars, r.exported)
 		if r.options["x"] {
 			fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args[1:], " "))
 		}
@@ -3873,7 +3884,7 @@ runFunction:
 	command.Stdout = stdout
 	command.Stderr = stderr
 	command.Stdin = stdin
-	command.Env = buildEnv(r.vars)
+	command.Env = buildEnv(r.vars, r.exported)
 	if r.options["x"] {
 		fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args, " "))
 	}
@@ -4190,7 +4201,7 @@ func (r *runner) runPipeline(segments []string) int {
 			command.Stdin = stdin
 			command.Stdout = outWriter
 			command.Stderr = errWriter
-			command.Env = buildEnv(r.vars)
+			command.Env = buildEnv(r.vars, r.exported)
 			if r.options["x"] {
 				fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args, " "))
 			}
@@ -4439,10 +4450,11 @@ type commandSpec struct {
 }
 
 type prefixAssign struct {
-	name     string
-	newVal   string
-	oldVal   string
-	oldExist bool
+	name        string
+	newVal      string
+	oldVal      string
+	oldExist    bool
+	wasExported bool
 }
 
 type hereDocSpec struct {
@@ -8343,10 +8355,20 @@ func interpretEchoEscapes(s string) string {
 	return buf.String()
 }
 
-func buildEnv(vars map[string]string) []string {
+func buildEnv(vars map[string]string, exported map[string]bool) []string {
 	env := os.Environ()
 	for key, val := range vars {
+		if !exported[key] {
+			continue
+		}
 		if _, ok := lookupEnv(env, key); ok {
+			// Update existing env var
+			for i, e := range env {
+				if strings.HasPrefix(e, key+"=") {
+					env[i] = key + "=" + val
+					break
+				}
+			}
 			continue
 		}
 		env = append(env, key+"="+val)
