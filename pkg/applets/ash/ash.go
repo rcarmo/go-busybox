@@ -1065,6 +1065,13 @@ func (r *runner) runWhileScript(script string) (int, bool) {
 		r.loopDepth++
 		defer func() { r.loopDepth-- }()
 		for {
+			r.handleSignalsNonBlocking()
+			if r.returnFlag {
+				return r.returnCode, true
+			}
+			if r.exitFlag {
+				return r.exitCode, true
+			}
 			condStatus := r.runScript(condScript)
 			if r.returnFlag {
 				return r.returnCode, true
@@ -1144,6 +1151,13 @@ func (r *runner) runUntilScript(script string) (int, bool) {
 		r.loopDepth++
 		defer func() { r.loopDepth-- }()
 		for {
+			r.handleSignalsNonBlocking()
+			if r.returnFlag {
+				return r.returnCode, true
+			}
+			if r.exitFlag {
+				return r.exitCode, true
+			}
 			condStatus := r.runScript(condScript)
 			if r.returnFlag {
 				return r.returnCode, true
@@ -3286,10 +3300,33 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		if len(cmdSpec.args) < 2 {
 			return core.ExitFailure, false
 		}
-		data, err := os.ReadFile(cmdSpec.args[1]) // #nosec G304 -- ash sources user-provided file
+		sourcePath := cmdSpec.args[1]
+		data, err := os.ReadFile(sourcePath) // #nosec G304 -- ash sources user-provided file
 		if err != nil {
-			r.stdio.Errorf("ash: %v\n", err)
-			return core.ExitFailure, false
+			// Search PATH for the file
+			if !strings.Contains(sourcePath, "/") {
+				pathDirs := filepath.SplitList(r.vars["PATH"])
+				for _, dir := range pathDirs {
+					candidate := filepath.Join(dir, sourcePath)
+					if d, e := os.ReadFile(candidate); e == nil {
+						data = d
+						err = nil
+						break
+					}
+				}
+			}
+		}
+		if err != nil {
+			r.reportExecError(sourcePath, "not found", stderr)
+			return 127, false
+		}
+		// If source has extra args, save and set positional params
+		if len(cmdSpec.args) > 2 {
+			savedPositional := r.positional
+			r.positional = cmdSpec.args[2:]
+			code := r.runScript(string(data))
+			r.positional = savedPositional
+			return code, false
 		}
 		return r.runScript(string(data)), false
 	case ":":
