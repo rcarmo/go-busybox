@@ -170,6 +170,13 @@ func isNotFoundError(err error) bool {
 	return strings.Contains(msg, "no such file or directory")
 }
 
+func formatWriteError(err error) string {
+	if errors.Is(err, syscall.EBADF) {
+		return "Bad file descriptor"
+	}
+	return err.Error()
+}
+
 func cleanExecError(err error) string {
 	msg := err.Error()
 	// Remove "fork/exec <path>: " prefix that Go adds
@@ -976,10 +983,10 @@ func (r *runner) withRedirections(spec commandSpec, fn func() (int, bool)) (int,
 	stdout := r.stdio.Out
 	stderr := r.stdio.Err
 	if spec.closeStdout {
-		stdout = io.Discard
+		stdout = badFdWriter{}
 	}
 	if spec.closeStderr {
-		stderr = io.Discard
+		stderr = badFdWriter{}
 	}
 	savedFdReaders := r.fdReaders
 	var closers []io.Closer
@@ -2231,10 +2238,10 @@ func (r *runner) startBackground(cmd string) int {
 			}
 		}
 		if cmdSpec.closeStdout {
-			stdout = io.Discard
+			stdout = badFdWriter{}
 		}
 		if cmdSpec.closeStderr {
-			stderr = io.Discard
+			stderr = badFdWriter{}
 		}
 		if strings.HasPrefix(cmdSpec.redirIn, "&") {
 			fd, err := strconv.Atoi(strings.TrimPrefix(cmdSpec.redirIn, "&"))
@@ -2523,10 +2530,10 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		stdin = file
 	}
 	if cmdSpec.closeStdout {
-		stdout = io.Discard
+		stdout = badFdWriter{}
 	}
 	if cmdSpec.closeStderr {
-		stderr = io.Discard
+		stderr = badFdWriter{}
 	}
 	if cmdSpec.redirOut != "" {
 		if cmdSpec.redirOut == "&2" {
@@ -2655,10 +2662,15 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		if interpretEscapes {
 			out = interpretEchoEscapes(out)
 		}
+		var err error
 		if noNewline {
-			fmt.Fprint(stdout, out)
+			_, err = fmt.Fprint(stdout, out)
 		} else {
-			fmt.Fprintf(stdout, "%s\n", out)
+			_, err = fmt.Fprintf(stdout, "%s\n", out)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "ash: write error: %s\n", formatWriteError(err))
+			return core.ExitFailure, false
 		}
 		return core.ExitSuccess, false
 	case "break":
@@ -2817,13 +2829,10 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 				}
 			}
 			if cmdSpec.closeStdout {
-				r.stdio.Out = io.Discard
+				r.stdio.Out = badFdWriter{}
 			}
 			if cmdSpec.closeStderr {
-				devNull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-				if devNull != nil {
-					r.stdio.Err = devNull
-				}
+				r.stdio.Err = badFdWriter{}
 			}
 			return core.ExitSuccess, false
 		}
@@ -3731,7 +3740,10 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			}
 		}
 		if len(verbs) == 0 {
-			fmt.Fprint(stdout, format)
+			if _, err := fmt.Fprint(stdout, format); err != nil {
+				fmt.Fprintf(stderr, "ash: write error: %s\n", formatWriteError(err))
+				return core.ExitFailure, false
+			}
 		} else {
 			argIdx := 0
 			totalArgs := len(cmdSpec.args) - 2
@@ -3760,7 +3772,10 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 					}
 					argIdx++
 				}
-				fmt.Fprintf(stdout, format, iterArgs...)
+				if _, err := fmt.Fprintf(stdout, format, iterArgs...); err != nil {
+					fmt.Fprintf(stderr, "ash: write error: %s\n", formatWriteError(err))
+					return core.ExitFailure, false
+				}
 				if argIdx >= totalArgs {
 					break
 				}
@@ -4513,6 +4528,12 @@ type prefixAssign struct {
 type hereDocSpec struct {
 	fd      int
 	content string
+}
+
+type badFdWriter struct{}
+
+func (badFdWriter) Write(p []byte) (int, error) {
+	return 0, syscall.EBADF
 }
 
 func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error) {
