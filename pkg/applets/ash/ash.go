@@ -3004,13 +3004,29 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		if readErr != nil && data == "" {
 			return core.ExitFailure, false
 		}
-		// Strip trailing delimiter
-		if nChars < 0 {
-			data = strings.TrimSuffix(data, string(delim))
-		}
 		// Handle backslash continuation (unless -r)
 		if !rawMode && nChars < 0 {
+			// If line ends with \, read continuation lines
+			for strings.HasSuffix(data, "\\\n") {
+				data = data[:len(data)-2] // remove trailing \<newline>
+				readCh2 := make(chan readResult, 1)
+				go func() {
+					line2, err2 := reader.ReadString(delim)
+					readCh2 <- readResult{data: line2, err: err2}
+				}()
+				res := <-readCh2
+				data += res.data
+				if res.err != nil {
+					break
+				}
+			}
+			// Strip the trailing delimiter
+			data = strings.TrimSuffix(data, string(delim))
+			// Remove remaining backslashes (escape processing)
 			data = strings.ReplaceAll(data, "\\", "")
+		} else if nChars < 0 {
+			// Raw mode: strip trailing delimiter only
+			data = strings.TrimSuffix(data, string(delim))
 		}
 		// Determine if we're in "default REPLY" mode (no vars given by user)
 		// Split on IFS for multiple variables
@@ -7522,13 +7538,14 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		if pattern == "*" {
 			return "", true
 		}
-		if strings.HasSuffix(pattern, "*") {
-			prefix := pattern[:len(pattern)-1]
-			if i := strings.LastIndex(val, prefix); i >= 0 {
-				return val[i+len(prefix):], true
+		// Try matching from the end for longest prefix
+		for i := len(val); i >= 0; i-- {
+			prefix := val[:i]
+			if matched, _ := filepath.Match(pattern, prefix); matched {
+				return val[i:], true
 			}
 		}
-		return strings.TrimPrefix(val, pattern), true
+		return val, true
 	}
 	// ${VAR#pattern} - remove shortest prefix (simple wildcard support)
 	if idx := strings.Index(expr, "#"); idx > 0 {
@@ -7544,14 +7561,14 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		if pattern == "*" {
 			return val, true
 		}
-		if strings.HasPrefix(pattern, "*") {
-			pattern = pattern[1:]
+		// Try matching from the beginning for shortest prefix
+		for i := 0; i <= len(val); i++ {
+			prefix := val[:i]
+			if matched, _ := filepath.Match(pattern, prefix); matched {
+				return val[i:], true
+			}
 		}
-		if strings.HasPrefix(pattern, "[") && strings.HasSuffix(pattern, "]") {
-			pattern = pattern[1 : len(pattern)-1]
-		}
-		pattern = strings.ReplaceAll(pattern, "\\", "")
-		return strings.TrimPrefix(val, pattern), true
+		return val, true
 	}
 	// ${VAR%%pattern} - remove longest suffix
 	if idx := strings.Index(expr, "%%"); idx > 0 {
@@ -7564,13 +7581,14 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		if pattern == "*" {
 			return "", true
 		}
-		if strings.HasPrefix(pattern, "*") {
-			suffix := pattern[1:]
-			if i := strings.Index(val, suffix); i >= 0 {
+		// Try matching from the beginning for longest suffix
+		for i := 0; i <= len(val); i++ {
+			suffix := val[i:]
+			if matched, _ := filepath.Match(pattern, suffix); matched {
 				return val[:i], true
 			}
 		}
-		return strings.TrimSuffix(val, pattern), true
+		return val, true
 	}
 	// ${VAR%pattern} - remove shortest suffix (simple wildcard support)
 	if idx := strings.Index(expr, "%"); idx > 0 {
@@ -7586,14 +7604,14 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		if pattern == "*" {
 			return "", true
 		}
-		if strings.HasPrefix(pattern, "*") {
-			pattern = pattern[1:]
+		// Try matching from the end for shortest suffix
+		for i := len(val); i >= 0; i-- {
+			suffix := val[i:]
+			if matched, _ := filepath.Match(pattern, suffix); matched {
+				return val[:i], true
+			}
 		}
-		if strings.HasPrefix(pattern, "[") && strings.HasSuffix(pattern, "]") {
-			pattern = pattern[1 : len(pattern)-1]
-		}
-		pattern = strings.ReplaceAll(pattern, "\\", "")
-		return strings.TrimSuffix(val, pattern), true
+		return val, true
 	}
 	// Simple ${VAR}
 	return vars[expr], true
