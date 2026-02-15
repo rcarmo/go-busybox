@@ -6021,7 +6021,7 @@ func expandDollarSingleQuoteInExpr(expr string) string {
 			end := strings.IndexByte(expr[i+2:], '\'')
 			if end >= 0 {
 				inner := expr[i+2 : i+2+end]
-				expanded := expandDollarSingleQuote("$'" + inner + "'")
+				expanded := expandDollarSingleQuote(inner)
 				result.WriteString(expanded)
 				i = i + 2 + end
 				continue
