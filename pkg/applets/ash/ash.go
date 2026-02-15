@@ -2546,9 +2546,8 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 				r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
 				return core.ExitFailure, false
 			}
-			if rdr, ok := r.fdReaders[fdNum]; ok {
-				_ = rdr
-				// fd exists as a reader, can't redirect output to it in normal sense
+			// Only allow dup of stdout/stderr; other fds are treated as closed
+			if fdNum > 2 {
 				r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
 				return core.ExitFailure, false
 			}
@@ -4645,6 +4644,38 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 					spec.redirErrAppend = true
 				}
 				continue
+			}
+			// Handle escaped digit before redirection like \2>/dev/null -> arg "2" + > /dev/null
+			if !isQuotedToken(tok) && strings.HasPrefix(tok, "\\") && len(tok) > 2 && tok[1] >= '0' && tok[1] <= '9' && tok[2] == '>' {
+				args = append(args, string(tok[1]))
+				target := expandTokenWithRunner(tok[3:], r)
+				spec.redirOut = target
+				spec.redirOutAppend = false
+				continue
+			}
+			// Handle escaped redirection like \2>/dev/null (treat as redirection)
+			if !isQuotedToken(tok) && strings.Contains(tok, "\\") && !strings.ContainsAny(tok, "$`") {
+				expandedTok := expandTokenWithRunner(tok, r)
+				if redir, target, ok := splitInlineRedir(expandedTok); ok {
+					target = expandTokenWithRunner(target, r)
+					switch redir {
+					case "<", "0<":
+						spec.redirIn = target
+					case ">", "1>":
+						spec.redirOut = target
+						spec.redirOutAppend = false
+					case ">>", "1>>":
+						spec.redirOut = target
+						spec.redirOutAppend = true
+					case "2>":
+						spec.redirErr = target
+						spec.redirErrAppend = false
+					case "2>>":
+						spec.redirErr = target
+						spec.redirErrAppend = true
+					}
+					continue
+				}
 			}
 			// Handle N>&- (close fd N) patterns
 			if len(tok) >= 4 && tok[len(tok)-1] == '-' && strings.Contains(tok, ">&") {
