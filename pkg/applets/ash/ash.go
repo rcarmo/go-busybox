@@ -6777,6 +6777,63 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 			return value
 		}
 	}
+	// ${VAR:offset} and ${VAR:offset:length} - substring extraction
+	// Must check this ONLY when the char after ':' is not -, =, +, ?
+	if idx := strings.Index(expr, ":"); idx > 0 {
+		rest := expr[idx+1:]
+		if len(rest) > 0 && rest[0] != '-' && rest[0] != '=' && rest[0] != '+' && rest[0] != '?' {
+			// Check if this is a substring operation (rest starts with digit, space+digit, or space+-)
+			trimmedRest := strings.TrimSpace(rest)
+			if len(trimmedRest) > 0 && (trimmedRest[0] >= '0' && trimmedRest[0] <= '9' || trimmedRest[0] == '-' || trimmedRest[0] == '(') {
+			name := expr[:idx]
+			val := vars[name]
+			// Parse offset and optional length
+			parts := strings.SplitN(rest, ":", 2)
+			offsetStr := strings.TrimSpace(parts[0])
+			offset := 0
+			if offsetStr != "" {
+				// Simple arithmetic evaluation for offset
+				if n, err := strconv.Atoi(offsetStr); err == nil {
+					offset = n
+				} else {
+					// Try evaluating as arithmetic
+					offset = int(evalArithmetic(offsetStr, vars))
+				}
+			}
+			if offset < 0 {
+				offset = len(val) + offset
+				if offset < 0 {
+					offset = 0
+				}
+			}
+			if offset > len(val) {
+				offset = len(val)
+			}
+			if len(parts) > 1 {
+				lengthStr := strings.TrimSpace(parts[1])
+				length := 0
+				if n, err := strconv.Atoi(lengthStr); err == nil {
+					length = n
+				} else {
+					length = int(evalArithmetic(lengthStr, vars))
+				}
+				if length < 0 {
+					endPos := len(val) + length
+					if endPos < offset {
+						return "", true
+					}
+					return val[offset:endPos], true
+				}
+				end := offset + length
+				if end > len(val) {
+					end = len(val)
+				}
+				return val[offset:end], true
+			}
+			return val[offset:], true
+		}
+		}
+	}
 	// ${VAR:-default}
 	if idx := strings.Index(expr, ":-"); idx > 0 {
 		name := expr[:idx]
@@ -6815,10 +6872,136 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		}
 		return "", false
 	}
+	// ${VAR:?error}
+	if idx := strings.Index(expr, ":?"); idx > 0 {
+		name := expr[:idx]
+		msg := maybeStrip(expr[idx+2:])
+		if val, ok := vars[name]; ok && val != "" {
+			return val, true
+		}
+		if msg == "" {
+			msg = "parameter null or not set"
+		}
+		return "", false // The error reporting is handled at a higher level
+	}
+	// ${VAR-default} (no colon - only applies when unset, not when empty)
+	if idx := strings.Index(expr, "-"); idx > 0 && !strings.Contains(expr[:idx], ":") && !strings.Contains(expr[:idx], "/") && !strings.Contains(expr[:idx], "#") && !strings.Contains(expr[:idx], "%") {
+		name := expr[:idx]
+		defVal := maybeStrip(expr[idx+1:])
+		if _, ok := vars[name]; ok {
+			return vars[name], true
+		}
+		return defVal, false
+	}
+	// ${VAR+alt} (no colon - only applies when set)
+	if idx := strings.Index(expr, "+"); idx > 0 && !strings.Contains(expr[:idx], ":") && !strings.Contains(expr[:idx], "/") && !strings.Contains(expr[:idx], "#") && !strings.Contains(expr[:idx], "%") {
+		name := expr[:idx]
+		alt := maybeStrip(expr[idx+1:])
+		if _, ok := vars[name]; ok {
+			return alt, false
+		}
+		return "", false
+	}
+	// ${VAR?error} (no colon)
+	if idx := strings.Index(expr, "?"); idx > 0 && !strings.Contains(expr[:idx], ":") && !strings.Contains(expr[:idx], "/") && !strings.Contains(expr[:idx], "#") && !strings.Contains(expr[:idx], "%") {
+		name := expr[:idx]
+		if val, ok := vars[name]; ok {
+			return val, true
+		}
+		return "", false
+	}
 	// ${#VAR} - length
 	if strings.HasPrefix(expr, "#") {
 		name := expr[1:]
 		return strconv.Itoa(len(vars[name])), false
+	}
+	// ${VAR/pattern/replacement} - first match replacement
+	// ${VAR//pattern/replacement} - all matches replacement
+	// ${VAR/#pattern/replacement} - prefix replacement
+	// ${VAR/%pattern/replacement} - suffix replacement
+	if idx := strings.Index(expr, "/"); idx > 0 {
+		name := expr[:idx]
+		rest := expr[idx+1:]
+		replaceAll := false
+		prefixMode := false
+		suffixMode := false
+		if strings.HasPrefix(rest, "/") {
+			replaceAll = true
+			rest = rest[1:]
+		} else if strings.HasPrefix(rest, "#") {
+			prefixMode = true
+			rest = rest[1:]
+		} else if strings.HasPrefix(rest, "%") {
+			suffixMode = true
+			rest = rest[1:]
+		}
+		pattern := rest
+		replacement := ""
+		if sepIdx := strings.Index(rest, "/"); sepIdx >= 0 {
+			pattern = rest[:sepIdx]
+			replacement = maybeStrip(rest[sepIdx+1:])
+		}
+		val := vars[name]
+		if val == "" {
+			return "", true
+		}
+		if pattern == "" {
+			return val, true
+		}
+		if prefixMode {
+			if matched, _ := filepath.Match(pattern, val[:min(len(pattern), len(val))]); matched {
+				return replacement + val[len(pattern):], true
+			}
+			// Try glob match on prefix
+			for l := 1; l <= len(val); l++ {
+				if matched, _ := filepath.Match(pattern, val[:l]); matched {
+					return replacement + val[l:], true
+				}
+			}
+			return val, true
+		}
+		if suffixMode {
+			for l := len(val) - 1; l >= 0; l-- {
+				if matched, _ := filepath.Match(pattern, val[l:]); matched {
+					return val[:l] + replacement, true
+				}
+			}
+			return val, true
+		}
+		if replaceAll {
+			// Replace all occurrences
+			if strings.Contains(pattern, "*") || strings.Contains(pattern, "?") || strings.Contains(pattern, "[") {
+				// Glob pattern - try to match substrings
+				result := val
+				for i := 0; i < len(result); i++ {
+					for l := len(result); l > i; l-- {
+						if matched, _ := filepath.Match(pattern, result[i:l]); matched {
+							result = result[:i] + replacement + result[l:]
+							i += len(replacement) - 1
+							break
+						}
+					}
+				}
+				return result, true
+			}
+			return strings.ReplaceAll(val, pattern, replacement), true
+		}
+		// Replace first occurrence
+		if strings.Contains(pattern, "*") || strings.Contains(pattern, "?") || strings.Contains(pattern, "[") {
+			// Glob pattern - find first matching substring
+			for i := 0; i < len(val); i++ {
+				for l := len(val); l > i; l-- {
+					if matched, _ := filepath.Match(pattern, val[i:l]); matched {
+						return val[:i] + replacement + val[l:], true
+					}
+				}
+			}
+			return val, true
+		}
+		if sepIdx := strings.Index(val, pattern); sepIdx >= 0 {
+			return val[:sepIdx] + replacement + val[sepIdx+len(pattern):], true
+		}
+		return val, true
 	}
 	// ${VAR##pattern} - remove longest prefix
 	if idx := strings.Index(expr, "##"); idx > 0 {
