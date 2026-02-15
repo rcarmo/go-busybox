@@ -5276,6 +5276,11 @@ func splitCommands(script string) []commandEntry {
 				i++
 				continue
 			}
+			// Handle ;\<newline>; as ;; (line continuation forming double semicolon)
+			if c == ';' && i+1 < len(line) && line[i+1] == '\\' && i+2 >= len(line) && !inSingle && !inDouble {
+				buf.WriteByte(c)
+				continue
+			}
 			if c == ';' && !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
 				raw := buf.String()
 				if cmd := strings.TrimSpace(raw); cmd != "" {
