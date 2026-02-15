@@ -4908,6 +4908,7 @@ func splitTokens(cmd string) []string {
 	var inSingle bool
 	var inDouble bool
 	var inCmdSub int    // depth of $(...) nesting
+	var inBrace int     // depth of ${...} nesting
 	var inBacktick bool // inside `...`
 	escape := false
 	for i := 0; i < len(cmd); i++ {
@@ -4920,6 +4921,19 @@ func splitTokens(cmd string) []string {
 		if c == '\\' {
 			buf.WriteByte(c)
 			escape = true
+			continue
+		}
+		// Track ${...} brace substitution
+		if c == '$' && i+1 < len(cmd) && cmd[i+1] == '{' && !inSingle {
+			buf.WriteByte(c)
+			buf.WriteByte('{')
+			inBrace++
+			i++
+			continue
+		}
+		if c == '}' && inBrace > 0 {
+			buf.WriteByte(c)
+			inBrace--
 			continue
 		}
 		// Track $( command substitution
@@ -4956,7 +4970,7 @@ func splitTokens(cmd string) []string {
 			buf.WriteByte(c)
 			continue
 		}
-		if unicode.IsSpace(rune(c)) && !inSingle && !inDouble && inCmdSub == 0 && !inBacktick {
+		if unicode.IsSpace(rune(c)) && !inSingle && !inDouble && inCmdSub == 0 && !inBacktick && inBrace == 0 {
 			if buf.Len() > 0 {
 				tokens = append(tokens, buf.String())
 				buf.Reset()
@@ -5336,6 +5350,74 @@ func normalizeGlobPattern(pattern string) (string, bool) {
 	return buf.String(), hasGlob
 }
 
+func expandDollarSingleQuote(s string) string {
+	var buf strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' {
+			buf.WriteByte(s[i])
+			continue
+		}
+		if i+1 >= len(s) {
+			buf.WriteByte('\\')
+			continue
+		}
+		i++
+		switch s[i] {
+		case 'a':
+			buf.WriteByte('\a')
+		case 'b':
+			buf.WriteByte('\b')
+		case 'e', 'E':
+			buf.WriteByte(0x1b) // ESC
+		case 'f':
+			buf.WriteByte('\f')
+		case 'n':
+			buf.WriteByte('\n')
+		case 'r':
+			buf.WriteByte('\r')
+		case 't':
+			buf.WriteByte('\t')
+		case 'v':
+			buf.WriteByte('\v')
+		case '\\':
+			buf.WriteByte('\\')
+		case '\'':
+			buf.WriteByte('\'')
+		case '"':
+			buf.WriteByte('"')
+		case 'x':
+			// Hex escape
+			if i+2 < len(s) {
+				if val, err := strconv.ParseUint(s[i+1:i+3], 16, 8); err == nil {
+					buf.WriteByte(byte(val))
+					i += 2
+				} else if val, err := strconv.ParseUint(s[i+1:i+2], 16, 8); err == nil {
+					buf.WriteByte(byte(val))
+					i++
+				}
+			}
+		case '0':
+			// Octal escape
+			end := i + 1
+			for end < len(s) && end < i+4 && s[end] >= '0' && s[end] <= '7' {
+				end++
+			}
+			if end > i+1 {
+				if val, err := strconv.ParseUint(s[i+1:end], 8, 8); err == nil {
+					buf.WriteByte(byte(val))
+					i = end - 1
+				}
+			} else {
+				buf.WriteByte(0)
+			}
+		default:
+			buf.WriteByte('\\')
+			buf.WriteByte(s[i])
+		}
+	}
+	return buf.String()
+}
+
 func splitOnIFS(s string, ifs string) []string {
 	if ifs == "" {
 		ifs = " \t\n"
@@ -5383,7 +5465,14 @@ func expandGlobs(pattern string) []string {
 }
 
 func isQuotedToken(tok string) bool {
-	return len(tok) >= 2 && ((tok[0] == '\'' && tok[len(tok)-1] == '\'') || (tok[0] == '"' && tok[len(tok)-1] == '"'))
+	if len(tok) >= 2 && ((tok[0] == '\'' && tok[len(tok)-1] == '\'') || (tok[0] == '"' && tok[len(tok)-1] == '"')) {
+		return true
+	}
+	// $'...' is also a quoted token
+	if len(tok) >= 3 && tok[0] == '$' && tok[1] == '\'' && tok[len(tok)-1] == '\'' {
+		return true
+	}
+	return false
 }
 
 func hasCommandSub(tok string) bool {
@@ -5495,6 +5584,26 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 			continue
 		}
 		next := tok[i+1]
+		// $'...' ANSI-C quoting
+		if next == '\'' && !inSingle && !inDouble {
+			end := -1
+			for j := i + 2; j < len(tok); j++ {
+				if tok[j] == '\\' {
+					j++
+					continue
+				}
+				if tok[j] == '\'' {
+					end = j
+					break
+				}
+			}
+			if end > 0 {
+				content := tok[i+2 : end]
+				buf.WriteString(expandDollarSingleQuote(content))
+				i = end
+				continue
+			}
+		}
 		// $$
 		if next == '$' {
 			buf.WriteString(strconv.Itoa(os.Getpid()))
