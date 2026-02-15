@@ -663,6 +663,47 @@ func (r *runner) runScript(script string) int {
 					}
 				}
 			}
+			// Accumulate incomplete compound commands in pipeline segments
+			if strings.Contains(cmd, "|") {
+				pipeParts := splitPipelines(cmd)
+				needsMore := false
+				for _, part := range pipeParts {
+					partTokens := tokenizeScript(strings.TrimSpace(part))
+					if len(partTokens) > 0 {
+						switch partTokens[0] {
+						case "while", "for", "until", "if", "case":
+							if !compoundComplete(partTokens) {
+								needsMore = true
+							}
+						}
+					}
+				}
+				if needsMore {
+					compound := cmd
+					for i+1 < len(commands) {
+						i++
+						nextCmd := commands[i].cmd
+						compound = compound + "; " + nextCmd
+						pp := splitPipelines(compound)
+						allComplete := true
+						for _, part := range pp {
+							partTokens := tokenizeScript(strings.TrimSpace(part))
+							if len(partTokens) > 0 {
+								switch partTokens[0] {
+								case "while", "for", "until", "if", "case":
+									if !compoundComplete(partTokens) {
+										allComplete = false
+									}
+								}
+							}
+						}
+						if allComplete {
+							cmd = compound
+							break
+						}
+					}
+				}
+			}
 		}
 		cmdEndIdx = i
 
@@ -1223,31 +1264,112 @@ func (r *runner) runForScript(script string) (int, bool) {
 	if len(tokens) == 0 || tokens[0] != "for" {
 		return 0, false
 	}
-	if len(tokens) < 4 {
+	if len(tokens) < 3 {
 		return 0, false
 	}
 	varName := tokens[1]
 	inIdx := indexToken(tokens, "in")
 	doIdx := indexToken(tokens, "do")
 	doneIdx := findMatchingTerminator(tokens, 0)
-	if inIdx == -1 || doIdx == -1 || doneIdx == -1 || doneIdx < doIdx {
+
+	// Handle "for v; do" or "for v do" (no "in" clause) - iterate over $@
+	if inIdx == -1 && doIdx >= 0 && doneIdx >= 0 && doneIdx > doIdx {
+		bodyTokens := tokens[doIdx+1 : doneIdx]
+		bodyScript := tokensToScript(bodyTokens)
+		words := r.positional
+		loopFn := func() (int, bool) {
+			status := core.ExitSuccess
+			r.loopDepth++
+			defer func() { r.loopDepth-- }()
+			for _, word := range words {
+				r.vars[varName] = word
+				status = r.runScript(bodyScript)
+				if r.returnFlag {
+					return r.returnCode, true
+				}
+				if r.exitFlag {
+					return r.exitCode, true
+				}
+				if r.breakCount > 0 {
+					r.breakCount--
+					break
+				}
+				if r.continueCount > 0 {
+					r.continueCount--
+					if r.continueCount == 0 {
+						continue
+					}
+					break
+				}
+			}
+			return status, true
+		}
+		tailTokens := tokens[doneIdx+1:]
+		if len(tailTokens) > 0 {
+			redirTokens := make([]string, 0, len(tailTokens))
+			for _, tok := range tailTokens {
+				if tok == ";" || tok == "\n" {
+					continue
+				}
+				redirTokens = append(redirTokens, tok)
+			}
+			if len(redirTokens) > 0 {
+				if spec, err := r.parseCommandSpecWithRunner(redirTokens); err == nil {
+					return r.withRedirections(spec, loopFn)
+				}
+			}
+		}
+		return loopFn()
+	}
+
+	if inIdx == -1 || doneIdx == -1 {
+		return 0, false
+	}
+	// Find the correct "do" after the "in" clause - it must follow a ";" or newline
+	forDoIdx := -1
+	for j := inIdx + 1; j < len(tokens); j++ {
+		tok := tokens[j]
+		if tok == "do" || (strings.HasPrefix(tok, "do") && len(tok) > 2 && isTerminatorSuffix(tok[2:])) {
+			if j > inIdx+1 {
+				prev := tokens[j-1]
+				if prev == ";" || prev == "\n" {
+					forDoIdx = j
+					break
+				}
+			}
+		}
+	}
+	if forDoIdx == -1 || doneIdx < forDoIdx {
 		return 0, false
 	}
 	words := []string{}
-	for _, tok := range tokens[inIdx+1 : doIdx] {
+	for _, tok := range tokens[inIdx+1 : forDoIdx] {
 		if tok == ";" || tok == "\n" {
 			continue
 		}
 		words = append(words, tok)
 	}
-	bodyTokens := tokens[doIdx+1 : doneIdx]
+	bodyTokens := tokens[forDoIdx+1 : doneIdx]
 	bodyScript := tokensToScript(bodyTokens)
 	loopFn := func() (int, bool) {
+		// Expand the word list with word splitting
+		var expandedWords []string
+		for _, word := range words {
+			exp := r.expandVarsWithRunner(word)
+			if !isQuotedToken(word) && strings.ContainsAny(word, "$`") && strings.ContainsAny(exp, " \t\n") {
+				split := splitOnIFS(exp, r.vars["IFS"])
+				expandedWords = append(expandedWords, split...)
+			} else {
+				if exp != "" || isQuotedToken(word) {
+					expandedWords = append(expandedWords, exp)
+				}
+			}
+		}
 		status := core.ExitSuccess
 		r.loopDepth++
 		defer func() { r.loopDepth-- }()
-		for _, word := range words {
-			r.vars[varName] = expandVars(word, r.vars)
+		for _, word := range expandedWords {
+			r.vars[varName] = word
 			status = r.runScript(bodyScript)
 			if r.returnFlag {
 				return r.returnCode, true
@@ -3606,7 +3728,22 @@ func (r *runner) runPipeline(segments []string) int {
 				fdReaders:  copyFdReaders(r.fdReaders),
 				signalCh:   make(chan os.Signal, 8),
 			}
-			code, _ := sub.runSimpleCommand(s.seg, input, out, r.stdio.Err)
+			// Use runScript for compound commands, runSimpleCommand for simple ones
+			var code int
+			trimmedSeg := strings.TrimSpace(s.seg)
+			segTokens := splitTokens(trimmedSeg)
+			isCompound := false
+			if len(segTokens) > 0 {
+				switch segTokens[0] {
+				case "if", "while", "for", "until", "case":
+					isCompound = true
+				}
+			}
+			if isCompound {
+				code = sub.runScript(s.seg)
+			} else {
+				code, _ = sub.runSimpleCommand(s.seg, input, out, r.stdio.Err)
+			}
 			if i == len(stages)-1 {
 				status = code
 				if r.options["pipefail"] && code != core.ExitSuccess {
@@ -3970,7 +4107,8 @@ func isBuiltinSegment(cmd string) bool {
 		"export", "unset", "read", "local", "return", "set", "shift",
 		"source", ".", ":", "eval", "break", "continue", "wait", "kill",
 		"jobs", "fg", "bg", "trap", "type", "alias", "unalias", "hash",
-		"getopts", "printf":
+		"getopts", "printf", "command", "let", "exec",
+		"if", "while", "for", "until", "case":
 		return true
 	default:
 		return false
@@ -4114,7 +4252,20 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 			}
 			expandedArgs := []string{expanded}
 			if !isQuotedToken(tok) {
-				expandedArgs = expandGlobs(expanded)
+				// Word splitting on unquoted variable expansions
+				if strings.ContainsAny(tok, "$`") && strings.ContainsAny(expanded, " \t\n") {
+					split := splitOnIFS(expanded, r.vars["IFS"])
+					if len(split) > 0 {
+						expandedArgs = split
+					}
+				}
+				// Glob expansion
+				var globbed []string
+				for _, arg := range expandedArgs {
+					g := expandGlobs(arg)
+					globbed = append(globbed, g...)
+				}
+				expandedArgs = globbed
 			}
 			args = append(args, expandedArgs...)
 			if len(expandedArgs) > 0 {
@@ -4321,6 +4472,8 @@ func splitAndOr(cmd string) ([]string, []string) {
 	escape := false
 	cmdSubDepth := 0
 	arithDepth := 0
+	parenDepth := 0
+	braceDepth := 0
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
 		if escape {
@@ -4367,8 +4520,18 @@ func splitAndOr(cmd string) ([]string, []string) {
 				cmdSubDepth--
 				continue
 			}
+			if c == '(' && cmdSubDepth == 0 && arithDepth == 0 {
+				parenDepth++
+			} else if c == ')' && cmdSubDepth == 0 && arithDepth == 0 && parenDepth > 0 {
+				parenDepth--
+			}
+			if c == '{' {
+				braceDepth++
+			} else if c == '}' && braceDepth > 0 {
+				braceDepth--
+			}
 		}
-		if !inSingle && !inDouble && cmdSubDepth == 0 && arithDepth == 0 {
+		if !inSingle && !inDouble && cmdSubDepth == 0 && arithDepth == 0 && parenDepth == 0 && braceDepth == 0 {
 			if c == '&' && i+1 < len(cmd) && cmd[i+1] == '&' {
 				parts = append(parts, strings.TrimSpace(buf.String()))
 				ops = append(ops, "&&")
@@ -4505,15 +4668,36 @@ func compoundComplete(tokens []string) bool {
 func findMatchingTerminator(tokens []string, start int) int {
 	stack := []string{}
 	startOfCmd := true
+	inForList := false
 	for i := start; i < len(tokens); i++ {
 		tok := tokens[i]
 		if tok == ";" || tok == "\n" || tok == ";;" {
 			startOfCmd = true
+			inForList = false
+			continue
+		}
+		if inForList {
+			// Inside "for VAR in WORDS" - skip until "do" at command boundary
 			continue
 		}
 		if startOfCmd {
 			if term, ok := compoundStarters[tok]; ok {
 				stack = append(stack, term)
+				if tok == "for" {
+					// Look ahead for "in" - if found, mark as for list
+					for j := i + 1; j < len(tokens); j++ {
+						if tokens[j] == ";" || tokens[j] == "\n" {
+							break
+						}
+						if tokens[j] == "in" {
+							inForList = true
+							break
+						}
+						if tokens[j] == "do" {
+							break
+						}
+					}
+				}
 			}
 		}
 		if startOfCmd && len(stack) > 0 && tok == stack[len(stack)-1] {
@@ -4527,6 +4711,7 @@ func findMatchingTerminator(tokens []string, start int) int {
 		switch tok {
 		case "then", "do", "else", "elif", "in":
 			startOfCmd = true
+			inForList = false
 		default:
 			startOfCmd = false
 		}
@@ -5148,6 +5333,28 @@ func normalizeGlobPattern(pattern string) (string, bool) {
 		buf.WriteByte('\\')
 	}
 	return buf.String(), hasGlob
+}
+
+func splitOnIFS(s string, ifs string) []string {
+	if ifs == "" {
+		ifs = " \t\n"
+	}
+	var result []string
+	var buf strings.Builder
+	for _, c := range s {
+		if strings.ContainsRune(ifs, c) {
+			if buf.Len() > 0 {
+				result = append(result, buf.String())
+				buf.Reset()
+			}
+		} else {
+			buf.WriteRune(c)
+		}
+	}
+	if buf.Len() > 0 {
+		result = append(result, buf.String())
+	}
+	return result
 }
 
 func expandGlobs(pattern string) []string {
