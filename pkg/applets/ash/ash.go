@@ -1741,6 +1741,7 @@ func matchPattern(word, pattern string) bool {
 		if alt == "*" {
 			return true
 		}
+		alt = normalizePatternForMatch(alt)
 		if matched, err := filepath.Match(alt, word); err == nil && matched {
 			return true
 		}
@@ -1749,6 +1750,25 @@ func matchPattern(word, pattern string) bool {
 		}
 	}
 	return false
+}
+
+func normalizePatternForMatch(pattern string) string {
+	var buf strings.Builder
+	for i := 0; i < len(pattern); i++ {
+		c := pattern[i]
+		buf.WriteByte(c)
+		if c == '[' {
+			if i+1 < len(pattern) && (pattern[i+1] == '!' || pattern[i+1] == '^') {
+				buf.WriteByte(pattern[i+1])
+				i++
+			}
+			if i+1 < len(pattern) && pattern[i+1] == ']' {
+				buf.WriteString("\\]")
+				i++
+			}
+		}
+	}
+	return buf.String()
 }
 
 func splitPatternAlternatives(pattern string) []string {
@@ -8135,6 +8155,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		}
 		// Unescape backslashes in pattern and replacement
 		pattern = unescapeBackslashes(pattern)
+		pattern = normalizePatternForMatch(pattern)
 		replacement = unescapeReplacement(replacement)
 		val, isSet := vars[name]
 		if !isSet {
@@ -8215,6 +8236,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		if pattern == "*" {
 			return "", true
 		}
+		pattern = normalizePatternForMatch(pattern)
 		// Try matching from the end for longest prefix
 		for i := len(val); i >= 0; i-- {
 			prefix := val[:i]
@@ -8238,6 +8260,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		if pattern == "*" {
 			return val, true
 		}
+		pattern = normalizePatternForMatch(pattern)
 		// Try matching from the beginning for shortest prefix
 		for i := 0; i <= len(val); i++ {
 			prefix := val[:i]
@@ -8258,6 +8281,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		if pattern == "*" {
 			return "", true
 		}
+		pattern = normalizePatternForMatch(pattern)
 		// Try matching from the beginning for longest suffix
 		for i := 0; i <= len(val); i++ {
 			suffix := val[i:]
@@ -8281,6 +8305,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		if pattern == "*" {
 			return "", true
 		}
+		pattern = normalizePatternForMatch(pattern)
 		// Try matching from the end for shortest suffix
 		for i := len(val); i >= 0; i-- {
 			suffix := val[i:]
