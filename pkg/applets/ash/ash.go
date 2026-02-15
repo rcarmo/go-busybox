@@ -6214,7 +6214,7 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 		}
 		// ${...}
 		if next == '{' {
-			end := strings.IndexByte(tok[i+2:], '}')
+			end := findMatchingBraceInToken(tok[i+2:])
 			if end >= 0 {
 				inner := tok[i+2 : i+2+end]
 				expanded, fromVar := r.expandBraceExprWithRunner(inner, braceStripBoth)
@@ -6340,7 +6340,7 @@ func (r *runner) expandVarsWithRunnerNoQuotes(tok string) string {
 		}
 		// ${...}
 		if next == '{' {
-			end := strings.IndexByte(tok[i+2:], '}')
+			end := findMatchingBraceInToken(tok[i+2:])
 			if end >= 0 {
 				inner := tok[i+2 : i+2+end]
 				expanded, _ := r.expandBraceExprWithRunner(inner, braceStripDouble)
@@ -6467,6 +6467,38 @@ func (r *runner) expandBraceExprWithRunner(expr string, mode braceQuoteMode) (st
 		return strconv.Itoa(len(r.positional)), false
 	}
 	// Delegate to expandBraceExpr for other cases
+	// If expr contains ${...}, handle substring/operations with nested expansions
+	if strings.Contains(expr, "${") {
+		// Find the first : that isn't part of ${...}
+		depth := 0
+		for ci := 0; ci < len(expr); ci++ {
+			if expr[ci] == '$' && ci+1 < len(expr) && expr[ci+1] == '{' {
+				depth++
+				ci++
+			} else if expr[ci] == '}' && depth > 0 {
+				depth--
+			} else if expr[ci] == ':' && depth == 0 {
+				name := expr[:ci]
+				rest := expr[ci+1:]
+				// Determine the operation type from the unexpanded rest
+				if len(rest) > 0 && (rest[0] == '-' || rest[0] == '=' || rest[0] == '+' || rest[0] == '?') {
+					// Default/assign/alt/error operator - expand the value part
+					expandedRest := r.expandVarsWithRunner(rest[1:])
+					expr = name + ":" + string(rest[0]) + expandedRest
+				} else {
+					// Substring extraction - expand offset/length but force substring semantics
+					expandedRest := r.expandVarsWithRunner(rest)
+					// Add space before negative to prevent confusion with default operator
+					if len(expandedRest) > 0 && expandedRest[0] == '-' {
+						expr = name + ": " + expandedRest
+					} else {
+						expr = name + ":" + expandedRest
+					}
+				}
+				break
+			}
+		}
+	}
 	return expandBraceExpr(expr, r.vars, mode)
 }
 
@@ -7497,7 +7529,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		if len(rest) > 0 && rest[0] != '-' && rest[0] != '=' && rest[0] != '+' && rest[0] != '?' {
 			// Check if this is a substring operation (rest starts with digit, space+digit, or space+-)
 			trimmedRest := strings.TrimSpace(rest)
-			if len(trimmedRest) > 0 && (trimmedRest[0] >= '0' && trimmedRest[0] <= '9' || trimmedRest[0] == '-' || trimmedRest[0] == '(') {
+			if len(trimmedRest) > 0 && (trimmedRest[0] >= '0' && trimmedRest[0] <= '9' || trimmedRest[0] == '-' || trimmedRest[0] == '(' || trimmedRest[0] == ':' || trimmedRest[0] == '$') {
 			name := expr[:idx]
 			val := vars[name]
 			// Parse offset and optional length
@@ -8353,6 +8385,52 @@ func interpretEchoEscapes(s string) string {
 		}
 	}
 	return buf.String()
+}
+
+// findMatchingBraceInToken finds the position of the closing } that matches
+// the opening implied by starting after ${. Handles nested ${...}.
+func findMatchingBraceInToken(s string) int {
+	depth := 1
+	inSingle := false
+	inDouble := false
+	escape := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if c == '\\' && !inSingle {
+			escape = true
+			continue
+		}
+		if c == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if c == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if inSingle {
+			continue
+		}
+		if c == '$' && i+1 < len(s) && s[i+1] == '{' {
+			depth++
+			i++ // skip the {
+			continue
+		}
+		if c == '{' {
+			// Don't count bare { as nesting
+		}
+		if c == '}' {
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 func buildEnv(vars map[string]string, exported map[string]bool) []string {
