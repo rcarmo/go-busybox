@@ -7495,8 +7495,11 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 			replacement = maybeStrip(rest[sepIdx+1:])
 		}
 		val := vars[name]
-		if val == "" {
+		if val == "" && pattern != "*" && pattern != "" {
 			return "", true
+		}
+		if val == "" && (pattern == "*" || pattern == "") {
+			return replacement, true
 		}
 		if pattern == "" {
 			return val, true
