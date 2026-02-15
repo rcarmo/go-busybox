@@ -7926,6 +7926,16 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		}
 		pattern, replacement := splitPatternReplacement(rest)
 		replacement = maybeStrip(replacement)
+		// Always strip single/double quotes from replacement
+		if stripped, quoted := stripOuterQuotes(replacement); quoted {
+			replacement = stripped
+		}
+		// Strip quotes from pattern and escape glob chars if quoted
+		if stripped, quoted := stripOuterQuotes(pattern); quoted {
+			pattern = escapeGlobChars(stripped)
+		} else {
+			pattern = stripped
+		}
 		// Unescape backslashes in pattern and replacement
 		pattern = unescapeBackslashes(pattern)
 		replacement = unescapeReplacement(replacement)
