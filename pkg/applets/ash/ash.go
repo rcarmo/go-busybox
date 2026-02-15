@@ -549,7 +549,6 @@ func (r *runner) runScript(script string) int {
 		r.options["__trap_exit"] = true
 		r.loadConfigEnv()
 		r.vars["CONFIG_FEATURE_FANCY_ECHO"] = "y"
-		_ = os.Setenv("CONFIG_FEATURE_FANCY_ECHO", "y")
 		defer func() {
 			if action, ok := r.traps["EXIT"]; ok && action != "" {
 				savedInTrap := r.inTrap
@@ -5029,6 +5028,7 @@ func splitCommands(script string) []commandEntry {
 	var buf strings.Builder
 	var inSingle bool
 	var inDouble bool
+	var inBacktick bool
 	lastLineContinued := false
 	braceDepth := 0
 	parenDepth := 0
@@ -5069,7 +5069,7 @@ func splitCommands(script string) []commandEntry {
 				escape = false
 				continue
 			}
-			if c == '#' && !inSingle && !inDouble && cmdSubDepth == 0 {
+			if c == '#' && !inSingle && !inDouble && !inBacktick && cmdSubDepth == 0 {
 				if i == 0 || unicode.IsSpace(rune(line[i-1])) {
 					break
 				}
@@ -5105,6 +5105,12 @@ func splitCommands(script string) []commandEntry {
 				buf.WriteByte(c)
 				continue
 			}
+			// Track backtick command substitution
+			if c == '`' && !inSingle {
+				inBacktick = !inBacktick
+				buf.WriteByte(c)
+				continue
+			}
 			if !inSingle && !inDouble && arithDepth > 0 && c == ')' && i+1 < len(line) && line[i+1] == ')' {
 				buf.WriteString("))")
 				arithDepth--
@@ -5112,7 +5118,12 @@ func splitCommands(script string) []commandEntry {
 				continue
 			}
 			if !inSingle && !inDouble {
-				if c == '{' {
+				// Track { and } only at command-starting position
+				// { starts a brace group only when it's a standalone word token
+				bufSoFar := strings.TrimSpace(buf.String())
+				isFirstToken := bufSoFar == "" || strings.HasSuffix(bufSoFar, ";") || strings.HasSuffix(bufSoFar, "|") || strings.HasSuffix(bufSoFar, "&&") || strings.HasSuffix(bufSoFar, "{") || strings.HasSuffix(bufSoFar, "do") || strings.HasSuffix(bufSoFar, "then") || strings.HasSuffix(bufSoFar, "else")
+				nextIsSpace := i+1 >= len(line) || line[i+1] == ' ' || line[i+1] == '\t' || line[i+1] == '('
+				if c == '{' && isFirstToken && nextIsSpace {
 					braceDepth++
 				} else if c == '}' && braceDepth > 0 {
 					braceDepth--
@@ -5176,13 +5187,19 @@ func splitCommands(script string) []commandEntry {
 			continue
 		}
 		lastLineContinued = false
-		if !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
-			raw := buf.String()
-			cmd := strings.TrimSpace(raw)
-			if cmd != "" || raw != "" || line == "" {
-				appendCommand(cmd, raw, startLine)
+		if !inSingle && !inDouble && !inBacktick && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 {
+			trimmed := strings.TrimSpace(buf.String())
+			// If line ends with | or || or && (operator continuation), join next line
+			if strings.HasSuffix(trimmed, "|") || strings.HasSuffix(trimmed, "&&") {
+				buf.WriteByte('\n')
+			} else {
+				raw := buf.String()
+				cmd := strings.TrimSpace(raw)
+				if cmd != "" || raw != "" || line == "" {
+					appendCommand(cmd, raw, startLine)
+				}
+				buf.Reset()
 			}
-			buf.Reset()
 		} else {
 			buf.WriteByte('\n')
 		}
@@ -8189,9 +8206,6 @@ func interpretEchoEscapes(s string) string {
 
 func buildEnv(vars map[string]string) []string {
 	env := os.Environ()
-	if _, ok := lookupEnv(env, "CONFIG_FEATURE_FANCY_ECHO"); !ok {
-		env = append(env, "CONFIG_FEATURE_FANCY_ECHO=y")
-	}
 	for key, val := range vars {
 		if _, ok := lookupEnv(env, key); ok {
 			continue
