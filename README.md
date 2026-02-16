@@ -8,7 +8,7 @@ A WIP sandboxable implementation of busybox utilities in Go, intended for compil
 
 ## Overview
 
-This project ports common busybox utilities to Go, targeting WebAssembly (WASI) for secure, sandboxed execution. It aims to provide:
+This project ports common busybox utilities to Go, targeting WebAssembly (WASI) for secure, sandboxed execution. The current milestone prioritizes **OS process parity** (native exec/fork/wait semantics) to ensure correctness and test coverage before moving to a fully WASM-native execution model. It aims to provide:
 
 - **Capability-based sandboxing** via WASM's memory isolation
 - **POSIX-compatible utilities** for shell scripting

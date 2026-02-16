@@ -1838,7 +1838,7 @@ func (r *runner) runCaseScript(script string) (int, bool) {
 		for j := i; j < len(body); j++ {
 			tok := body[j]
 			if !isQuotedToken(tok) {
-				if idx := strings.Index(tok, ")"); idx >= 0 {
+				if idx := findCasePatternClose(tok); idx >= 0 {
 					patEnd = j
 					if idx < len(tok)-1 {
 						before := tok[:idx+1]
@@ -1848,10 +1848,6 @@ func (r *runner) runCaseScript(script string) (int, bool) {
 					}
 					break
 				}
-			}
-			if strings.HasSuffix(tok, ")") {
-				patEnd = j
-				break
 			}
 		}
 		if patEnd == -1 {
@@ -1923,7 +1919,7 @@ func (r *runner) runCaseSpec(spec caseSpec) (int, bool) {
 	word = unescapeGlob(word)
 	status := core.ExitSuccess
 	for _, branch := range spec.branches {
-		pattern := expandVarsPreserveQuotes(branch.pattern, r.vars)
+		pattern := r.expandVarsPreserveQuotesWithRunner(branch.pattern)
 		if matchPattern(word, pattern) {
 			status = r.runScript(branch.cmdScript)
 			if r.exitFlag {
@@ -1938,8 +1934,14 @@ func (r *runner) runCaseSpec(spec caseSpec) (int, bool) {
 func matchPattern(word, pattern string) bool {
 	// Support | for alternation
 	for _, alt := range splitPatternAlternatives(pattern) {
-		stripped, quoted := stripOuterQuotes(alt)
-		alt = stripped
+		quoted := false
+		if len(alt) >= 2 && alt[0] == '"' && alt[len(alt)-1] == '"' {
+			quoted = true
+			alt = unescapeDoubleQuotedPattern(alt[1 : len(alt)-1])
+		} else if len(alt) >= 2 && alt[0] == '\'' && alt[len(alt)-1] == '\'' {
+			quoted = true
+			alt = alt[1 : len(alt)-1]
+		}
 		if quoted {
 			alt = unescapeGlob(alt)
 			if alt == word {
@@ -1973,8 +1975,10 @@ func normalizePatternForMatch(pattern string) string {
 				i++
 			}
 			if i+1 < len(pattern) && pattern[i+1] == ']' {
-				buf.WriteString("\\]")
-				i++
+				if strings.IndexByte(pattern[i+2:], ']') >= 0 {
+					buf.WriteString("\\]")
+					i++
+				}
 			}
 		}
 	}
@@ -1986,8 +1990,20 @@ func splitPatternAlternatives(pattern string) []string {
 	var buf strings.Builder
 	inSingle := false
 	inDouble := false
+	inBracket := false
+	escape := false
 	for i := 0; i < len(pattern); i++ {
 		c := pattern[i]
+		if escape {
+			buf.WriteByte(c)
+			escape = false
+			continue
+		}
+		if c == '\\' && !inSingle {
+			escape = true
+			buf.WriteByte(c)
+			continue
+		}
 		if c == '\'' && !inDouble {
 			inSingle = !inSingle
 			buf.WriteByte(c)
@@ -1998,7 +2014,17 @@ func splitPatternAlternatives(pattern string) []string {
 			buf.WriteByte(c)
 			continue
 		}
-		if c == '|' && !inSingle && !inDouble {
+		if c == '[' && !inSingle && !inDouble {
+			inBracket = true
+			buf.WriteByte(c)
+			continue
+		}
+		if c == ']' && inBracket {
+			inBracket = false
+			buf.WriteByte(c)
+			continue
+		}
+		if c == '|' && !inSingle && !inDouble && !inBracket {
 			result = append(result, buf.String())
 			buf.Reset()
 			continue
@@ -2008,6 +2034,34 @@ func splitPatternAlternatives(pattern string) []string {
 	// Always include final part (even empty string)
 	result = append(result, buf.String())
 	return result
+}
+
+func findCasePatternClose(tok string) int {
+	inBracket := false
+	escape := false
+	for i := 0; i < len(tok); i++ {
+		c := tok[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if c == '\\' {
+			escape = true
+			continue
+		}
+		if c == '[' {
+			inBracket = true
+			continue
+		}
+		if c == ']' {
+			inBracket = false
+			continue
+		}
+		if c == ')' && !inBracket {
+			return i
+		}
+	}
+	return -1
 }
 
 func subshellInner(cmd string) (string, bool) {
@@ -2606,62 +2660,6 @@ func (r *runner) startBackground(cmd string) int {
 			closers = append(closers, file)
 		}
 		return r.startSubshellBackgroundWithStdio(inner, &core.Stdio{In: stdin, Out: stdout, Err: stderr}, closers)
-	}
-	internal := isBuiltinSegment(cmd)
-	if !internal && len(cmdSpec.args) > 0 {
-		if _, ok := r.funcs[cmdSpec.args[0]]; ok {
-			internal = true
-		}
-	}
-	if internal {
-		pid := -r.nextJobID
-		ch := make(chan int, 1)
-		r.lastBgPid = pid
-		jobID := r.addJob(pid, ch)
-		lineOffset := 0
-		if r.currentLine > 0 {
-			lineOffset = r.currentLine - 1
-		}
-		sub := &runner{
-			stdio:            r.stdio,
-			vars:             copyStringMap(r.vars),
-			exported:         copyBoolMap(r.exported),
-			funcs:            copyStringMap(r.funcs),
-			aliases:          copyStringMap(r.aliases),
-			options:          copyBoolMap(r.options),
-			traps:            map[string]string{},
-			ignored:          map[os.Signal]bool{},
-			positional:       append([]string{}, r.positional...),
-			scriptName:       r.scriptName,
-			argv0:            r.argv0,
-			lineOffset:       lineOffset,
-			jobs:             map[int]*job{},
-			jobByPid:         map[int]int{},
-			nextJobID:        1,
-			signalCh:         make(chan os.Signal, 8),
-			fdReaders:        copyFdReaders(r.fdReaders),
-			scriptCache:      r.scriptCache,
-			scriptLinesCache: r.scriptLinesCache,
-			caseCache:        r.caseCache,
-		}
-		if len(cmdSpec.hereDocs) > 0 {
-			pending := make([]string, len(cmdSpec.hereDocs))
-			for i, doc := range cmdSpec.hereDocs {
-				pending[i] = doc.content
-			}
-			sub.pendingHereDocs = pending
-		}
-		if job := r.jobs[jobID]; job != nil {
-			job.runner = sub
-		}
-		sub.forwardSignal = r.signalCh
-		sub.traps, sub.ignored = subshellTraps(r.traps)
-		go func() {
-			status, _ := sub.runSimpleCommandInternal(cmd, r.stdio.In, r.stdio.Out, r.stdio.Err)
-			ch <- status
-			close(ch)
-		}()
-		return core.ExitSuccess
 	}
 	cmdArgs := append([]string{}, cmdSpec.args[1:]...)
 	if r.restricted && strings.Contains(cmdSpec.args[0], "/") {
@@ -4567,62 +4565,6 @@ func (r *runner) runPipeline(segments []string) int {
 		prevReader = nextReader
 	}
 
-	allBuiltin := true
-	for _, s := range stages {
-		if !s.isBuiltin {
-			allBuiltin = false
-			break
-		}
-	}
-	if allBuiltin && len(stages) > 1 {
-		statuses := make([]int, len(stages))
-		var input io.Reader = r.stdio.In
-		for i, s := range stages {
-			var buf bytes.Buffer
-			stdout := io.Writer(r.stdio.Out)
-			if i < len(stages)-1 {
-				stdout = &buf
-			}
-			sub := &runner{
-				stdio:            &core.Stdio{In: input, Out: stdout, Err: r.stdio.Err},
-				vars:             copyStringMap(r.vars),
-				exported:         copyBoolMap(r.exported),
-				funcs:            copyStringMap(r.funcs),
-				aliases:          copyStringMap(r.aliases),
-				options:          copyBoolMap(r.options),
-				traps:            copyStringMap(r.traps),
-				ignored:          copySignalMap(r.ignored),
-				positional:       append([]string{}, r.positional...),
-				scriptName:       r.scriptName,
-				argv0:            r.argv0,
-				jobs:             map[int]*job{},
-				jobByPid:         map[int]int{},
-				nextJobID:        1,
-				fdReaders:        copyFdReaders(r.fdReaders),
-				signalCh:         make(chan os.Signal, 8),
-				scriptCache:      r.scriptCache,
-				scriptLinesCache: r.scriptLinesCache,
-				caseCache:        r.caseCache,
-			}
-			statuses[i] = sub.runScript(s.seg)
-			if i < len(stages)-1 {
-				input = bytes.NewReader(buf.Bytes())
-			}
-		}
-		status := core.ExitSuccess
-		for i, code := range statuses {
-			if i == len(statuses)-1 {
-				if !r.options["pipefail"] || status == core.ExitSuccess {
-					status = code
-				}
-			}
-			if r.options["pipefail"] && code != core.ExitSuccess {
-				status = code
-			}
-		}
-		return status
-	}
-
 	waits := make([]waitFn, len(stages))
 
 	// Start external commands first to ensure readers are ready for writers.
@@ -4881,7 +4823,6 @@ func (r *runner) runPipeline(segments []string) int {
 		waits[idx] = func() int { return <-done }
 		if stageIdx < len(stages)-1 {
 			<-started
-			time.Sleep(20 * time.Millisecond)
 		}
 	}
 
@@ -5315,14 +5256,14 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 				}
 				if hasUnquotedExpansion(tok) && (strings.ContainsAny(expanded, ifs) || strings.ContainsAny(expanded, "'\"")) {
 					var split []string
-					if strings.ContainsAny(tok, "'\"") {
+					if containsUnescapedQuote(tok) {
 						split = splitOnIFSWithQuotes(expanded, ifs)
 					} else {
 						split = splitOnIFS(expanded, ifs)
 					}
 					if len(split) > 0 {
 						expandedArgs = split
-					} else if strings.ContainsAny(tok, "'\"") && strings.ContainsAny(expanded, "'\"") {
+					} else if containsUnescapedQuote(tok) && strings.ContainsAny(expanded, "'\"") {
 						expandedArgs = []string{""}
 					} else {
 						expandedArgs = []string{}
@@ -5708,6 +5649,10 @@ func tokenizeScript(script string) []string {
 				i++
 				continue
 			}
+			if inSingle {
+				buf.WriteByte(c)
+				continue
+			}
 			buf.WriteByte(c)
 			escape = true
 			continue
@@ -5852,12 +5797,13 @@ func findMatchingTerminator(tokens []string, start int) int {
 			continue
 		}
 		if inForList {
-			// Inside "for VAR in WORDS" - skip until "do" at command boundary
-			if tok == "do" || (strings.HasPrefix(tok, "do") && len(tok) > 2 && isTerminatorSuffix(tok[2:])) {
+			// Inside "for VAR in WORDS" - skip words until list terminator
+			if tok == ";" || tok == "\n" {
 				inForList = false
-			} else {
+				startOfCmd = true
 				continue
 			}
+			continue
 		}
 		if startOfCmd {
 			if term, ok := compoundStarters[tok]; ok {
@@ -6904,6 +6850,7 @@ func normalizeGlobPattern(pattern string) (string, bool) {
 	escape := false
 	marker := false
 	literalMarker := false
+	inBracket := false
 	hasGlob := false
 	for i := 0; i < len(pattern); i++ {
 		c := pattern[i]
@@ -6917,7 +6864,11 @@ func normalizeGlobPattern(pattern string) (string, bool) {
 		if literalMarker {
 			literalMarker = false
 			if c == '\\' {
-				buf.WriteString("[\\\\]")
+				if inBracket {
+					buf.WriteByte('\\')
+				} else {
+					buf.WriteString("[\\\\]")
+				}
 				continue
 			}
 		}
@@ -6934,6 +6885,12 @@ func normalizeGlobPattern(pattern string) (string, bool) {
 			continue
 		}
 		if escape {
+			if inBracket {
+				buf.WriteByte('\\')
+				buf.WriteByte(c)
+				escape = false
+				continue
+			}
 			switch c {
 			case '*', '?', '[', ']':
 				buf.WriteByte('[')
@@ -6956,7 +6913,18 @@ func normalizeGlobPattern(pattern string) (string, bool) {
 			escape = true
 			continue
 		}
-		if c == '*' || c == '?' || c == '[' {
+		if c == '[' {
+			hasGlob = true
+			buf.WriteByte(c)
+			inBracket = true
+			continue
+		}
+		if c == ']' && inBracket {
+			buf.WriteByte(c)
+			inBracket = false
+			continue
+		}
+		if !inBracket && (c == '*' || c == '?') {
 			hasGlob = true
 			buf.WriteByte(c)
 			continue
@@ -7466,6 +7434,38 @@ func hasUnquotedExpansion(tok string) bool {
 	return false
 }
 
+func containsUnescapedQuote(tok string) bool {
+	inSingle := false
+	inDouble := false
+	inBacktick := false
+	escape := false
+	for i := 0; i < len(tok); i++ {
+		c := tok[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if c == '\\' && !inSingle {
+			escape = true
+			continue
+		}
+		if c == '`' && !inSingle {
+			inBacktick = !inBacktick
+			continue
+		}
+		if inBacktick {
+			continue
+		}
+		if c == '\'' && !inDouble {
+			return true
+		}
+		if c == '"' && !inSingle {
+			return true
+		}
+	}
+	return false
+}
+
 // expandVarsWithRunner expands variables including positional parameters
 func (r *runner) expandVarsWithRunner(tok string) string {
 	// First expand arithmetic $((...))
@@ -7670,7 +7670,7 @@ func (r *runner) expandVarsWithRunnerNoQuotes(tok string) string {
 		return ""
 	}
 	// Then expand command substitutions
-	tok = r.expandCommandSubsWithRunner(tok)
+	tok = r.expandCommandSubsWithRunnerInQuotes(tok, true)
 	if !strings.Contains(tok, "$") && !strings.Contains(tok, "\\") && !containsCommandSubMarker(tok) {
 		return tok
 	}
@@ -9065,6 +9065,79 @@ func expandVarsPreserveQuotes(tok string, vars map[string]string) string {
 	return buf.String()
 }
 
+func (r *runner) expandVarsPreserveQuotesWithRunner(tok string) string {
+	tok = r.expandCommandSubsWithRunner(tok)
+	return expandVarsPreserveQuotes(tok, r.vars)
+}
+
+func stripPatternQuotes(value string) string {
+	var buf strings.Builder
+	inSingle := false
+	inDouble := false
+	escape := false
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if escape {
+			if isGlobChar(c) {
+				buf.WriteByte(globEscapeMarker)
+			}
+			buf.WriteByte(c)
+			escape = false
+			continue
+		}
+		if c == '\\' && !inSingle {
+			if inDouble {
+				if i+1 < len(value) {
+					next := value[i+1]
+					if next == '$' || next == '`' || next == '"' || next == '\\' || next == '\n' {
+						escape = true
+						continue
+					}
+				}
+				buf.WriteByte('\\')
+				continue
+			}
+			escape = true
+			continue
+		}
+		if c == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if c == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if (inSingle || inDouble) && isGlobChar(c) {
+			buf.WriteByte(globEscapeMarker)
+		}
+		buf.WriteByte(c)
+	}
+	if escape {
+		buf.WriteByte('\\')
+	}
+	return buf.String()
+}
+
+func patternHasGlobMeta(pattern string) bool {
+	marker := false
+	for i := 0; i < len(pattern); i++ {
+		c := pattern[i]
+		if marker {
+			marker = false
+			continue
+		}
+		if c == globEscapeMarker || c == varEscapeMarker || c == literalBackslashMarker {
+			marker = true
+			continue
+		}
+		if c == '*' || c == '?' || c == '[' {
+			return true
+		}
+	}
+	return false
+}
+
 type braceQuoteMode int
 
 const (
@@ -9460,17 +9533,24 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		name := expr[:idx]
 		pattern := expr[idx+2:]
 		val := vars[name]
-		if stripped, quoted := stripOuterQuotes(pattern); quoted {
-			return strings.TrimPrefix(val, stripped), true
-		}
+		pattern = expandVarsPreserveQuotes(pattern, vars)
+		pattern = stripPatternQuotes(pattern)
 		if pattern == "*" {
 			return "", true
 		}
-		pattern = normalizePatternForMatch(pattern)
+		if !patternHasGlobMeta(pattern) {
+			literal := unescapeGlob(pattern)
+			if strings.HasPrefix(val, literal) {
+				return val[len(literal):], true
+			}
+			return val, true
+		}
+		normalized, _ := normalizeGlobPattern(pattern)
+		normalized = normalizePatternForMatch(normalized)
 		// Try matching from the end for longest prefix
 		for i := len(val); i >= 0; i-- {
 			prefix := val[:i]
-			if matched, _ := filepath.Match(pattern, prefix); matched {
+			if matched, _ := filepath.Match(normalized, prefix); matched {
 				return val[i:], true
 			}
 		}
@@ -9481,20 +9561,27 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		name := expr[:idx]
 		pattern := expr[idx+1:]
 		val := vars[name]
-		if stripped, quoted := stripOuterQuotes(pattern); quoted {
-			return strings.TrimPrefix(val, stripped), true
-		}
+		pattern = expandVarsPreserveQuotes(pattern, vars)
+		pattern = stripPatternQuotes(pattern)
 		if len(pattern) == 0 {
 			return val, true
 		}
 		if pattern == "*" {
 			return val, true
 		}
-		pattern = normalizePatternForMatch(pattern)
+		if !patternHasGlobMeta(pattern) {
+			literal := unescapeGlob(pattern)
+			if strings.HasPrefix(val, literal) {
+				return val[len(literal):], true
+			}
+			return val, true
+		}
+		normalized, _ := normalizeGlobPattern(pattern)
+		normalized = normalizePatternForMatch(normalized)
 		// Try matching from the beginning for shortest prefix
 		for i := 0; i <= len(val); i++ {
 			prefix := val[:i]
-			if matched, _ := filepath.Match(pattern, prefix); matched {
+			if matched, _ := filepath.Match(normalized, prefix); matched {
 				return val[i:], true
 			}
 		}
@@ -9505,17 +9592,24 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		name := expr[:idx]
 		pattern := expr[idx+2:]
 		val := vars[name]
-		if stripped, quoted := stripOuterQuotes(pattern); quoted {
-			return strings.TrimSuffix(val, stripped), true
-		}
+		pattern = expandVarsPreserveQuotes(pattern, vars)
+		pattern = stripPatternQuotes(pattern)
 		if pattern == "*" {
 			return "", true
 		}
-		pattern = normalizePatternForMatch(pattern)
+		if !patternHasGlobMeta(pattern) {
+			literal := unescapeGlob(pattern)
+			if strings.HasSuffix(val, literal) {
+				return val[:len(val)-len(literal)], true
+			}
+			return val, true
+		}
+		normalized, _ := normalizeGlobPattern(pattern)
+		normalized = normalizePatternForMatch(normalized)
 		// Try matching from the beginning for longest suffix
 		for i := 0; i <= len(val); i++ {
 			suffix := val[i:]
-			if matched, _ := filepath.Match(pattern, suffix); matched {
+			if matched, _ := filepath.Match(normalized, suffix); matched {
 				return val[:i], true
 			}
 		}
@@ -9526,20 +9620,27 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		name := expr[:idx]
 		pattern := expr[idx+1:]
 		val := vars[name]
-		if stripped, quoted := stripOuterQuotes(pattern); quoted {
-			return strings.TrimSuffix(val, stripped), true
-		}
+		pattern = expandVarsPreserveQuotes(pattern, vars)
+		pattern = stripPatternQuotes(pattern)
 		if len(pattern) == 0 {
 			return val, true
 		}
 		if pattern == "*" {
 			return "", true
 		}
-		pattern = normalizePatternForMatch(pattern)
+		if !patternHasGlobMeta(pattern) {
+			literal := unescapeGlob(pattern)
+			if strings.HasSuffix(val, literal) {
+				return val[:len(val)-len(literal)], true
+			}
+			return val, true
+		}
+		normalized, _ := normalizeGlobPattern(pattern)
+		normalized = normalizePatternForMatch(normalized)
 		// Try matching from the end for shortest suffix
 		for i := len(val); i >= 0; i-- {
 			suffix := val[i:]
-			if matched, _ := filepath.Match(pattern, suffix); matched {
+			if matched, _ := filepath.Match(normalized, suffix); matched {
 				return val[:i], true
 			}
 		}
@@ -9569,6 +9670,54 @@ func findBacktickEnd(tok string, start int) int {
 	return -1
 }
 
+func findCommandSubEnd(s string, start int) int {
+	depth := 1
+	inSingle := false
+	inDouble := false
+	inBacktick := false
+	escape := false
+	for i := start + 2; i < len(s); i++ {
+		c := s[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if c == '\\' && !inSingle {
+			escape = true
+			continue
+		}
+		if c == '`' && !inSingle {
+			inBacktick = !inBacktick
+			continue
+		}
+		if inBacktick {
+			continue
+		}
+		if c == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if c == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if inSingle || inDouble {
+			continue
+		}
+		if c == '(' {
+			depth++
+			continue
+		}
+		if c == ')' {
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return -1
+}
+
 func unescapeBacktickCommand(cmd string) string {
 	var buf strings.Builder
 	for i := 0; i < len(cmd); i++ {
@@ -9589,6 +9738,26 @@ func unescapeBacktickCommand(cmd string) string {
 	return buf.String()
 }
 
+func unescapeDoubleQuotedPattern(value string) string {
+	var buf strings.Builder
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c == '\\' && i+1 < len(value) {
+			next := value[i+1]
+			switch next {
+			case '$', '`', '"', '\\', '\n':
+				if next != '\n' {
+					buf.WriteByte(next)
+				}
+				i++
+				continue
+			}
+		}
+		buf.WriteByte(c)
+	}
+	return buf.String()
+}
+
 func expandCommandSubs(tok string, vars map[string]string) string {
 	// Handle $(...) first
 	for {
@@ -9596,18 +9765,8 @@ func expandCommandSubs(tok string, vars map[string]string) string {
 		if start == -1 {
 			break
 		}
-		// Find matching )
-		depth := 1
-		end := start + 2
-		for end < len(tok) && depth > 0 {
-			if tok[end] == '(' {
-				depth++
-			} else if tok[end] == ')' {
-				depth--
-			}
-			end++
-		}
-		if depth != 0 {
+		end := findCommandSubEnd(tok, start)
+		if end == -1 {
 			break
 		}
 		cmdStr := tok[start+2 : end-1]
@@ -9616,7 +9775,33 @@ func expandCommandSubs(tok string, vars map[string]string) string {
 	}
 	// Handle backticks
 	for {
-		start := strings.IndexByte(tok, '`')
+		start := -1
+		inSQ := false
+		inDQ := false
+		escape := false
+		for j := 0; j < len(tok); j++ {
+			c := tok[j]
+			if escape {
+				escape = false
+				continue
+			}
+			if c == '\\' && !inSQ {
+				escape = true
+				continue
+			}
+			if c == '\'' && !inDQ {
+				inSQ = !inSQ
+				continue
+			}
+			if c == '"' && !inSQ {
+				inDQ = !inDQ
+				continue
+			}
+			if c == '`' && !inSQ {
+				start = j
+				break
+			}
+		}
 		if start == -1 {
 			break
 		}
@@ -9625,21 +9810,40 @@ func expandCommandSubs(tok string, vars map[string]string) string {
 			break
 		}
 		cmdStr := unescapeBacktickCommand(tok[start+1 : end])
-		output := escapeCommandSubOutput(runCommandSub(cmdStr, vars), true)
+		output := escapeCommandSubOutput(runCommandSub(cmdStr, vars), inDQ)
 		tok = tok[:start] + output + tok[end+1:]
 	}
 	return tok
 }
 
 func (r *runner) expandCommandSubsWithRunner(tok string) string {
+	return r.expandCommandSubsWithRunnerInQuotes(tok, false)
+}
+
+func (r *runner) expandCommandSubsWithRunnerInQuotes(tok string, inDouble bool) string {
 	// Handle $(...) first (skip when inside single quotes)
 	for {
 		// Find $( that's not inside single quotes
 		start := -1
 		inSQ := false
+		inDQ := inDouble
+		escape := false
 		for j := 0; j < len(tok)-1; j++ {
-			if tok[j] == '\'' {
+			c := tok[j]
+			if escape {
+				escape = false
+				continue
+			}
+			if c == '\\' && !inSQ {
+				escape = true
+				continue
+			}
+			if c == '\'' && !inDQ {
 				inSQ = !inSQ
+				continue
+			}
+			if c == '"' && !inSQ {
+				inDQ = !inDQ
 				continue
 			}
 			if tok[j] == '$' && tok[j+1] == '(' && !inSQ {
@@ -9650,18 +9854,8 @@ func (r *runner) expandCommandSubsWithRunner(tok string) string {
 		if start == -1 {
 			break
 		}
-		// Find matching )
-		depth := 1
-		end := start + 2
-		for end < len(tok) && depth > 0 {
-			if tok[end] == '(' {
-				depth++
-			} else if tok[end] == ')' {
-				depth--
-			}
-			end++
-		}
-		if depth != 0 {
+		end := findCommandSubEnd(tok, start)
+		if end == -1 {
 			break
 		}
 		cmdStr := tok[start+2 : end-1]
@@ -9672,12 +9866,27 @@ func (r *runner) expandCommandSubsWithRunner(tok string) string {
 	for {
 		start := -1
 		inSQ := false
+		inDQ := inDouble
+		escape := false
 		for j := 0; j < len(tok); j++ {
-			if tok[j] == '\'' {
+			c := tok[j]
+			if escape {
+				escape = false
+				continue
+			}
+			if c == '\\' && !inSQ {
+				escape = true
+				continue
+			}
+			if c == '\'' && !inDQ {
 				inSQ = !inSQ
 				continue
 			}
-			if tok[j] == '`' && !inSQ {
+			if c == '"' && !inSQ {
+				inDQ = !inDQ
+				continue
+			}
+			if c == '`' && !inSQ {
 				start = j
 				break
 			}
@@ -9690,7 +9899,7 @@ func (r *runner) expandCommandSubsWithRunner(tok string) string {
 			break
 		}
 		cmdStr := unescapeBacktickCommand(tok[start+1 : end])
-		output := escapeCommandSubOutput(r.runCommandSubWithRunner(cmdStr, true), true)
+		output := escapeCommandSubOutput(r.runCommandSubWithRunner(cmdStr, true), inDQ)
 		tok = tok[:start] + output + tok[end+1:]
 	}
 	return tok
