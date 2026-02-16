@@ -4715,17 +4715,22 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 				continue
 			}
 			expanded := expandTokenWithRunner(tok, r)
-			if expanded == "" && !isQuotedToken(tok) && (hasCommandSub(tok) || strings.ContainsAny(tok, "$")) {
+			if expanded == "" && !isQuotedToken(tok) && hasUnquotedExpansion(tok) {
 				continue
 			}
 			expandedArgs := []string{expanded}
 			if !isQuotedToken(tok) {
 				// Word splitting on unquoted variable expansions
-				if strings.ContainsAny(tok, "$`") && (strings.ContainsAny(expanded, " \t\n") || strings.ContainsAny(expanded, "'\"")) {
-					split := splitOnIFSWithQuotes(expanded, r.vars["IFS"])
+				if hasUnquotedExpansion(tok) && (strings.ContainsAny(expanded, " \t\n") || strings.ContainsAny(expanded, "'\"")) {
+					var split []string
+					if strings.ContainsAny(tok, "'\"") {
+						split = splitOnIFSWithQuotes(expanded, r.vars["IFS"])
+					} else {
+						split = splitOnIFS(expanded, r.vars["IFS"])
+					}
 					if len(split) > 0 {
 						expandedArgs = split
-					} else if strings.ContainsAny(expanded, "'\"") {
+					} else if strings.ContainsAny(tok, "'\"") && strings.ContainsAny(expanded, "'\"") {
 						expandedArgs = []string{""}
 					} else {
 						expandedArgs = []string{}
@@ -6428,7 +6433,6 @@ func splitOnIFSWithQuotes(s string, ifs string) []string {
 	return result
 }
 
-
 func expandGlobs(pattern string) []string {
 	orig := pattern
 	if strings.ContainsRune(pattern, literalBackslashMarker) {
@@ -6491,6 +6495,39 @@ func expandToken(tok string, expand func(string) string, expandQuoted func(strin
 
 func expandTokenWithRunner(tok string, r *runner) string {
 	return expandToken(tok, r.expandVarsWithRunner, r.expandVarsWithRunnerNoQuotes)
+}
+
+func hasUnquotedExpansion(tok string) bool {
+	inSingle := false
+	inDouble := false
+	inBacktick := false
+	escape := false
+	for i := 0; i < len(tok); i++ {
+		c := tok[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if c == '\\' && !inSingle {
+			escape = true
+			continue
+		}
+		if c == '\'' && !inDouble && !inBacktick {
+			inSingle = !inSingle
+			continue
+		}
+		if c == '"' && !inSingle && !inBacktick {
+			inDouble = !inDouble
+			continue
+		}
+		if c == '`' && !inSingle {
+			return true
+		}
+		if c == '$' && !inSingle && !inDouble && !inBacktick {
+			return true
+		}
+	}
+	return false
 }
 
 // expandVarsWithRunner expands variables including positional parameters
@@ -6800,6 +6837,7 @@ func (r *runner) expandVarsWithRunnerNoQuotes(tok string) string {
 func (r *runner) expandHereDoc(content string) string {
 	var buf strings.Builder
 	cmdSubDepth := 0
+	inBacktick := false
 	for i := 0; i < len(content); i++ {
 		c := content[i]
 		if c == '$' && i+1 < len(content) && content[i+1] == '(' {
@@ -6816,7 +6854,16 @@ func (r *runner) expandHereDoc(content string) string {
 				cmdSubDepth--
 			}
 		}
-		if cmdSubDepth == 0 && c == '\\' && i+1 < len(content) {
+		if cmdSubDepth == 0 && c == '`' {
+			backslashes := 0
+			for j := i - 1; j >= 0 && content[j] == '\\'; j-- {
+				backslashes++
+			}
+			if backslashes%2 == 0 {
+				inBacktick = !inBacktick
+			}
+		}
+		if cmdSubDepth == 0 && !inBacktick && c == '\\' && i+1 < len(content) {
 			next := content[i+1]
 			switch next {
 			case '$':
@@ -6829,6 +6876,11 @@ func (r *runner) expandHereDoc(content string) string {
 				continue
 			case '\\':
 				buf.WriteByte(hereDocBackslashMarker)
+				i++
+				continue
+			case '"':
+				buf.WriteByte(hereDocBackslashMarker)
+				buf.WriteByte('"')
 				i++
 				continue
 			case '\n':
@@ -8066,6 +8118,7 @@ const (
 	literalBackslashMarker      = '\x1d'
 	globEscapeMarker            = '\x1e'
 	varEscapeMarker             = '\x1f'
+	commandSubBacktickMarker    = '\x14'
 	commandSubBackslashMarker   = '\x16'
 	commandSubSingleQuoteMarker = '\x17'
 	commandSubDoubleQuoteMarker = '\x18'
@@ -8617,6 +8670,7 @@ func escapeCommandSubOutput(output string, dropEscapedQuote bool) string {
 		output = strings.ReplaceAll(output, "\\\"", "\"")
 	}
 	output = strings.ReplaceAll(output, "\\", string(commandSubBackslashMarker))
+	output = strings.ReplaceAll(output, "`", string(commandSubBacktickMarker))
 	output = strings.ReplaceAll(output, "'", string(commandSubSingleQuoteMarker))
 	output = strings.ReplaceAll(output, "\"", string(commandSubDoubleQuoteMarker))
 	output = strings.ReplaceAll(output, "$", string(commandSubDollarMarker))
@@ -8626,6 +8680,7 @@ func escapeCommandSubOutput(output string, dropEscapedQuote bool) string {
 func restoreCommandSubMarkers(value string) string {
 	replacer := strings.NewReplacer(
 		string(commandSubBackslashMarker), "\\",
+		string(commandSubBacktickMarker), "`",
 		string(commandSubSingleQuoteMarker), "'",
 		string(commandSubDoubleQuoteMarker), "\"",
 		string(commandSubDollarMarker), "$",
@@ -8635,6 +8690,7 @@ func restoreCommandSubMarkers(value string) string {
 
 func containsCommandSubMarker(value string) bool {
 	return strings.ContainsRune(value, commandSubBackslashMarker) ||
+		strings.ContainsRune(value, commandSubBacktickMarker) ||
 		strings.ContainsRune(value, commandSubSingleQuoteMarker) ||
 		strings.ContainsRune(value, commandSubDoubleQuoteMarker) ||
 		strings.ContainsRune(value, commandSubDollarMarker)
