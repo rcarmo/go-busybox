@@ -444,6 +444,10 @@ func (r *runner) handleSignalsNonBlocking() {
 	for {
 		select {
 		case sig := <-r.signalCh:
+			if r.inSubshell {
+				r.pendingSignals = append(r.pendingSignals, pendingSignal{sig: sig})
+				return
+			}
 			r.runTrap(sig)
 			if r.exitFlag || r.returnFlag {
 				return
@@ -1693,13 +1697,10 @@ func (r *runner) runCaseScript(script string) (int, bool) {
 		return 0, false
 	}
 	word := r.expandVarsWithRunner(tokens[1])
-	quotedWord := isQuotedToken(tokens[1])
 	// Strip quotes from word
 	word, _ = stripOuterQuotes(word)
-	// Remove variable escape markers while preserving backslashes for unquoted words
-	if !quotedWord {
-		word = unescapeGlob(word)
-	}
+	// Remove variable escape markers
+	word = unescapeGlob(word)
 	// Parse patterns and bodies between 'in' and 'esac'
 	body := tokens[inIdx+1 : esacIdx]
 	filtered := body[:0]
@@ -1748,7 +1749,6 @@ func (r *runner) runCaseScript(script string) (int, bool) {
 		pattern = strings.TrimSpace(pattern)
 		// Expand variables and command substitutions in pattern
 		pattern = r.expandVarsWithRunner(pattern)
-		pattern = unescapeGlob(pattern)
 		// Find ;; terminator
 		cmdStart := patEnd + 1
 		cmdEnd := cmdStart
@@ -1777,8 +1777,9 @@ func matchPattern(word, pattern string) bool {
 		if alt == "*" {
 			return true
 		}
-		alt = normalizePatternForMatch(alt)
-		if matched, err := filepath.Match(alt, word); err == nil && matched {
+		normalized, _ := normalizeGlobPattern(alt)
+		normalized = normalizePatternForMatch(normalized)
+		if matched, err := filepath.Match(normalized, word); err == nil && matched {
 			return true
 		}
 		if alt == word {
