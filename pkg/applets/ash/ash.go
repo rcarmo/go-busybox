@@ -322,6 +322,7 @@ type runner struct {
 	positional      []string // $1, $2, etc.
 	scriptName      string   // $0
 	scriptStack     []string
+	evalDepth       int
 	breakCount      int
 	continueCount   int
 	loopDepth       int
@@ -1528,6 +1529,14 @@ func (r *runner) runFuncDef(script string) (int, bool) {
 	if !ok {
 		return 0, false
 	}
+	if isReservedFuncName(name) {
+		fmt.Fprintf(r.stdio.Err, "%s: line %d: syntax error: unexpected \")\"\n", r.scriptName, r.currentLine)
+		if r.evalDepth == 0 {
+			r.exitFlag = true
+			r.exitCode = 2
+		}
+		return 2, true
+	}
 	r.funcs[name] = body
 	return core.ExitSuccess, true
 }
@@ -1554,6 +1563,15 @@ func hasEmbeddedHereDoc(cmd string, req hereDocRequest) bool {
 func isReservedWord(tok string) bool {
 	switch tok {
 	case "then", "do", "else", "elif", "fi", "done", "esac":
+		return true
+	default:
+		return false
+	}
+}
+
+func isReservedFuncName(tok string) bool {
+	switch tok {
+	case "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "in", "function":
 		return true
 	default:
 		return false
@@ -2199,7 +2217,16 @@ func (r *runner) startSubshellBackgroundWithStdio(inner string, stdio *core.Stdi
 
 func (r *runner) runCommand(cmd string) (int, bool) {
 	cmd = strings.TrimSpace(cmd)
-	if parts, ops := splitAndOr(cmd); len(ops) > 0 {
+	background := false
+	if strings.HasSuffix(cmd, "&") && !strings.HasSuffix(cmd, "&&") {
+		background = true
+		cmd = strings.TrimSpace(strings.TrimSuffix(cmd, "&"))
+	}
+	parts, ops := splitAndOr(cmd)
+	if background && len(ops) > 0 {
+		return r.startSubshellBackground(cmd), false
+	}
+	if len(ops) > 0 {
 		status, exit := r.runCommand(parts[0])
 		r.lastStatus = status
 		for i, op := range ops {
@@ -2257,13 +2284,6 @@ func (r *runner) runCommand(cmd string) (int, bool) {
 				}
 				return code, false
 			}
-		}
-	}
-	background := false
-	if strings.HasSuffix(cmd, "&") {
-		if !strings.HasSuffix(cmd, "&&") {
-			background = true
-			cmd = strings.TrimSpace(strings.TrimSuffix(cmd, "&"))
 		}
 	}
 	if inner, ok := subshellInner(cmd); ok {
@@ -3922,7 +3942,23 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			return core.ExitSuccess, false
 		}
 		evalScript := strings.Join(cmdSpec.args[1:], " ")
-		return r.runScript(evalScript), false
+		savedScriptName := r.scriptName
+		savedLineOffset := r.lineOffset
+		if savedScriptName != "" {
+			r.scriptName = savedScriptName + ": eval"
+		} else {
+			r.scriptName = "eval"
+		}
+		r.lineOffset = 0
+		if r.currentLine > 0 {
+			r.lineOffset = r.currentLine - 1
+		}
+		r.evalDepth++
+		code := r.runScript(evalScript)
+		r.evalDepth--
+		r.scriptName = savedScriptName
+		r.lineOffset = savedLineOffset
+		return code, false
 	}
 	if len(cmdSpec.args) >= 2 && cmdSpec.args[0] == "{" && cmdSpec.args[len(cmdSpec.args)-1] == "}" {
 		inner := ""
@@ -5154,6 +5190,20 @@ func tokenizeScript(script string) []string {
 			tokens = append(tokens, string(c))
 			continue
 		}
+		if !inSingle && !inDouble && !inBacktick && c == '&' {
+			if i > 0 && (script[i-1] == '>' || script[i-1] == '<') {
+				buf.WriteByte(c)
+				continue
+			}
+			flush()
+			if i+1 < len(script) && script[i+1] == '&' {
+				tokens = append(tokens, "&&")
+				i++
+			} else {
+				tokens = append(tokens, "&")
+			}
+			continue
+		}
 		if !inSingle && !inDouble && !inBacktick && unicode.IsSpace(rune(c)) {
 			flush()
 			continue
@@ -5224,7 +5274,7 @@ func findMatchingTerminator(tokens []string, start int) int {
 	inForList := false
 	for i := start; i < len(tokens); i++ {
 		tok := tokens[i]
-		if tok == ";" || tok == "\n" || tok == ";;" {
+		if tok == ";" || tok == "\n" || tok == ";;" || tok == "&" || tok == "&&" || tok == "||" {
 			startOfCmd = true
 			inForList = false
 			continue
