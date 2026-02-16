@@ -116,8 +116,12 @@ func currentProcessName() string {
 func (r *runner) commandNotFound(name string, stderr io.Writer) {
 	script := r.scriptName
 	if script != "" && script != "ash" {
-		if r.currentLine > 0 {
-			fmt.Fprintf(stderr, "%s: line %d: %s: not found\n", script, r.currentLine, name)
+		line := r.currentLine
+		if line == 1 && script == "SHELL" {
+			line = 0
+		}
+		if line > 0 || (line == 0 && script == "SHELL") {
+			fmt.Fprintf(stderr, "%s: line %d: %s: not found\n", script, line, name)
 			return
 		}
 		fmt.Fprintf(stderr, "%s: %s: not found\n", script, name)
@@ -133,14 +137,53 @@ func (r *runner) reportExecError(name string, msg string, stderr io.Writer) {
 		if len(r.scriptStack) > 0 {
 			prefix = r.scriptStack[len(r.scriptStack)-1] + ": "
 		}
-		if r.currentLine > 0 {
-			fmt.Fprintf(stderr, "%s%s: line %d: %s: %s\n", prefix, script, r.currentLine, name, msg)
+		line := r.currentLine
+		if line == 1 && script == "SHELL" {
+			line = 0
+		}
+		if line > 0 || (line == 0 && script == "SHELL") {
+			fmt.Fprintf(stderr, "%s%s: line %d: %s: %s\n", prefix, script, line, name, msg)
 			return
 		}
 		fmt.Fprintf(stderr, "%s%s: %s: %s\n", prefix, script, name, msg)
 		return
 	}
 	fmt.Fprintf(stderr, "ash: %s: %s\n", name, msg)
+}
+
+func redirErrMessage(err error) string {
+	if perr, ok := err.(*os.PathError); ok {
+		err = perr.Err
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return "nonexistent directory"
+	}
+	if errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EACCES) {
+		return "Permission denied"
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return "unknown error"
+}
+
+func (r *runner) reportRedirError(path string, err error, create bool) {
+	action := "create"
+	if !create {
+		action = "open"
+	}
+	msg := redirErrMessage(err)
+	script := r.scriptName
+	if script != "" && script != "ash" {
+		line := r.currentLine
+		if line > 0 {
+			fmt.Fprintf(r.stdio.Err, "%s: line %d: can't %s %s: %s\n", script, line, action, path, msg)
+			return
+		}
+		fmt.Fprintf(r.stdio.Err, "%s: can't %s %s: %s\n", script, action, path, msg)
+		return
+	}
+	fmt.Fprintf(r.stdio.Err, "ash: can't %s %s: %s\n", action, path, msg)
 }
 
 func (r *runner) reportExecBuiltinError(name string, msg string, stderr io.Writer) {
@@ -319,11 +362,16 @@ type runner struct {
 	aliases         map[string]string
 	traps           map[string]string
 	ignored         map[os.Signal]bool
-	positional      []string // $1, $2, etc.
-	scriptName      string   // $0
-	scriptStack     []string
-	evalDepth       int
-	breakCount      int
+	positional           []string // $1, $2, etc.
+	scriptName           string   // $0
+	scriptStack             []string
+	evalDepth               int
+	hadCommandSub           bool
+	lastCommandSubStatus    int
+	commandSubSeq           int
+	hadAssignCommandSub     bool
+	assignCommandSubStatus  int
+	breakCount              int
 	continueCount   int
 	loopDepth       int
 	getoptsPos      int
@@ -701,15 +749,27 @@ func (r *runner) runScript(script string) int {
 			// Accumulate multi-line function definitions
 			isFuncStart := false
 			if len(tokens) > 0 {
-				if strings.HasSuffix(tokens[0], "()") || (tokens[0] == "function" && len(tokens) > 1) {
-					isFuncStart = true
+				if strings.HasSuffix(tokens[0], "()") {
+					name := strings.TrimSuffix(tokens[0], "()")
+					if isName(name) && !isReservedFuncName(name) {
+						isFuncStart = true
+					}
+				}
+				if tokens[0] == "function" && len(tokens) > 1 {
+					if isName(tokens[1]) && !isReservedFuncName(tokens[1]) {
+						isFuncStart = true
+					}
 				}
 				// Also handle "name ( )" form
 				if len(tokens) >= 3 && tokens[1] == "(" && tokens[2] == ")" {
-					isFuncStart = true
+					if isName(tokens[0]) && !isReservedFuncName(tokens[0]) {
+						isFuncStart = true
+					}
 				}
 				if len(tokens) >= 2 && tokens[1] == "()" {
-					isFuncStart = true
+					if isName(tokens[0]) && !isReservedFuncName(tokens[0]) {
+						isFuncStart = true
+					}
 				}
 			}
 			if isFuncStart && !isFuncDefCommand(cmd) {
@@ -875,6 +935,10 @@ func (r *runner) runScript(script string) int {
 		}
 		code = r.lastStatus
 		if exit {
+			if !r.exitFlag && !r.returnFlag {
+				r.exitFlag = true
+				r.exitCode = code
+			}
 			return code
 		}
 		status = code
@@ -1028,7 +1092,7 @@ func (r *runner) withRedirections(spec commandSpec, fn func() (int, bool)) (int,
 	} else if spec.redirIn != "" {
 		file, err := os.Open(spec.redirIn)
 		if err != nil {
-			r.stdio.Errorf("ash: %v\n", err)
+			r.reportRedirError(spec.redirIn, err, false)
 			return core.ExitFailure, false
 		}
 		syscall.CloseOnExec(int(file.Fd()))
@@ -1051,7 +1115,7 @@ func (r *runner) withRedirections(spec commandSpec, fn func() (int, bool)) (int,
 			}
 			file, err := os.OpenFile(spec.redirOut, flags, 0600) // #nosec G304 -- shell redirection uses user path
 			if err != nil {
-				r.stdio.Errorf("ash: %v\n", err)
+				r.reportRedirError(spec.redirOut, err, true)
 				return core.ExitFailure, false
 			}
 			syscall.CloseOnExec(int(file.Fd()))
@@ -1074,7 +1138,7 @@ func (r *runner) withRedirections(spec commandSpec, fn func() (int, bool)) (int,
 			}
 			file, err := os.OpenFile(spec.redirErr, flags, 0600) // #nosec G304 -- shell redirection uses user path
 			if err != nil {
-				r.stdio.Errorf("ash: %v\n", err)
+				r.reportRedirError(spec.redirErr, err, true)
 				return core.ExitFailure, false
 			}
 			syscall.CloseOnExec(int(file.Fd()))
@@ -2360,7 +2424,7 @@ func (r *runner) startBackground(cmd string) int {
 		} else if cmdSpec.redirIn != "" {
 			file, err := os.Open(cmdSpec.redirIn)
 			if err != nil {
-				r.stdio.Errorf("ash: %v\n", err)
+				r.reportRedirError(cmdSpec.redirIn, err, false)
 				return core.ExitFailure
 			}
 			stdin = file
@@ -2375,7 +2439,7 @@ func (r *runner) startBackground(cmd string) int {
 			}
 			file, err := os.OpenFile(cmdSpec.redirOut, flag, 0o644)
 			if err != nil {
-				r.stdio.Errorf("ash: %v\n", err)
+				r.reportRedirError(cmdSpec.redirOut, err, true)
 				return core.ExitFailure
 			}
 			stdout = file
@@ -2390,7 +2454,7 @@ func (r *runner) startBackground(cmd string) int {
 			}
 			file, err := os.OpenFile(cmdSpec.redirErr, flag, 0o644)
 			if err != nil {
-				r.stdio.Errorf("ash: %v\n", err)
+				r.reportRedirError(cmdSpec.redirErr, err, true)
 				return core.ExitFailure
 			}
 			stderr = file
@@ -2514,6 +2578,11 @@ func (r *runner) runSimpleCommand(cmd string, stdin io.Reader, stdout io.Writer,
 func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io.Writer, stderr io.Writer) (int, bool) {
 	r.handleSignalsNonBlocking()
 	r.arithFailed = false
+	r.hadCommandSub = false
+	r.lastCommandSubStatus = r.lastStatus
+	r.commandSubSeq = 0
+	r.hadAssignCommandSub = false
+	r.assignCommandSubStatus = r.lastStatus
 	trimmedCmd := strings.TrimSpace(cmd)
 	if len(trimmedCmd) > 2 && trimmedCmd[0] == '{' && trimmedCmd[len(trimmedCmd)-1] == '}' {
 		inner := strings.TrimSpace(trimmedCmd[1 : len(trimmedCmd)-1])
@@ -2583,6 +2652,12 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 	}
 	if len(cmdSpec.args) == 0 {
 		if cmdSpec.redirIn == "" && cmdSpec.redirOut == "" && cmdSpec.redirErr == "" && !cmdSpec.closeStdout && !cmdSpec.closeStderr && len(cmdSpec.hereDocs) == 0 {
+			if r.hadAssignCommandSub {
+				return r.assignCommandSubStatus, false
+			}
+			if r.hadCommandSub {
+				return r.lastCommandSubStatus, false
+			}
 			return core.ExitSuccess, false
 		}
 		cmdSpec.args = []string{":"}
@@ -2627,7 +2702,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 	} else if cmdSpec.redirIn != "" {
 		file, err := os.Open(cmdSpec.redirIn)
 		if err != nil {
-			r.stdio.Errorf("ash: %v\n", err)
+			r.reportRedirError(cmdSpec.redirIn, err, false)
 			return core.ExitFailure, false
 		}
 		syscall.CloseOnExec(int(file.Fd()))
@@ -2678,7 +2753,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			}
 			file, err := os.OpenFile(cmdSpec.redirOut, flags, 0600) // #nosec G304 -- shell redirection uses user path
 			if err != nil {
-				r.stdio.Errorf("ash: %v\n", err)
+				r.reportRedirError(cmdSpec.redirOut, err, true)
 				return core.ExitFailure, false
 			}
 			syscall.CloseOnExec(int(file.Fd()))
@@ -2701,7 +2776,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			}
 			file, err := os.OpenFile(cmdSpec.redirErr, flags, 0600) // #nosec G304 -- shell redirection uses user path
 			if err != nil {
-				r.stdio.Errorf("ash: %v\n", err)
+				r.reportRedirError(cmdSpec.redirErr, err, true)
 				return core.ExitFailure, false
 			}
 			syscall.CloseOnExec(int(file.Fd()))
@@ -2791,6 +2866,11 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			}
 		}
 		if r.loopDepth == 0 {
+			if r.inSubshell {
+				r.exitFlag = true
+				r.exitCode = core.ExitSuccess
+				return core.ExitSuccess, true
+			}
 			fmt.Fprintln(stderr, "ash: break: only meaningful in a loop")
 			return core.ExitFailure, false
 		}
@@ -2890,7 +2970,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 					}
 					file, err := os.OpenFile(cmdSpec.redirOut, flags, 0600)
 					if err != nil {
-						r.stdio.Errorf("ash: %v\n", err)
+						r.reportRedirError(cmdSpec.redirOut, err, true)
 						return core.ExitFailure, false
 					}
 					r.stdio.Out = file
@@ -2908,7 +2988,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 					}
 					file, err := os.OpenFile(cmdSpec.redirErr, flags, 0600)
 					if err != nil {
-						r.stdio.Errorf("ash: %v\n", err)
+						r.reportRedirError(cmdSpec.redirErr, err, true)
 						return core.ExitFailure, false
 					}
 					r.stdio.Err = file
@@ -4790,7 +4870,12 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 				}
 			}
 			if name, val, ok := parseAssignment(tok); ok && !seenCmd {
+				beforeSeq := r.commandSubSeq
 				expandedVal := expandTokenWithRunner(val, r)
+				if r.commandSubSeq != beforeSeq {
+					r.hadAssignCommandSub = true
+					r.assignCommandSubStatus = r.lastCommandSubStatus
+				}
 				expandedVal = unescapeGlob(expandedVal)
 				oldVal, oldExists := r.vars[name]
 				spec.prefixAssigns = append(spec.prefixAssigns, prefixAssign{
@@ -5037,6 +5122,7 @@ func splitAndOr(cmd string) ([]string, []string) {
 	arithDepth := 0
 	parenDepth := 0
 	braceDepth := 0
+	inDoubleBracket := false
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
 		if escape {
@@ -5048,6 +5134,20 @@ func splitAndOr(cmd string) ([]string, []string) {
 			buf.WriteByte(c)
 			escape = true
 			continue
+		}
+		if !inSingle && !inDouble {
+			if !inDoubleBracket && c == '[' && i+1 < len(cmd) && cmd[i+1] == '[' {
+				inDoubleBracket = true
+				buf.WriteString("[[")
+				i++
+				continue
+			}
+			if inDoubleBracket && c == ']' && i+1 < len(cmd) && cmd[i+1] == ']' {
+				inDoubleBracket = false
+				buf.WriteString("]]")
+				i++
+				continue
+			}
 		}
 		if c == '\'' && !inDouble {
 			inSingle = !inSingle
@@ -5094,7 +5194,7 @@ func splitAndOr(cmd string) ([]string, []string) {
 				braceDepth--
 			}
 		}
-		if !inSingle && !inDouble && cmdSubDepth == 0 && arithDepth == 0 && parenDepth == 0 && braceDepth == 0 {
+		if !inSingle && !inDouble && !inDoubleBracket && cmdSubDepth == 0 && arithDepth == 0 && parenDepth == 0 && braceDepth == 0 {
 			if c == '&' && i+1 < len(cmd) && cmd[i+1] == '&' {
 				parts = append(parts, strings.TrimSpace(buf.String()))
 				ops = append(ops, "&&")
@@ -5531,17 +5631,17 @@ func splitCommands(script string) []commandEntry {
 				cmdSubDepth--
 			}
 			// Split on semicolons outside quotes and subshells
-			if c == ';' && i+1 < len(line) && line[i+1] == ';' && !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
+			if c == ';' && i+1 < len(line) && line[i+1] == ';' && !inSingle && !inDouble && !inBacktick && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
 				buf.WriteString(";;")
 				i++
 				continue
 			}
 			// Handle ;\<newline>; as ;; (line continuation forming double semicolon)
-			if c == ';' && i+1 < len(line) && line[i+1] == '\\' && i+2 >= len(line) && !inSingle && !inDouble {
+			if c == ';' && i+1 < len(line) && line[i+1] == '\\' && i+2 >= len(line) && !inSingle && !inDouble && !inBacktick {
 				buf.WriteByte(c)
 				continue
 			}
-			if c == ';' && !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
+			if c == ';' && !inSingle && !inDouble && !inBacktick && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
 				raw := buf.String()
 				if cmd := strings.TrimSpace(raw); cmd != "" {
 					appendCommand(cmd, raw, startLine)
@@ -5550,7 +5650,7 @@ func splitCommands(script string) []commandEntry {
 				startLine = lineNo
 				continue
 			}
-			if c == '&' && !inSingle && !inDouble && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
+			if c == '&' && !inSingle && !inDouble && !inBacktick && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
 				if i+1 < len(line) && line[i+1] == '&' {
 					buf.WriteString("&&")
 					i++
@@ -8770,7 +8870,7 @@ func (r *runner) expandCommandSubsWithRunner(tok string) string {
 			break
 		}
 		cmdStr := tok[start+2 : end-1]
-		output := escapeCommandSubOutput(r.runCommandSubWithRunner(cmdStr), false)
+		output := escapeCommandSubOutput(r.runCommandSubWithRunner(cmdStr, false), false)
 		tok = tok[:start] + output + tok[end:]
 	}
 	// Handle backticks (but not inside single quotes)
@@ -8795,7 +8895,7 @@ func (r *runner) expandCommandSubsWithRunner(tok string) string {
 			break
 		}
 		cmdStr := unescapeBacktickCommand(tok[start+1 : end])
-		output := escapeCommandSubOutput(r.runCommandSubWithRunner(cmdStr), true)
+		output := escapeCommandSubOutput(r.runCommandSubWithRunner(cmdStr, true), true)
 		tok = tok[:start] + output + tok[end+1:]
 	}
 	return tok
@@ -8862,9 +8962,14 @@ func runCommandSub(cmdStr string, vars map[string]string) string {
 	return strings.TrimSuffix(out.String(), "\n")
 }
 
-func (r *runner) runCommandSubWithRunner(cmdStr string) string {
+func (r *runner) runCommandSubWithRunner(cmdStr string, backtick bool) string {
 	cmdStr = strings.TrimSpace(cmdStr)
 	if cmdStr == "" {
+		r.lastStatus = core.ExitSuccess
+		r.vars["?"] = strconv.Itoa(core.ExitSuccess)
+		r.hadCommandSub = true
+		r.lastCommandSubStatus = core.ExitSuccess
+		r.commandSubSeq++
 		return ""
 	}
 	var out bytes.Buffer
@@ -8873,6 +8978,10 @@ func (r *runner) runCommandSubWithRunner(cmdStr string) string {
 		errOut = r.stdio.Err
 	}
 	std := &core.Stdio{In: strings.NewReader(""), Out: &out, Err: errOut}
+	lineOffset := r.currentLine - 1
+	if backtick {
+		lineOffset = r.currentLine - 2
+	}
 	sub := &runner{
 		stdio:      std,
 		vars:       copyStringMap(r.vars),
@@ -8884,14 +8993,25 @@ func (r *runner) runCommandSubWithRunner(cmdStr string) string {
 		options:    copyBoolMap(r.options),
 		positional: append([]string{}, r.positional...),
 		scriptName: r.scriptName,
+		lineOffset: lineOffset,
 		jobs:       map[int]*job{},
 		jobOrder:   []int{},
 		jobByPid:   map[int]int{},
 		nextJobID:  1,
-		lastStatus: core.ExitSuccess,
+		lastStatus: r.lastStatus,
 		signalCh:   make(chan os.Signal, 8),
 	}
+	sub.vars["?"] = strconv.Itoa(r.lastStatus)
 	_ = sub.runScript(cmdStr)
+	status := sub.lastStatus
+	if sub.exitFlag {
+		status = sub.exitCode
+	}
+	r.lastStatus = status
+	r.vars["?"] = strconv.Itoa(status)
+	r.hadCommandSub = true
+	r.lastCommandSubStatus = status
+	r.commandSubSeq++
 	return strings.TrimSuffix(out.String(), "\n")
 }
 
