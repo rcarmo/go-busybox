@@ -1669,7 +1669,23 @@ func (r *runner) runCaseScript(script string) (int, bool) {
 		return 0, false
 	}
 	inIdx := indexToken(tokens, "in")
-	esacIdx := indexToken(tokens, "esac")
+	esacIdx := -1
+	if inIdx != -1 {
+		for i := inIdx + 1; i < len(tokens); i++ {
+			tok := tokens[i]
+			if tok == "esac" {
+				esacIdx = i
+				break
+			}
+			if strings.HasPrefix(tok, "esac") {
+				rest := tok[len("esac"):]
+				if rest != "" && isTerminatorSuffix(rest) {
+					esacIdx = i
+					break
+				}
+			}
+		}
+	}
 	if inIdx == -1 || esacIdx == -1 || inIdx >= esacIdx {
 		return 0, false
 	}
@@ -1730,9 +1746,9 @@ func (r *runner) runCaseScript(script string) (int, bool) {
 		pattern = strings.TrimSuffix(pattern, ")")
 		pattern = strings.TrimPrefix(pattern, "(") // optional leading (
 		pattern = strings.TrimSpace(pattern)
-		// Expand variables in pattern
-		pattern = expandVars(pattern, r.vars)
-		pattern = r.expandCommandSubsWithRunner(pattern)
+		// Expand variables and command substitutions in pattern
+		pattern = r.expandVarsWithRunner(pattern)
+		pattern = unescapeGlob(pattern)
 		// Find ;; terminator
 		cmdStart := patEnd + 1
 		cmdEnd := cmdStart
@@ -1831,11 +1847,39 @@ func subshellInner(cmd string) (string, bool) {
 	inSingle := false
 	inDouble := false
 	escape := false
+	caseStack := []bool{}
+	var tokBuf strings.Builder
+	flushToken := func() {
+		if tokBuf.Len() == 0 {
+			return
+		}
+		word := tokBuf.String()
+		tokBuf.Reset()
+		switch word {
+		case "case":
+			caseStack = append(caseStack, true)
+		case "in":
+			if len(caseStack) > 0 && caseStack[len(caseStack)-1] {
+				caseStack[len(caseStack)-1] = false
+			}
+		case "esac":
+			if len(caseStack) > 0 && !caseStack[len(caseStack)-1] {
+				caseStack = caseStack[:len(caseStack)-1]
+			}
+		}
+	}
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
 		if escape {
 			escape = false
 			continue
+		}
+		if !inSingle && !inDouble && cmdSubDepth == 0 && arithDepth == 0 {
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+				tokBuf.WriteByte(c)
+			} else {
+				flushToken()
+			}
 		}
 		if c == '\\' && !inSingle {
 			escape = true
@@ -1868,7 +1912,7 @@ func subshellInner(cmd string) (string, bool) {
 			continue
 		}
 		if c == '(' {
-			if cmdSubDepth == 0 && arithDepth == 0 {
+			if len(caseStack) == 0 && cmdSubDepth == 0 && arithDepth == 0 {
 				depth++
 			}
 			continue
@@ -1881,6 +1925,9 @@ func subshellInner(cmd string) (string, bool) {
 			if arithDepth > 0 {
 				continue
 			}
+			if len(caseStack) > 0 {
+				continue
+			}
 			depth--
 			if depth == 0 && i != len(cmd)-1 {
 				return "", false
@@ -1890,6 +1937,7 @@ func subshellInner(cmd string) (string, bool) {
 			}
 		}
 	}
+	flushToken()
 	if depth != 0 || cmdSubDepth != 0 || arithDepth != 0 {
 		return "", false
 	}
@@ -5253,6 +5301,27 @@ func splitCommands(script string) []commandEntry {
 	cmdSubDepth := 0
 	arithDepth := 0
 	braceExpDepth := 0 // tracks ${...} nesting
+	caseStack := []bool{}
+	var tokBuf strings.Builder
+	flushToken := func() {
+		if tokBuf.Len() == 0 {
+			return
+		}
+		word := tokBuf.String()
+		tokBuf.Reset()
+		switch word {
+		case "case":
+			caseStack = append(caseStack, true)
+		case "in":
+			if len(caseStack) > 0 && caseStack[len(caseStack)-1] {
+				caseStack[len(caseStack)-1] = false
+			}
+		case "esac":
+			if len(caseStack) > 0 && !caseStack[len(caseStack)-1] {
+				caseStack = caseStack[:len(caseStack)-1]
+			}
+		}
+	}
 	escape := false
 	pendingHereDocs := []hereDocRequest{}
 	appendCommand := func(cmd, raw string, line int) {
@@ -5298,6 +5367,13 @@ func splitCommands(script string) []commandEntry {
 				buf.WriteByte(c)
 				escape = true
 				continue
+			}
+			if !inSingle && !inDouble && !inBacktick && cmdSubDepth == 0 && arithDepth == 0 {
+				if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+					tokBuf.WriteByte(c)
+				} else {
+					flushToken()
+				}
 			}
 			if c == '$' && i+1 < len(line) && line[i+1] == '(' && !inSingle {
 				if i+2 < len(line) && line[i+2] == '(' {
@@ -5388,13 +5464,13 @@ func splitCommands(script string) []commandEntry {
 					braceDepth--
 				}
 				if c == '(' {
-					if cmdSubDepth == 0 && arithDepth == 0 {
+					if len(caseStack) == 0 && cmdSubDepth == 0 && arithDepth == 0 {
 						parenDepth++
 					}
 				} else if c == ')' {
 					if cmdSubDepth > 0 {
 						cmdSubDepth--
-					} else if arithDepth == 0 && parenDepth > 0 {
+					} else if arithDepth == 0 && parenDepth > 0 && len(caseStack) == 0 {
 						parenDepth--
 					}
 				}
@@ -5448,6 +5524,9 @@ func splitCommands(script string) []commandEntry {
 				continue
 			}
 			buf.WriteByte(c)
+		}
+		if !escape {
+			flushToken()
 		}
 		if escape {
 			escape = false
@@ -8738,7 +8817,11 @@ func (r *runner) runCommandSubWithRunner(cmdStr string) string {
 		return ""
 	}
 	var out bytes.Buffer
-	std := &core.Stdio{In: strings.NewReader(""), Out: &out, Err: io.Discard}
+	errOut := io.Discard
+	if r.stdio != nil && r.stdio.Err != nil {
+		errOut = r.stdio.Err
+	}
+	std := &core.Stdio{In: strings.NewReader(""), Out: &out, Err: errOut}
 	sub := &runner{
 		stdio:      std,
 		vars:       copyStringMap(r.vars),
