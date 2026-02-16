@@ -178,7 +178,20 @@ func formatWriteError(err error) string {
 	if errors.Is(err, syscall.EBADF) {
 		return "Bad file descriptor"
 	}
+	if errors.Is(err, syscall.EPIPE) || errors.Is(err, io.ErrClosedPipe) {
+		return "Broken pipe"
+	}
 	return err.Error()
+}
+
+func (r *runner) handleWriteError(err error, stderr io.Writer) (int, bool) {
+	if errors.Is(err, syscall.EPIPE) || errors.Is(err, io.ErrClosedPipe) {
+		if !r.ignored[syscall.SIGPIPE] {
+			return 128 + int(syscall.SIGPIPE), false
+		}
+	}
+	fmt.Fprintf(stderr, "ash: write error: %s\n", formatWriteError(err))
+	return core.ExitFailure, false
 }
 
 func cleanExecError(err error) string {
@@ -2177,18 +2190,23 @@ func (r *runner) runCommand(cmd string) (int, bool) {
 			return 2, false
 		}
 	}
-	if len(cmd) > 2 && cmd[0] == '{' && cmd[len(cmd)-1] == '}' {
-		inner := strings.TrimSpace(cmd[1 : len(cmd)-1])
-		savedSkip := r.skipHereDocRead
-		if len(r.pendingHereDocs) > 0 {
-			r.skipHereDocRead = true
+	trimmedCmd := strings.TrimSpace(cmd)
+	if len(trimmedCmd) > 2 && trimmedCmd[0] == '{' && trimmedCmd[len(trimmedCmd)-1] == '}' {
+		if tokens := tokenizeScript(trimmedCmd); len(tokens) > 0 && tokens[0] == "{" {
+			if matchIdx := findMatchingTerminator(tokens, 0); matchIdx == len(tokens)-1 {
+				inner := strings.TrimSpace(trimmedCmd[1 : len(trimmedCmd)-1])
+				savedSkip := r.skipHereDocRead
+				if len(r.pendingHereDocs) > 0 {
+					r.skipHereDocRead = true
+				}
+				code := r.runScript(inner)
+				r.skipHereDocRead = savedSkip
+				if r.exitFlag {
+					return r.exitCode, true
+				}
+				return code, false
+			}
 		}
-		code := r.runScript(inner)
-		r.skipHereDocRead = savedSkip
-		if r.exitFlag {
-			return r.exitCode, true
-		}
-		return code, false
 	}
 	background := false
 	if strings.HasSuffix(cmd, "&") {
@@ -2684,8 +2702,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			_, err = fmt.Fprintf(stdout, "%s\n", out)
 		}
 		if err != nil {
-			fmt.Fprintf(stderr, "ash: write error: %s\n", formatWriteError(err))
-			return core.ExitFailure, false
+			return r.handleWriteError(err, stderr)
 		}
 		return core.ExitSuccess, false
 	case "break":
@@ -3756,8 +3773,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		}
 		if len(verbs) == 0 {
 			if _, err := fmt.Fprint(stdout, format); err != nil {
-				fmt.Fprintf(stderr, "ash: write error: %s\n", formatWriteError(err))
-				return core.ExitFailure, false
+				return r.handleWriteError(err, stderr)
 			}
 		} else {
 			argIdx := 0
@@ -3788,8 +3804,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 					argIdx++
 				}
 				if _, err := fmt.Fprintf(stdout, format, iterArgs...); err != nil {
-					fmt.Fprintf(stderr, "ash: write error: %s\n", formatWriteError(err))
-					return core.ExitFailure, false
+					return r.handleWriteError(err, stderr)
 				}
 				if argIdx >= totalArgs {
 					break
@@ -4098,72 +4113,6 @@ func (r *runner) runPipeline(segments []string) int {
 	}
 
 	waits := make([]waitFn, len(stages))
-	allBuiltins := true
-	for _, s := range stages {
-		if !s.isBuiltin {
-			allBuiltins = false
-			break
-		}
-	}
-	if allBuiltins {
-		input := r.stdio.In
-		status := core.ExitSuccess
-		for i, s := range stages {
-			var buf bytes.Buffer
-			out := io.Writer(&buf)
-			if i == len(stages)-1 {
-				out = r.stdio.Out
-			}
-			sub := &runner{
-				stdio:      &core.Stdio{In: input, Out: out, Err: r.stdio.Err},
-				vars:       copyStringMap(r.vars),
-				exported:   copyBoolMap(r.exported),
-				funcs:      copyStringMap(r.funcs),
-				aliases:    copyStringMap(r.aliases),
-				options:    copyBoolMap(r.options),
-				traps:      copyStringMap(r.traps),
-				ignored:    copySignalMap(r.ignored),
-				positional: append([]string{}, r.positional...),
-				scriptName: r.scriptName,
-				jobs:       map[int]*job{},
-				jobByPid:   map[int]int{},
-				nextJobID:  1,
-				fdReaders:  copyFdReaders(r.fdReaders),
-				signalCh:   make(chan os.Signal, 8),
-			}
-			// Use runScript for compound commands, runSimpleCommand for simple ones
-			var code int
-			trimmedSeg := strings.TrimSpace(s.seg)
-			segTokens := splitTokens(trimmedSeg)
-			isCompound := false
-			if len(segTokens) > 0 {
-				switch segTokens[0] {
-				case "if", "while", "for", "until", "case":
-					isCompound = true
-				}
-			}
-			if isCompound {
-				code = sub.runScript(s.seg)
-			} else {
-				code, _ = sub.runSimpleCommand(s.seg, input, out, r.stdio.Err)
-			}
-			if i == len(stages)-1 {
-				if !r.options["pipefail"] || status == core.ExitSuccess {
-					status = code
-				}
-				if r.options["pipefail"] && code != core.ExitSuccess {
-					status = code
-				}
-			} else {
-				if r.options["pipefail"] && code != core.ExitSuccess {
-					status = code
-				}
-				input = bytes.NewReader(buf.Bytes())
-			}
-		}
-		r.lastStatus = status
-		return status
-	}
 
 	// Start external commands first to ensure readers are ready for writers.
 	for stageIdx, s := range stages {
@@ -4349,7 +4298,9 @@ func (r *runner) runPipeline(segments []string) int {
 		}
 		seg := s.seg
 		done := make(chan int, 1)
+		started := make(chan struct{})
 		go func(s stage) {
+			close(started)
 			sub := &runner{
 				stdio:      &core.Stdio{In: s.prevReader, Out: stdout, Err: r.stdio.Err},
 				vars:       copyStringMap(r.vars),
@@ -4367,14 +4318,39 @@ func (r *runner) runPipeline(segments []string) int {
 				fdReaders:  copyFdReaders(r.fdReaders),
 				signalCh:   make(chan os.Signal, 8),
 			}
-			code, _ := sub.runSimpleCommand(seg, s.prevReader, stdout, r.stdio.Err)
+			trimmedSeg := strings.TrimSpace(seg)
+			isCompound := false
+			if strings.HasPrefix(trimmedSeg, "{") || strings.HasPrefix(trimmedSeg, "(") {
+				isCompound = true
+			} else if segTokens := tokenizeScript(trimmedSeg); len(segTokens) > 0 {
+				switch segTokens[0] {
+				case "if", "while", "for", "until", "case":
+					isCompound = true
+				}
+			}
+			var code int
+			if isCompound {
+				code = sub.runScript(seg)
+			} else {
+				code, _ = sub.runSimpleCommand(seg, s.prevReader, stdout, r.stdio.Err)
+			}
 			if s.writer != nil {
 				_ = s.writer.Close()
+			}
+			if closer, ok := s.prevReader.(io.Closer); ok && s.prevReader != r.stdio.In {
+				go func(c io.Closer) {
+					time.Sleep(50 * time.Millisecond)
+					_ = c.Close()
+				}(closer)
 			}
 			done <- code
 		}(s)
 		idx := stageIdx
 		waits[idx] = func() int { return <-done }
+		if stageIdx < len(stages)-1 {
+			<-started
+			time.Sleep(20 * time.Millisecond)
+		}
 	}
 
 	status := core.ExitSuccess
