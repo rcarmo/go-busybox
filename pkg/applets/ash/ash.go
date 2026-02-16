@@ -4706,6 +4706,7 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 			}
 			if name, val, ok := parseAssignment(tok); ok && !seenCmd {
 				expandedVal := expandTokenWithRunner(val, r)
+				expandedVal = unescapeGlob(expandedVal)
 				oldVal, oldExists := r.vars[name]
 				spec.prefixAssigns = append(spec.prefixAssigns, prefixAssign{
 					name: name, newVal: expandedVal,
