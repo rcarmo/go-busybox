@@ -673,6 +673,10 @@ func (r *runner) runScript(script string) int {
 			}
 			if terminator != "" && !compoundComplete(tokens) {
 				compound := cmd
+				joiner := "; "
+				if terminator == "}" {
+					joiner = "\n"
+				}
 				for i+1 < len(commands) {
 					i++
 					nextCmd := commands[i].cmd
@@ -681,7 +685,7 @@ func (r *runner) runScript(script string) int {
 							nextCmd = r.expandAliases(nextCmd)
 						}
 					}
-					compound = compound + "; " + nextCmd
+					compound = compound + joiner + nextCmd
 					tokens = tokenizeScript(compound)
 					if compoundComplete(tokens) {
 						break
@@ -736,22 +740,20 @@ func (r *runner) runScript(script string) int {
 					reqs = append(reqs, extractHereDocRequests(commands[lineEndIdx].cmd)...)
 					lineEndIdx++
 				}
-				if len(reqs) > 0 {
-					filtered := reqs[:0]
-					for _, req := range reqs {
-						if !hasEmbeddedHereDoc(cmd, req) {
-							filtered = append(filtered, req)
-						}
-					}
-					reqs = filtered
-				}
 				startIdx := lineEndIdx
 				if cmdEndIdx+1 > startIdx {
 					startIdx = cmdEndIdx + 1
 				}
 				if len(reqs) > 0 {
-					contents, endIdx := r.readHereDocContents(reqs, commands, scriptLines, startIdx)
+					contents := []string{}
+					endIdx := startIdx
+					if startIdx >= len(commands) {
+						contents = r.readEmbeddedHereDocContents(reqs, cmd)
+					} else {
+						contents, endIdx = r.readHereDocContents(reqs, commands, scriptLines, startIdx)
+					}
 					r.pendingHereDocs = contents
+					cmd = stripHereDocBodies(cmd)
 					hereDocLine = entry.line
 					skipFrom = startIdx
 					skipTo = endIdx
@@ -5454,8 +5456,9 @@ func splitCommands(script string) []commandEntry {
 		lastLineContinued = false
 		if !inSingle && !inDouble && !inBacktick && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
 			trimmed := strings.TrimSpace(buf.String())
+			hasHereDoc := len(extractHereDocRequests(buf.String())) > 0
 			// If line ends with | or || or && (operator continuation), join next line
-			if strings.HasSuffix(trimmed, "|") || strings.HasSuffix(trimmed, "&&") {
+			if (strings.HasSuffix(trimmed, "|") || strings.HasSuffix(trimmed, "&&")) && !hasHereDoc {
 				buf.WriteByte('\n')
 			} else {
 				raw := buf.String()
@@ -5744,6 +5747,84 @@ func extractHereDocRequests(cmd string) []hereDocRequest {
 		}
 	}
 	return reqs
+}
+
+func stripHereDocBodies(cmd string) string {
+	lines := strings.Split(cmd, "\n")
+	var out []string
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		out = append(out, line)
+		reqs := extractHereDocRequests(line)
+		if len(reqs) == 0 {
+			continue
+		}
+		for _, req := range reqs {
+			for j := i + 1; j < len(lines); j++ {
+				check := lines[j]
+				if req.stripTabs {
+					check = strings.TrimLeft(check, "\t")
+				}
+				if check == req.marker {
+					i = j
+					break
+				}
+			}
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+func (r *runner) readEmbeddedHereDocContents(reqs []hereDocRequest, cmd string) []string {
+	lines := strings.Split(cmd, "\n")
+	contents := make([]string, 0, len(reqs))
+	reqIdx := 0
+	for i := 0; i < len(lines) && reqIdx < len(reqs); i++ {
+		lineReqs := extractHereDocRequests(lines[i])
+		if len(lineReqs) == 0 {
+			continue
+		}
+		for _, req := range lineReqs {
+			if reqIdx >= len(reqs) {
+				break
+			}
+			var buf strings.Builder
+			continuation := false
+			for j := i + 1; j < len(lines); j++ {
+				line := lines[j]
+				check := line
+				if req.stripTabs && !continuation {
+					check = strings.TrimLeft(check, "\t")
+				}
+				if !continuation && check == req.marker {
+					i = j
+					break
+				}
+				if !req.quoted {
+					trail := 0
+					for k := len(line) - 1; k >= 0 && line[k] == '\\'; k-- {
+						trail++
+					}
+					if trail > 0 && trail%2 == 1 {
+						line = line[:len(line)-1]
+						buf.WriteString(line)
+						continuation = true
+						continue
+					}
+				}
+				buf.WriteString(line)
+				buf.WriteByte('\n')
+				continuation = false
+			}
+			content := buf.String()
+			if !req.quoted {
+				content = r.expandHereDoc(content)
+			}
+			contents = append(contents, content)
+			reqIdx++
+		}
+	}
+	return contents
 }
 
 func (r *runner) readHereDocContents(reqs []hereDocRequest, commands []commandEntry, scriptLines []string, startIdx int) ([]string, int) {
