@@ -46,6 +46,7 @@ func Run(stdio *core.Stdio, args []string) int {
 		ignored:    map[os.Signal]bool{},
 		positional: []string{},
 		scriptName: "ash",
+		argv0:      "ash",
 		options:    map[string]bool{},
 		jobs:       map[int]*job{},
 		jobByPid:   map[int]int{},
@@ -69,6 +70,7 @@ func Run(stdio *core.Stdio, args []string) int {
 		// Additional args after -c "script" become positional params
 		if len(args) > 2 {
 			shell.scriptName = args[2]
+			shell.argv0 = args[2]
 			if len(args) > 3 {
 				shell.positional = args[3:]
 			}
@@ -83,6 +85,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	if len(args) > 0 {
 		if info, err := os.Stat(args[0]); err == nil && !info.IsDir() {
 			shell.scriptName = args[0]
+			shell.argv0 = args[0]
 			if len(args) > 1 {
 				shell.positional = args[1:]
 			}
@@ -151,12 +154,15 @@ func (r *runner) reportExecError(name string, msg string, stderr io.Writer) {
 	fmt.Fprintf(stderr, "ash: %s: %s\n", name, msg)
 }
 
-func redirErrMessage(err error) string {
+func redirErrMessage(path string, err error) string {
 	if perr, ok := err.(*os.PathError); ok {
 		err = perr.Err
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		return "nonexistent directory"
+		if strings.Contains(path, "/") {
+			return "nonexistent directory"
+		}
+		return "no such file"
 	}
 	if errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EACCES) {
 		return "Permission denied"
@@ -172,7 +178,7 @@ func (r *runner) reportRedirError(path string, err error, create bool) {
 	if !create {
 		action = "open"
 	}
-	msg := redirErrMessage(err)
+	msg := redirErrMessage(path, err)
 	script := r.scriptName
 	if script != "" && script != "ash" {
 		line := r.currentLine
@@ -346,7 +352,7 @@ type pendingSignal struct {
 }
 
 type localFrame struct {
-	saved    map[string]savedVar
+	saved map[string]savedVar
 }
 
 type savedVar struct {
@@ -355,52 +361,57 @@ type savedVar struct {
 }
 
 type runner struct {
-	stdio           *core.Stdio
-	vars            map[string]string
-	exported        map[string]bool
-	funcs           map[string]string
-	aliases         map[string]string
-	traps           map[string]string
-	ignored         map[os.Signal]bool
-	positional           []string // $1, $2, etc.
-	scriptName           string   // $0
-	scriptStack             []string
-	evalDepth               int
-	hadCommandSub           bool
-	lastCommandSubStatus    int
-	commandSubSeq           int
-	hadAssignCommandSub     bool
-	assignCommandSubStatus  int
-	breakCount              int
-	continueCount   int
-	loopDepth       int
-	getoptsPos      int
-	returnFlag      bool
-	returnCode      int
-	exitFlag        bool
-	exitCode        int
-	options         map[string]bool
-	restricted      bool
-	lastStatus      int
-	lastBgPid       int
-	currentLine     int
-	lineOffset      int
-	inTrap          bool
-	trapStatus      int
-	arithFailed     bool
-	jobs            map[int]*job
-	jobOrder        []int
-	jobByPid        map[int]int
-	nextJobID       int
-	signalCh        chan os.Signal
-	forwardSignal   chan os.Signal
-	pendingSignals  []pendingSignal
-	inSubshell      bool
-	pendingHereDocs []string
-	skipHereDocRead bool
-	fdReaders       map[int]*bufio.Reader
-	readBufs        map[io.Reader]*bufio.Reader
-	localStack      []localFrame
+	stdio                  *core.Stdio
+	vars                   map[string]string
+	exported               map[string]bool
+	funcs                  map[string]string
+	aliases                map[string]string
+	traps                  map[string]string
+	ignored                map[os.Signal]bool
+	positional             []string // $1, $2, etc.
+	scriptName             string   // script name for errors
+	argv0                  string   // $0
+	scriptStack            []string
+	evalDepth              int
+	hadCommandSub          bool
+	lastCommandSubStatus   int
+	commandSubSeq          int
+	hadAssignCommandSub    bool
+	assignCommandSubStatus int
+	breakCount             int
+	continueCount          int
+	loopDepth              int
+	getoptsPos             int
+	returnFlag             bool
+	returnCode             int
+	exitFlag               bool
+	exitCode               int
+	syntaxError            bool
+	options                map[string]bool
+	restricted             bool
+	lastStatus             int
+	lastBgPid              int
+	currentLine            int
+	lineOffset             int
+	inTrap                 bool
+	trapStatus             int
+	arithFailed            bool
+	jobs                   map[int]*job
+	jobOrder               []int
+	jobByPid               map[int]int
+	nextJobID              int
+	signalCh               chan os.Signal
+	forwardSignal          chan os.Signal
+	pendingSignals         []pendingSignal
+	inSubshell             bool
+	pendingHereDocs        []string
+	skipHereDocRead        bool
+	fdReaders              map[int]*bufio.Reader
+	readBufs               map[io.Reader]*bufio.Reader
+	localStack             []localFrame
+	scriptCache            map[string][]commandEntry
+	scriptLinesCache       map[string][]string
+	caseCache              map[string]caseSpec
 }
 
 type job struct {
@@ -568,6 +579,7 @@ func parseSignalSpec(spec string) (syscall.Signal, bool) {
 		return syscall.Signal(num), true
 	}
 	spec = strings.TrimPrefix(spec, "SIG")
+	spec = strings.ToUpper(spec)
 	if sig, ok := signalValues[spec]; ok {
 		if s, ok := sig.(syscall.Signal); ok {
 			return s, true
@@ -616,7 +628,7 @@ func (s safeWriter) Write(p []byte) (int, error) {
 }
 
 func (r *runner) runScript(script string) int {
-	script = strings.TrimSpace(script)
+	script = strings.TrimRight(script, "\r")
 	r.exitFlag = false
 	r.exitCode = core.ExitSuccess
 	isTop := !r.options["__trap_exit"]
@@ -634,25 +646,48 @@ func (r *runner) runScript(script string) int {
 			if action, ok := r.traps["EXIT"]; ok && action != "" {
 				savedInTrap := r.inTrap
 				savedTrapStatus := r.trapStatus
+				savedStatus := r.lastStatus
 				r.inTrap = true
-				r.trapStatus = r.lastStatus
+				r.trapStatus = savedStatus
 				r.exitFlag = false
 				r.exitCode = core.ExitSuccess
 				_ = r.runScript(action)
 				r.inTrap = savedInTrap
 				r.trapStatus = savedTrapStatus
-				exitCode := r.lastStatus
+				exitCode := savedStatus
 				if r.exitFlag {
 					exitCode = r.exitCode
 				}
+				r.lastStatus = savedStatus
 				r.exitFlag = true
 				r.exitCode = exitCode
 			}
 			r.options["__trap_exit"] = false
 		}()
 	}
-	commands := splitCommands(script)
-	scriptLines := strings.Split(script, "\n")
+	var commands []commandEntry
+	var scriptLines []string
+	commandsOk := false
+	linesOk := false
+	if r.scriptCache != nil {
+		commands, commandsOk = r.scriptCache[script]
+	}
+	if r.scriptLinesCache != nil {
+		scriptLines, linesOk = r.scriptLinesCache[script]
+	}
+	if !commandsOk || !linesOk {
+		commands = splitCommands(script)
+		scriptLines = strings.Split(script, "\n")
+		if len(scriptLines) > 0 && scriptLines[len(scriptLines)-1] == "" {
+			scriptLines = scriptLines[:len(scriptLines)-1]
+		}
+		if r.scriptCache == nil {
+			r.scriptCache = map[string][]commandEntry{}
+			r.scriptLinesCache = map[string][]string{}
+		}
+		r.scriptCache[script] = commands
+		r.scriptLinesCache[script] = scriptLines
+	}
 	hereDocLine := 0
 	skipFrom := -1
 	skipTo := -1
@@ -664,7 +699,12 @@ func (r *runner) runScript(script string) int {
 		}
 		entry := commands[i]
 		if entry.cmd == "__SYNTAX_ERROR_UNTERMINATED_QUOTE__" {
-			fmt.Fprintf(r.stdio.Err, "%s: line %d: syntax error: unterminated quoted string\n", r.scriptName, entry.line)
+			line := entry.line + r.lineOffset
+			if line < 0 {
+				line = 0
+			}
+			fmt.Fprintf(r.stdio.Err, "%s: line %d: syntax error: unterminated quoted string\n", r.scriptName, line)
+			r.syntaxError = true
 			r.exitFlag = true
 			r.exitCode = 2
 			return 2
@@ -756,7 +796,11 @@ func (r *runner) runScript(script string) int {
 					}
 				}
 				if tokens[0] == "function" && len(tokens) > 1 {
-					if isName(tokens[1]) && !isReservedFuncName(tokens[1]) {
+					nameTok := tokens[1]
+					if strings.HasSuffix(nameTok, "()") {
+						nameTok = strings.TrimSuffix(nameTok, "()")
+					}
+					if isName(nameTok) && !isReservedFuncName(nameTok) {
 						isFuncStart = true
 					}
 				}
@@ -907,6 +951,10 @@ func (r *runner) runScript(script string) int {
 				code = c
 				handled = true
 			}
+		}
+		if !handled && r.options["n"] {
+			code = core.ExitSuccess
+			handled = true
 		}
 		if !handled {
 			code, exit = r.runCommand(cmd)
@@ -1427,8 +1475,14 @@ func (r *runner) runForScript(script string) (int, bool) {
 		for _, word := range words {
 			exp := r.expandVarsWithRunner(word)
 			parts := []string{exp}
-			if !isQuotedToken(word) && strings.ContainsAny(word, "$`") && (strings.ContainsAny(exp, " \t\n") || strings.ContainsAny(exp, "'\"")) {
-				parts = splitOnIFSWithQuotes(exp, r.vars["IFS"])
+			if !isQuotedToken(word) && strings.ContainsAny(word, "$`") {
+				ifs := r.vars["IFS"]
+				if ifs == "" {
+					ifs = " \t\n"
+				}
+				if strings.ContainsAny(exp, ifs) || strings.ContainsAny(exp, "'\"") {
+					parts = splitOnIFSWithQuotes(exp, ifs)
+				}
 			}
 			for _, part := range parts {
 				if !isQuotedToken(word) {
@@ -1754,68 +1808,48 @@ func (r *runner) runCaseScript(script string) (int, bool) {
 	if len(tokens) == 0 || tokens[0] != "case" {
 		return 0, false
 	}
-	inIdx := indexToken(tokens, "in")
-	esacIdx := -1
-	if inIdx != -1 {
-		for i := inIdx + 1; i < len(tokens); i++ {
-			tok := tokens[i]
-			if tok == "esac" {
-				esacIdx = i
-				break
-			}
-			if strings.HasPrefix(tok, "esac") {
-				rest := tok[len("esac"):]
-				if rest != "" && isTerminatorSuffix(rest) {
-					esacIdx = i
-					break
-				}
-			}
+	if r.caseCache != nil {
+		if spec, ok := r.caseCache[script]; ok {
+			return r.runCaseSpec(spec)
 		}
 	}
+	inIdx := indexToken(tokens, "in")
+	esacIdx := findMatchingTerminator(tokens, 0)
 	if inIdx == -1 || esacIdx == -1 || inIdx >= esacIdx {
 		return 0, false
 	}
+	var wordExpr string
 	if inIdx < 2 {
-		return 0, false
+		if inIdx == 1 {
+			wordExpr = ""
+		} else {
+			return 0, false
+		}
+	} else {
+		wordExpr = tokens[1]
 	}
-	word := r.expandVarsWithRunner(tokens[1])
-	// Strip quotes from word
-	word, _ = stripOuterQuotes(word)
-	// Remove variable escape markers
-	word = unescapeGlob(word)
 	// Parse patterns and bodies between 'in' and 'esac'
 	body := tokens[inIdx+1 : esacIdx]
-	filtered := body[:0]
-	for _, tok := range body {
-		if tok == ";" || tok == "\n" {
-			continue
-		}
-		filtered = append(filtered, tok)
-	}
-	body = filtered
-	// Split tokens that contain ) but don't end with ) (e.g., "w)echo" -> "w)", "echo")
-	var splitBody []string
-	for _, tok := range body {
-		if tok == ";;" {
-			splitBody = append(splitBody, tok)
-			continue
-		}
-		if idx := strings.Index(tok, ")"); idx >= 0 && idx < len(tok)-1 {
-			// Has ) in the middle
-			splitBody = append(splitBody, tok[:idx+1])
-			splitBody = append(splitBody, tok[idx+1:])
-		} else {
-			splitBody = append(splitBody, tok)
-		}
-	}
-	body = splitBody
-	status := core.ExitSuccess
+	spec := caseSpec{wordExpr: wordExpr}
 	i := 0
 	for i < len(body) {
 		// Find pattern ending with )
 		patEnd := -1
 		for j := i; j < len(body); j++ {
-			if strings.HasSuffix(body[j], ")") {
+			tok := body[j]
+			if !isQuotedToken(tok) {
+				if idx := strings.Index(tok, ")"); idx >= 0 {
+					patEnd = j
+					if idx < len(tok)-1 {
+						before := tok[:idx+1]
+						after := tok[idx+1:]
+						body[j] = before
+						body = append(body[:j+1], append([]string{after}, body[j+1:]...)...)
+					}
+					break
+				}
+			}
+			if strings.HasSuffix(tok, ")") {
 				patEnd = j
 				break
 			}
@@ -1824,29 +1858,79 @@ func (r *runner) runCaseScript(script string) (int, bool) {
 			break
 		}
 		// Build pattern string
-		patParts := body[i : patEnd+1]
+		patParts := make([]string, 0, patEnd-i+1)
+		for _, tok := range body[i : patEnd+1] {
+			if tok == ";" || tok == "\n" {
+				continue
+			}
+			patParts = append(patParts, tok)
+		}
 		pattern := strings.Join(patParts, " ")
 		pattern = strings.TrimSuffix(pattern, ")")
 		pattern = strings.TrimPrefix(pattern, "(") // optional leading (
 		pattern = strings.TrimSpace(pattern)
-		// Expand variables and command substitutions in pattern
-		pattern = r.expandVarsWithRunner(pattern)
 		// Find ;; terminator
 		cmdStart := patEnd + 1
 		cmdEnd := cmdStart
-		for cmdEnd < len(body) && body[cmdEnd] != ";;" {
+		caseDepth := 0
+		startOfCmd := true
+		for cmdEnd < len(body) {
+			tok := body[cmdEnd]
+			if tok == ";;" && caseDepth == 0 {
+				break
+			}
+			if startOfCmd {
+				if tok == "case" {
+					caseDepth++
+				} else if tok == "esac" {
+					if caseDepth > 0 {
+						caseDepth--
+					}
+				} else if strings.HasPrefix(tok, "esac") {
+					rest := tok[len("esac"):]
+					if rest != "" && isTerminatorSuffix(rest) && caseDepth > 0 {
+						caseDepth--
+					}
+				}
+			}
+			switch tok {
+			case ";", "\n", ";;", "&", "&&", "||", "|":
+				startOfCmd = true
+			case "then", "do", "else", "elif", "in":
+				startOfCmd = true
+			default:
+				startOfCmd = false
+			}
+			if strings.HasSuffix(tok, ")") {
+				startOfCmd = true
+			}
 			cmdEnd++
 		}
 		cmdScript := tokensToScript(body[cmdStart:cmdEnd])
-		// Check if pattern matches word (simple glob: * matches all)
+		spec.branches = append(spec.branches, caseBranch{pattern: pattern, cmdScript: cmdScript})
+		i = cmdEnd + 1
+	}
+	if r.caseCache == nil {
+		r.caseCache = map[string]caseSpec{}
+	}
+	r.caseCache[script] = spec
+	return r.runCaseSpec(spec)
+}
+
+func (r *runner) runCaseSpec(spec caseSpec) (int, bool) {
+	word := r.expandVarsWithRunner(spec.wordExpr)
+	word, _ = stripOuterQuotes(word)
+	word = unescapeGlob(word)
+	status := core.ExitSuccess
+	for _, branch := range spec.branches {
+		pattern := expandVarsPreserveQuotes(branch.pattern, r.vars)
 		if matchPattern(word, pattern) {
-			status = r.runScript(cmdScript)
+			status = r.runScript(branch.cmdScript)
 			if r.exitFlag {
 				return r.exitCode, true
 			}
 			break
 		}
-		i = cmdEnd + 1
 	}
 	return status, true
 }
@@ -1854,8 +1938,15 @@ func (r *runner) runCaseScript(script string) (int, bool) {
 func matchPattern(word, pattern string) bool {
 	// Support | for alternation
 	for _, alt := range splitPatternAlternatives(pattern) {
-		alt = strings.TrimSpace(alt)
-		alt, _ = stripOuterQuotes(alt)
+		stripped, quoted := stripOuterQuotes(alt)
+		alt = stripped
+		if quoted {
+			alt = unescapeGlob(alt)
+			if alt == word {
+				return true
+			}
+			continue
+		}
 		if alt == "*" {
 			return true
 		}
@@ -1924,6 +2015,18 @@ func subshellInner(cmd string) (string, bool) {
 	if len(cmd) < 2 || cmd[0] != '(' || cmd[len(cmd)-1] != ')' {
 		return "", false
 	}
+	inner, rest, ok := subshellInnerWithRedirs(cmd)
+	if !ok || rest != "" {
+		return "", false
+	}
+	return inner, true
+}
+
+func subshellInnerWithRedirs(cmd string) (string, string, bool) {
+	cmd = strings.TrimSpace(cmd)
+	if len(cmd) < 2 || cmd[0] != '(' {
+		return "", "", false
+	}
 	depth := 0
 	cmdSubDepth := 0
 	arithDepth := 0
@@ -1951,6 +2054,7 @@ func subshellInner(cmd string) (string, bool) {
 			}
 		}
 	}
+	end := -1
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
 		if escape {
@@ -2012,20 +2116,22 @@ func subshellInner(cmd string) (string, bool) {
 				continue
 			}
 			depth--
-			if depth == 0 && i != len(cmd)-1 {
-				return "", false
+			if depth == 0 {
+				end = i
+				break
 			}
 			if depth < 0 {
-				return "", false
+				return "", "", false
 			}
 		}
 	}
 	flushToken()
-	if depth != 0 || cmdSubDepth != 0 || arithDepth != 0 {
-		return "", false
+	if end == -1 || depth != 0 || cmdSubDepth != 0 || arithDepth != 0 {
+		return "", "", false
 	}
-	inner := strings.TrimSpace(cmd[1 : len(cmd)-1])
-	return inner, true
+	inner := strings.TrimSpace(cmd[1:end])
+	rest := strings.TrimSpace(cmd[end+1:])
+	return inner, rest, true
 }
 
 func copyStringMap(src map[string]string) map[string]string {
@@ -2087,6 +2193,7 @@ func (r *runner) runSubshell(inner string) int {
 	savedOptions := r.options
 	savedPositional := r.positional
 	savedScriptName := r.scriptName
+	savedArgv0 := r.argv0
 	savedJobs := r.jobs
 	savedJobByPid := r.jobByPid
 	savedJobOrder := r.jobOrder
@@ -2115,6 +2222,7 @@ func (r *runner) runSubshell(inner string) int {
 	r.options = copyBoolMap(savedOptions)
 	r.positional = append([]string{}, savedPositional...)
 	r.scriptName = savedScriptName
+	r.argv0 = savedArgv0
 	r.traps, r.ignored = subshellTraps(savedTraps)
 	r.jobs = map[int]*job{}
 	r.jobByPid = map[int]int{}
@@ -2175,6 +2283,7 @@ func (r *runner) runSubshell(inner string) int {
 	r.options = savedOptions
 	r.positional = savedPositional
 	r.scriptName = savedScriptName
+	r.argv0 = savedArgv0
 	r.jobs = savedJobs
 	r.jobByPid = savedJobByPid
 	r.jobOrder = savedJobOrder
@@ -2220,6 +2329,7 @@ func (r *runner) startSubshellBackground(inner string) int {
 		ignored:    map[os.Signal]bool{},
 		positional: append([]string{}, r.positional...),
 		scriptName: r.scriptName,
+		argv0:      r.argv0,
 		lineOffset: lineOffset,
 		jobs:       map[int]*job{},
 		jobByPid:   map[int]int{},
@@ -2258,6 +2368,7 @@ func (r *runner) startSubshellBackgroundWithStdio(inner string, stdio *core.Stdi
 		ignored:    map[os.Signal]bool{},
 		positional: append([]string{}, r.positional...),
 		scriptName: r.scriptName,
+		argv0:      r.argv0,
 		lineOffset: lineOffset,
 		jobs:       map[int]*job{},
 		jobByPid:   map[int]int{},
@@ -2319,16 +2430,50 @@ func (r *runner) runCommand(cmd string) (int, bool) {
 		}
 		return core.ExitSuccess, exit
 	}
+	trimmed := strings.TrimSpace(cmd)
+	if strings.HasPrefix(trimmed, "((") && strings.HasSuffix(trimmed, "))") {
+		inner := strings.TrimSpace(trimmed[2 : len(trimmed)-2])
+		resetArithError()
+		val := evalArithmetic(inner, r.vars)
+		if err := takeArithError(); err != nil {
+			r.arithFailed = true
+			r.reportArithError(err.Error())
+			return core.ExitFailure, false
+		}
+		if val == 0 {
+			return core.ExitFailure, false
+		}
+		return core.ExitSuccess, false
+	}
 	if tokens := splitTokens(cmd); len(tokens) > 0 {
 		switch tokens[0] {
 		case "case":
 			if c, ok := r.runCaseScript(cmd); ok {
 				return c, false
 			}
-		case "if", "while", "until", "for":
-			return r.runScript(cmd), false
-		case "then", "do", "else", "elif", "fi", "done", "esac":
-			r.stdio.Errorf("%s: line %d: syntax error: unexpected \"%s\"\n", r.scriptName, r.currentLine, tokens[0])
+		case "if":
+			if c, ok := r.runIfScript(cmd); ok {
+				return c, false
+			}
+		case "while":
+			if c, ok := r.runWhileScript(cmd); ok {
+				return c, false
+			}
+		case "until":
+			if c, ok := r.runUntilScript(cmd); ok {
+				return c, false
+			}
+		case "for":
+			if c, ok := r.runForScript(cmd); ok {
+				return c, false
+			}
+		case "then", "do", "else", "elif", "fi", "done", "esac", ")":
+			msg := fmt.Sprintf("%s", tokens[0])
+			if tokens[0] == ")" {
+				msg = ")"
+			}
+			r.syntaxError = true
+			r.stdio.Errorf("%s: line %d: syntax error: unexpected \"%s\"\n", r.scriptName, r.currentLine, msg)
 			return 2, false
 		}
 	}
@@ -2370,7 +2515,7 @@ func (r *runner) runCommand(cmd string) (int, bool) {
 func (r *runner) startBackground(cmd string) int {
 	segments := splitPipelines(cmd)
 	if len(segments) > 1 {
-		return r.startPipelineBackground(segments)
+		return r.startSubshellBackground(cmd)
 	}
 	ch := make(chan int, 1)
 	tokens := splitTokens(cmd)
@@ -2462,6 +2607,62 @@ func (r *runner) startBackground(cmd string) int {
 		}
 		return r.startSubshellBackgroundWithStdio(inner, &core.Stdio{In: stdin, Out: stdout, Err: stderr}, closers)
 	}
+	internal := isBuiltinSegment(cmd)
+	if !internal && len(cmdSpec.args) > 0 {
+		if _, ok := r.funcs[cmdSpec.args[0]]; ok {
+			internal = true
+		}
+	}
+	if internal {
+		pid := -r.nextJobID
+		ch := make(chan int, 1)
+		r.lastBgPid = pid
+		jobID := r.addJob(pid, ch)
+		lineOffset := 0
+		if r.currentLine > 0 {
+			lineOffset = r.currentLine - 1
+		}
+		sub := &runner{
+			stdio:            r.stdio,
+			vars:             copyStringMap(r.vars),
+			exported:         copyBoolMap(r.exported),
+			funcs:            copyStringMap(r.funcs),
+			aliases:          copyStringMap(r.aliases),
+			options:          copyBoolMap(r.options),
+			traps:            map[string]string{},
+			ignored:          map[os.Signal]bool{},
+			positional:       append([]string{}, r.positional...),
+			scriptName:       r.scriptName,
+			argv0:            r.argv0,
+			lineOffset:       lineOffset,
+			jobs:             map[int]*job{},
+			jobByPid:         map[int]int{},
+			nextJobID:        1,
+			signalCh:         make(chan os.Signal, 8),
+			fdReaders:        copyFdReaders(r.fdReaders),
+			scriptCache:      r.scriptCache,
+			scriptLinesCache: r.scriptLinesCache,
+			caseCache:        r.caseCache,
+		}
+		if len(cmdSpec.hereDocs) > 0 {
+			pending := make([]string, len(cmdSpec.hereDocs))
+			for i, doc := range cmdSpec.hereDocs {
+				pending[i] = doc.content
+			}
+			sub.pendingHereDocs = pending
+		}
+		if job := r.jobs[jobID]; job != nil {
+			job.runner = sub
+		}
+		sub.forwardSignal = r.signalCh
+		sub.traps, sub.ignored = subshellTraps(r.traps)
+		go func() {
+			status, _ := sub.runSimpleCommandInternal(cmd, r.stdio.In, r.stdio.Out, r.stdio.Err)
+			ch <- status
+			close(ch)
+		}()
+		return core.ExitSuccess
+	}
 	cmdArgs := append([]string{}, cmdSpec.args[1:]...)
 	if r.restricted && strings.Contains(cmdSpec.args[0], "/") {
 		r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.args[0])
@@ -2540,7 +2741,7 @@ func (r *runner) startPipelineBackground(segments []string) int {
 		command.Stderr = r.stdio.Err
 		command.Env = buildEnv(r.vars, r.exported)
 		if r.options["x"] {
-			fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args, " "))
+			fmt.Fprintf(r.stdio.Err, "+ %s\n", formatTraceCommand(cmdSpec.prefixAssigns, cmdSpec.args, cmdSpec.argQuoted))
 		}
 		if err := command.Start(); err != nil {
 			r.stdio.Errorf("ash: %v\n", err)
@@ -2652,6 +2853,9 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 	}
 	if len(cmdSpec.args) == 0 {
 		if cmdSpec.redirIn == "" && cmdSpec.redirOut == "" && cmdSpec.redirErr == "" && !cmdSpec.closeStdout && !cmdSpec.closeStderr && len(cmdSpec.hereDocs) == 0 {
+			if r.options["x"] && len(cmdSpec.prefixAssigns) > 0 {
+				fmt.Fprintf(r.stdio.Err, "+ %s\n", formatTraceCommand(cmdSpec.prefixAssigns, nil, nil))
+			}
 			if r.hadAssignCommandSub {
 				return r.assignCommandSubStatus, false
 			}
@@ -2667,7 +2871,7 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 	}
 	// Apply alias expansion (first token only)
 	if r.options["x"] {
-		fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args, " "))
+		fmt.Fprintf(r.stdio.Err, "+ %s\n", formatTraceCommand(cmdSpec.prefixAssigns, cmdSpec.args, cmdSpec.argQuoted))
 	}
 	if len(cmdSpec.hereDocs) > 0 {
 		savedFdReaders := r.fdReaders
@@ -2762,8 +2966,26 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		}
 	}
 	if cmdSpec.redirErr != "" {
-		if cmdSpec.redirErr == "&1" {
-			stderr = stdout
+		if strings.HasPrefix(cmdSpec.redirErr, "&") {
+			fdStr := strings.TrimPrefix(cmdSpec.redirErr, "&")
+			fdNum, err := strconv.Atoi(fdStr)
+			if err != nil || fdNum < 0 {
+				r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
+				return core.ExitFailure, false
+			}
+			switch fdNum {
+			case 1:
+				stderr = stdout
+			case 2:
+				// no-op
+			default:
+				newFd, err := syscall.Dup(fdNum)
+				if err != nil {
+					r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
+					return core.ExitFailure, false
+				}
+				stderr = os.NewFile(uintptr(newFd), fmt.Sprintf("fd%d", fdNum))
+			}
 		} else if r.restricted && strings.Contains(cmdSpec.redirErr, "/") {
 			r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.redirErr)
 			return core.ExitFailure, false
@@ -2851,6 +3073,12 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			return r.handleWriteError(err, stderr)
 		}
 		return core.ExitSuccess, false
+	case "expr":
+		status, err := r.evalExprBuiltin(cmdSpec.args[1:], stdout, stderr)
+		if err != nil {
+			return r.handleWriteError(err, stderr)
+		}
+		return status, false
 	case "break":
 		levels := 1
 		if len(cmdSpec.args) > 1 {
@@ -2977,8 +3205,26 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 				}
 			}
 			if cmdSpec.redirErr != "" {
-				if cmdSpec.redirErr == "&1" {
-					r.stdio.Err = r.stdio.Out
+				if strings.HasPrefix(cmdSpec.redirErr, "&") {
+					fdStr := strings.TrimPrefix(cmdSpec.redirErr, "&")
+					fdNum, err := strconv.Atoi(fdStr)
+					if err != nil || fdNum < 0 {
+						r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
+						return core.ExitFailure, false
+					}
+					switch fdNum {
+					case 1:
+						r.stdio.Err = r.stdio.Out
+					case 2:
+						// no-op
+					default:
+						newFd, err := syscall.Dup(fdNum)
+						if err != nil {
+							r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
+							return core.ExitFailure, false
+						}
+						r.stdio.Err = os.NewFile(uintptr(newFd), fmt.Sprintf("fd%d", fdNum))
+					}
 				} else {
 					flags := os.O_CREATE | os.O_WRONLY
 					if cmdSpec.redirErrAppend {
@@ -3011,6 +3257,14 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 					r.stdio.In = file
 				}
 			}
+			if len(cmdSpec.fdDup) > 0 {
+				for dst, src := range cmdSpec.fdDup {
+					if err := syscall.Dup2(src, dst); err != nil {
+						r.stdio.Errorf("%s: line %d: %d: Bad file descriptor\n", r.scriptName, r.currentLine, dst)
+						return core.ExitFailure, false
+					}
+				}
+			}
 			if cmdSpec.closeStdout {
 				r.stdio.Out = badFdWriter{}
 			}
@@ -3036,9 +3290,6 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		command.Stderr = stderr
 		command.Stdin = stdin
 		command.Env = buildEnv(r.vars, r.exported)
-		if r.options["x"] {
-			fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args[1:], " "))
-		}
 		if err := command.Run(); err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				return exitErr.ExitCode(), true
@@ -3229,55 +3480,74 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 				reader = bufio.NewReader(stdin)
 			}
 			r.readBufs[stdin] = reader
+			if r.stdio != nil && r.stdio.In == stdin {
+				r.stdio.In = reader
+			}
 		}
 		type readResult struct {
 			data string
 			err  error
 		}
 		readCh := make(chan readResult, 1)
-		go func() {
+		var data string
+		var readErr error
+		fastRead := timeout < 0 && len(r.traps) == 0 && !r.inTrap
+		if fastRead {
 			if nChars >= 0 {
 				buf := make([]byte, nChars)
 				n, err := io.ReadFull(reader, buf)
-				readCh <- readResult{data: string(buf[:n]), err: err}
-				return
+				data = string(buf[:n])
+				readErr = err
+			} else {
+				line, err := reader.ReadString(delim)
+				data = line
+				readErr = err
 			}
-			line, err := reader.ReadString(delim)
-			readCh <- readResult{data: line, err: err}
-		}()
-		var data string
-		var readErr error
-		if timeout >= 0 {
-			dur := time.Duration(timeout * float64(time.Second))
-			if dur == 0 {
-				// Check if data is available
-				select {
-				case res := <-readCh:
-					data = res.data
-					readErr = res.err
-				default:
-					return core.ExitFailure, false
+		} else {
+			go func() {
+				if nChars >= 0 {
+					buf := make([]byte, nChars)
+					n, err := io.ReadFull(reader, buf)
+					readCh <- readResult{data: string(buf[:n]), err: err}
+					return
+				}
+				line, err := reader.ReadString(delim)
+				readCh <- readResult{data: line, err: err}
+			}()
+		}
+		if !fastRead {
+			if timeout >= 0 {
+				dur := time.Duration(timeout * float64(time.Second))
+				if dur == 0 {
+					// Check if data is available
+					select {
+					case res := <-readCh:
+						data = res.data
+						readErr = res.err
+					default:
+						return core.ExitFailure, false
+					}
+				} else {
+					select {
+					case res := <-readCh:
+						data = res.data
+						readErr = res.err
+					case <-time.After(dur):
+						return core.ExitFailure, false
+					case sig := <-r.signalCh:
+						r.runTrap(sig)
+						return signalExitStatus(sig), true
+					}
 				}
 			} else {
 				select {
 				case res := <-readCh:
 					data = res.data
 					readErr = res.err
-				case <-time.After(dur):
-					return core.ExitFailure, false
 				case sig := <-r.signalCh:
 					r.runTrap(sig)
 					return signalExitStatus(sig), true
 				}
-			}
-		} else {
-			select {
-			case res := <-readCh:
-				data = res.data
-				readErr = res.err
-			case sig := <-r.signalCh:
-				r.runTrap(sig)
-				return signalExitStatus(sig), true
 			}
 		}
 		if readErr != nil && data == "" {
@@ -3444,15 +3714,32 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		// shift positional parameters
 		n := 1
 		if len(cmdSpec.args) > 1 {
-			if v, err := strconv.Atoi(cmdSpec.args[1]); err == nil {
-				n = v
+			v, err := strconv.Atoi(cmdSpec.args[1])
+			if err != nil {
+				line := r.currentLine
+				if line == 1 && (r.scriptName == "SHELL" || r.scriptName == "0") {
+					line = 0
+				}
+				fmt.Fprintf(stderr, "%s: shift: line %d: Illegal number: %s\n", r.scriptName, line, cmdSpec.args[1])
+				return 2, true
 			}
+			n = v
 		}
-		if n > 0 && n <= len(r.positional) {
-			r.positional = r.positional[n:]
-		} else if n > len(r.positional) {
-			r.positional = []string{}
+		if n < 0 {
+			line := r.currentLine
+			if line == 1 && (r.scriptName == "SHELL" || r.scriptName == "0") {
+				line = 0
+			}
+			fmt.Fprintf(stderr, "%s: shift: line %d: Illegal number: %d\n", r.scriptName, line, n)
+			return 2, true
 		}
+		if n == 0 {
+			return core.ExitSuccess, false
+		}
+		if n > len(r.positional) {
+			return core.ExitFailure, false
+		}
+		r.positional = r.positional[n:]
 		return core.ExitSuccess, false
 	case "jobs":
 		for _, id := range r.jobOrder {
@@ -4160,9 +4447,6 @@ runFunction:
 	command.Stderr = stderr
 	command.Stdin = stdin
 	command.Env = buildEnv(r.vars, r.exported)
-	if r.options["x"] {
-		fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args, " "))
-	}
 	if err := command.Start(); err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
 			r.commandNotFound(cmdSpec.args[0], stderr)
@@ -4198,6 +4482,10 @@ runFunction:
 			}
 			return core.ExitSuccess, false
 		case sig := <-r.signalCh:
+			if r.inSubshell {
+				r.pendingSignals = append(r.pendingSignals, pendingSignal{sig: sig})
+				continue
+			}
 			if ignored, ok := r.ignored[sig]; ok && ignored {
 				continue
 			}
@@ -4277,6 +4565,62 @@ func (r *runner) runPipeline(segments []string) int {
 			writer:     writer,
 		})
 		prevReader = nextReader
+	}
+
+	allBuiltin := true
+	for _, s := range stages {
+		if !s.isBuiltin {
+			allBuiltin = false
+			break
+		}
+	}
+	if allBuiltin && len(stages) > 1 {
+		statuses := make([]int, len(stages))
+		var input io.Reader = r.stdio.In
+		for i, s := range stages {
+			var buf bytes.Buffer
+			stdout := io.Writer(r.stdio.Out)
+			if i < len(stages)-1 {
+				stdout = &buf
+			}
+			sub := &runner{
+				stdio:            &core.Stdio{In: input, Out: stdout, Err: r.stdio.Err},
+				vars:             copyStringMap(r.vars),
+				exported:         copyBoolMap(r.exported),
+				funcs:            copyStringMap(r.funcs),
+				aliases:          copyStringMap(r.aliases),
+				options:          copyBoolMap(r.options),
+				traps:            copyStringMap(r.traps),
+				ignored:          copySignalMap(r.ignored),
+				positional:       append([]string{}, r.positional...),
+				scriptName:       r.scriptName,
+				argv0:            r.argv0,
+				jobs:             map[int]*job{},
+				jobByPid:         map[int]int{},
+				nextJobID:        1,
+				fdReaders:        copyFdReaders(r.fdReaders),
+				signalCh:         make(chan os.Signal, 8),
+				scriptCache:      r.scriptCache,
+				scriptLinesCache: r.scriptLinesCache,
+				caseCache:        r.caseCache,
+			}
+			statuses[i] = sub.runScript(s.seg)
+			if i < len(stages)-1 {
+				input = bytes.NewReader(buf.Bytes())
+			}
+		}
+		status := core.ExitSuccess
+		for i, code := range statuses {
+			if i == len(statuses)-1 {
+				if !r.options["pipefail"] || status == core.ExitSuccess {
+					status = code
+				}
+			}
+			if r.options["pipefail"] && code != core.ExitSuccess {
+				status = code
+			}
+		}
+		return status
 	}
 
 	waits := make([]waitFn, len(stages))
@@ -4427,7 +4771,7 @@ func (r *runner) runPipeline(segments []string) int {
 			}
 			command.Env = buildEnv(envVars, exportedVars)
 			if r.options["x"] {
-				fmt.Fprintf(r.stdio.Err, "+ %s\n", strings.Join(cmdSpec.args, " "))
+				fmt.Fprintf(r.stdio.Err, "+ %s\n", formatTraceCommand(cmdSpec.prefixAssigns, cmdSpec.args, cmdSpec.argQuoted))
 			}
 			for _, closer := range closers {
 				defer closer.Close()
@@ -4468,8 +4812,28 @@ func (r *runner) runPipeline(segments []string) int {
 		started := make(chan struct{})
 		go func(s stage) {
 			close(started)
+			stderr := r.stdio.Err
+			segToRun := seg
+			trimmedSeg := strings.TrimSpace(seg)
+			if strings.HasPrefix(trimmedSeg, "(") {
+				if inner, rest, ok := subshellInnerWithRedirs(trimmedSeg); ok && rest != "" {
+					redirTokens := splitTokens(rest)
+					savedVars := copyStringMap(r.vars)
+					savedExported := copyBoolMap(r.exported)
+					spec, err := r.parseCommandSpecWithRunner(redirTokens)
+					r.vars = savedVars
+					r.exported = savedExported
+					if err == nil && len(spec.args) == 0 {
+						if spec.redirErr == "&1" {
+							stderr = stdout
+						}
+						segToRun = "(" + inner + ")"
+						trimmedSeg = strings.TrimSpace(segToRun)
+					}
+				}
+			}
 			sub := &runner{
-				stdio:      &core.Stdio{In: s.prevReader, Out: stdout, Err: r.stdio.Err},
+				stdio:      &core.Stdio{In: s.prevReader, Out: stdout, Err: stderr},
 				vars:       copyStringMap(r.vars),
 				exported:   copyBoolMap(r.exported),
 				funcs:      copyStringMap(r.funcs),
@@ -4479,13 +4843,14 @@ func (r *runner) runPipeline(segments []string) int {
 				ignored:    copySignalMap(r.ignored),
 				positional: append([]string{}, r.positional...),
 				scriptName: r.scriptName,
+				argv0:      r.argv0,
 				jobs:       map[int]*job{},
 				jobByPid:   map[int]int{},
 				nextJobID:  1,
 				fdReaders:  copyFdReaders(r.fdReaders),
 				signalCh:   make(chan os.Signal, 8),
 			}
-			trimmedSeg := strings.TrimSpace(seg)
+			trimmedSeg = strings.TrimSpace(segToRun)
 			isCompound := false
 			if strings.HasPrefix(trimmedSeg, "{") || strings.HasPrefix(trimmedSeg, "(") {
 				isCompound = true
@@ -4497,9 +4862,9 @@ func (r *runner) runPipeline(segments []string) int {
 			}
 			var code int
 			if isCompound {
-				code = sub.runScript(seg)
+				code = sub.runScript(segToRun)
 			} else {
-				code, _ = sub.runSimpleCommand(seg, s.prevReader, stdout, r.stdio.Err)
+				code, _ = sub.runSimpleCommand(segToRun, s.prevReader, stdout, stderr)
 			}
 			if s.writer != nil {
 				_ = s.writer.Close()
@@ -4674,12 +5039,23 @@ func isBuiltinSegment(cmd string) bool {
 	if len(tokens) == 0 {
 		return false
 	}
-	switch tokens[0] {
+	idx := 0
+	for idx < len(tokens) {
+		if name, _, ok := parseAssignment(tokens[idx]); ok && isName(name) {
+			idx++
+			continue
+		}
+		break
+	}
+	if idx >= len(tokens) {
+		return false
+	}
+	switch tokens[idx] {
 	case "echo", "true", "false", "pwd", "cd", "exit", "test", "[",
 		"export", "unset", "read", "local", "return", "set", "shift",
 		"source", ".", ":", "eval", "break", "continue", "wait", "kill",
 		"jobs", "fg", "bg", "trap", "type", "alias", "unalias", "hash",
-		"getopts", "printf", "command", "let", "exec",
+		"getopts", "printf", "command", "let", "exec", "expr",
 		"if", "while", "for", "until", "case":
 		return true
 	default:
@@ -4689,6 +5065,7 @@ func isBuiltinSegment(cmd string) bool {
 
 type commandSpec struct {
 	args           []string
+	argQuoted      []bool
 	redirIn        string
 	redirOut       string
 	redirOutAppend bool
@@ -4696,6 +5073,7 @@ type commandSpec struct {
 	redirErrAppend bool
 	closeStdout    bool
 	closeStderr    bool
+	fdDup          map[int]int
 	hereDocs       []hereDocSpec
 	prefixAssigns  []prefixAssign // prefix assignments to restore after function call
 }
@@ -4706,6 +5084,7 @@ type prefixAssign struct {
 	oldVal      string
 	oldExist    bool
 	wasExported bool
+	quoted      bool
 }
 
 type hereDocSpec struct {
@@ -4722,6 +5101,7 @@ func (badFdWriter) Write(p []byte) (int, error) {
 func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error) {
 	spec := commandSpec{}
 	args := []string{}
+	argQuoted := []bool{}
 	seenCmd := false
 	braceClose := -1
 	if len(tokens) > 0 && tokens[0] == "{" {
@@ -4755,6 +5135,13 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 			spec.hereDocs = append(spec.hereDocs, hereDocSpec{fd: req.fd, content: content})
 			continue
 		}
+		if !isQuotedToken(tok) {
+			if path, ok := r.expandProcessSubToken(tok); ok {
+				args = append(args, path)
+				seenCmd = true
+				continue
+			}
+		}
 		if idx := strings.Index(tok, "<&"); idx >= 0 {
 			fdStr := tok[:idx]
 			target := tok[idx+2:]
@@ -4767,6 +5154,34 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 					i++
 				}
 				spec.redirIn = "&" + target
+				continue
+			}
+		}
+		if idx := strings.Index(tok, ">&"); idx >= 0 {
+			fdStr := tok[:idx]
+			target := tok[idx+2:]
+			if target == "" {
+				if i+1 >= len(tokens) {
+					return spec, fmt.Errorf("missing redirection target")
+				}
+				target = tokens[i+1]
+				i++
+			}
+			if fdStr == "" || fdStr == "1" {
+				spec.redirOut = "&" + target
+				continue
+			}
+			if fdStr == "2" {
+				spec.redirErr = "&" + target
+				continue
+			}
+			if isNumeric(fdStr) && isNumeric(target) {
+				fd, _ := strconv.Atoi(fdStr)
+				tgt, _ := strconv.Atoi(target)
+				if spec.fdDup == nil {
+					spec.fdDup = map[int]int{}
+				}
+				spec.fdDup[fd] = tgt
 				continue
 			}
 		}
@@ -4881,23 +5296,29 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 				spec.prefixAssigns = append(spec.prefixAssigns, prefixAssign{
 					name: name, newVal: expandedVal,
 					oldVal: oldVal, oldExist: oldExists,
+					quoted: isQuotedToken(val),
 				})
 				r.vars[name] = expandedVal
 				continue
 			}
+			tokQuoted := isQuotedToken(tok)
 			expanded := expandTokenWithRunner(tok, r)
-			if expanded == "" && !isQuotedToken(tok) && hasUnquotedExpansion(tok) {
+			if expanded == "" && !tokQuoted && hasUnquotedExpansion(tok) {
 				continue
 			}
 			expandedArgs := []string{expanded}
-			if !isQuotedToken(tok) {
+			if !tokQuoted {
 				// Word splitting on unquoted variable expansions
-				if hasUnquotedExpansion(tok) && (strings.ContainsAny(expanded, " \t\n") || strings.ContainsAny(expanded, "'\"")) {
+				ifs := r.vars["IFS"]
+				if ifs == "" {
+					ifs = " \t\n"
+				}
+				if hasUnquotedExpansion(tok) && (strings.ContainsAny(expanded, ifs) || strings.ContainsAny(expanded, "'\"")) {
 					var split []string
 					if strings.ContainsAny(tok, "'\"") {
-						split = splitOnIFSWithQuotes(expanded, r.vars["IFS"])
+						split = splitOnIFSWithQuotes(expanded, ifs)
 					} else {
-						split = splitOnIFS(expanded, r.vars["IFS"])
+						split = splitOnIFS(expanded, ifs)
 					}
 					if len(split) > 0 {
 						expandedArgs = split
@@ -4916,12 +5337,16 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 				expandedArgs = globbed
 			}
 			args = append(args, expandedArgs...)
+			for range expandedArgs {
+				argQuoted = append(argQuoted, tokQuoted)
+			}
 			if len(expandedArgs) > 0 {
 				seenCmd = true
 			}
 		}
 	}
 	spec.args = args
+	spec.argQuoted = argQuoted
 	return spec, nil
 }
 
@@ -4954,6 +5379,34 @@ func parseCommandSpec(tokens []string, vars map[string]string) (commandSpec, err
 					i++
 				}
 				spec.redirIn = "&" + target
+				continue
+			}
+		}
+		if idx := strings.Index(tok, ">&"); idx >= 0 {
+			fdStr := tok[:idx]
+			target := tok[idx+2:]
+			if target == "" {
+				if i+1 >= len(tokens) {
+					return spec, fmt.Errorf("missing redirection target")
+				}
+				target = tokens[i+1]
+				i++
+			}
+			if fdStr == "" || fdStr == "1" {
+				spec.redirOut = "&" + target
+				continue
+			}
+			if fdStr == "2" {
+				spec.redirErr = "&" + target
+				continue
+			}
+			if isNumeric(fdStr) && isNumeric(target) {
+				fd, _ := strconv.Atoi(fdStr)
+				tgt, _ := strconv.Atoi(target)
+				if spec.fdDup == nil {
+					spec.fdDup = map[int]int{}
+				}
+				spec.fdDup[fd] = tgt
 				continue
 			}
 		}
@@ -5043,6 +5496,7 @@ func splitPipelines(cmd string) []string {
 	var buf strings.Builder
 	var inSingle bool
 	var inDouble bool
+	var inBacktick bool
 	escape := false
 	cmdSubDepth := 0
 	arithDepth := 0
@@ -5058,6 +5512,11 @@ func splitPipelines(cmd string) []string {
 			escape = true
 			continue
 		}
+		if c == '`' && !inSingle {
+			inBacktick = !inBacktick
+			buf.WriteByte(c)
+			continue
+		}
 		if c == '\'' && !inDouble {
 			inSingle = !inSingle
 			buf.WriteByte(c)
@@ -5068,7 +5527,7 @@ func splitPipelines(cmd string) []string {
 			buf.WriteByte(c)
 			continue
 		}
-		if !inSingle && c == '$' && i+1 < len(cmd) && cmd[i+1] == '(' {
+		if !inSingle && !inBacktick && c == '$' && i+1 < len(cmd) && cmd[i+1] == '(' {
 			if i+2 < len(cmd) && cmd[i+2] == '(' {
 				buf.WriteString("$((")
 				arithDepth++
@@ -5080,7 +5539,7 @@ func splitPipelines(cmd string) []string {
 			i++
 			continue
 		}
-		if !inSingle && !inDouble {
+		if !inSingle && !inDouble && !inBacktick {
 			if arithDepth > 0 && c == ')' && i+1 < len(cmd) && cmd[i+1] == ')' {
 				buf.WriteString("))")
 				arithDepth--
@@ -5093,7 +5552,7 @@ func splitPipelines(cmd string) []string {
 				continue
 			}
 		}
-		if c == '|' && !inSingle && !inDouble && cmdSubDepth == 0 && arithDepth == 0 {
+		if c == '|' && !inSingle && !inDouble && !inBacktick && cmdSubDepth == 0 && arithDepth == 0 {
 			if i+1 < len(cmd) && cmd[i+1] == '|' {
 				buf.WriteString("||")
 				i++
@@ -5117,6 +5576,7 @@ func splitAndOr(cmd string) ([]string, []string) {
 	var buf strings.Builder
 	var inSingle bool
 	var inDouble bool
+	var inBacktick bool
 	escape := false
 	cmdSubDepth := 0
 	arithDepth := 0
@@ -5135,7 +5595,12 @@ func splitAndOr(cmd string) ([]string, []string) {
 			escape = true
 			continue
 		}
-		if !inSingle && !inDouble {
+		if c == '`' && !inSingle {
+			inBacktick = !inBacktick
+			buf.WriteByte(c)
+			continue
+		}
+		if !inSingle && !inDouble && !inBacktick {
 			if !inDoubleBracket && c == '[' && i+1 < len(cmd) && cmd[i+1] == '[' {
 				inDoubleBracket = true
 				buf.WriteString("[[")
@@ -5159,7 +5624,7 @@ func splitAndOr(cmd string) ([]string, []string) {
 			buf.WriteByte(c)
 			continue
 		}
-		if !inSingle && c == '$' && i+1 < len(cmd) && cmd[i+1] == '(' {
+		if !inSingle && !inBacktick && c == '$' && i+1 < len(cmd) && cmd[i+1] == '(' {
 			if i+2 < len(cmd) && cmd[i+2] == '(' {
 				buf.WriteString("$((")
 				arithDepth++
@@ -5171,7 +5636,7 @@ func splitAndOr(cmd string) ([]string, []string) {
 			i++
 			continue
 		}
-		if !inSingle && !inDouble {
+		if !inSingle && !inDouble && !inBacktick {
 			if arithDepth > 0 && c == ')' && i+1 < len(cmd) && cmd[i+1] == ')' {
 				buf.WriteString("))")
 				arithDepth--
@@ -5194,7 +5659,7 @@ func splitAndOr(cmd string) ([]string, []string) {
 				braceDepth--
 			}
 		}
-		if !inSingle && !inDouble && !inDoubleBracket && cmdSubDepth == 0 && arithDepth == 0 && parenDepth == 0 && braceDepth == 0 {
+		if !inSingle && !inDouble && !inBacktick && !inDoubleBracket && cmdSubDepth == 0 && arithDepth == 0 && parenDepth == 0 && braceDepth == 0 {
 			if c == '&' && i+1 < len(cmd) && cmd[i+1] == '&' {
 				parts = append(parts, strings.TrimSpace(buf.String()))
 				ops = append(ops, "&&")
@@ -5239,6 +5704,10 @@ func tokenizeScript(script string) []string {
 			continue
 		}
 		if c == '\\' {
+			if !inSingle && i+1 < len(script) && script[i+1] == '\n' {
+				i++
+				continue
+			}
 			buf.WriteByte(c)
 			escape = true
 			continue
@@ -5327,6 +5796,9 @@ func tokensToScript(tokens []string) string {
 			continue
 		}
 		if tok == ";;" {
+			if buf.Len() > 0 && !lastSep {
+				buf.WriteByte(' ')
+			}
 			buf.WriteString(";;")
 			lastSep = true
 			continue
@@ -5381,7 +5853,11 @@ func findMatchingTerminator(tokens []string, start int) int {
 		}
 		if inForList {
 			// Inside "for VAR in WORDS" - skip until "do" at command boundary
-			continue
+			if tok == "do" || (strings.HasPrefix(tok, "do") && len(tok) > 2 && isTerminatorSuffix(tok[2:])) {
+				inForList = false
+			} else {
+				continue
+			}
 		}
 		if startOfCmd {
 			if term, ok := compoundStarters[tok]; ok {
@@ -5421,6 +5897,10 @@ func findMatchingTerminator(tokens []string, start int) int {
 		default:
 			startOfCmd = false
 		}
+		if len(stack) > 0 && stack[len(stack)-1] == "esac" && strings.HasSuffix(tok, ")") {
+			startOfCmd = true
+			inForList = false
+		}
 	}
 	return -1
 }
@@ -5438,6 +5918,16 @@ type commandEntry struct {
 	cmd  string
 	raw  string
 	line int
+}
+
+type caseBranch struct {
+	pattern   string
+	cmdScript string
+}
+
+type caseSpec struct {
+	wordExpr string
+	branches []caseBranch
 }
 
 func splitCommands(script string) []commandEntry {
@@ -5580,13 +6070,13 @@ func splitCommands(script string) []commandEntry {
 				continue
 			}
 			// Track single quotes (preserve the quote char)
-			if c == '\'' && !inDouble {
+			if c == '\'' && !inDouble && !inBacktick {
 				inSingle = !inSingle
 				buf.WriteByte(c)
 				continue
 			}
 			// Track double quotes (preserve the quote char)
-			if c == '"' && !inSingle {
+			if c == '"' && !inSingle && !inBacktick {
 				inDouble = !inDouble
 				buf.WriteByte(c)
 				continue
@@ -5607,7 +6097,7 @@ func splitCommands(script string) []commandEntry {
 				// Track { and } only at command-starting position
 				// { starts a brace group only when it's a standalone word token
 				bufSoFar := strings.TrimSpace(buf.String())
-				isFirstToken := bufSoFar == "" || strings.HasSuffix(bufSoFar, ";") || strings.HasSuffix(bufSoFar, "|") || strings.HasSuffix(bufSoFar, "&&") || strings.HasSuffix(bufSoFar, "{") || strings.HasSuffix(bufSoFar, "do") || strings.HasSuffix(bufSoFar, "then") || strings.HasSuffix(bufSoFar, "else")
+				isFirstToken := bufSoFar == "" || strings.HasSuffix(bufSoFar, ";") || strings.HasSuffix(bufSoFar, "|") || strings.HasSuffix(bufSoFar, "&&") || strings.HasSuffix(bufSoFar, "{") || strings.HasSuffix(bufSoFar, "do") || strings.HasSuffix(bufSoFar, "then") || strings.HasSuffix(bufSoFar, "else") || strings.HasSuffix(bufSoFar, "!")
 				nextIsSpace := i+1 >= len(line) || line[i+1] == ' ' || line[i+1] == '\t' || line[i+1] == '('
 				if c == '{' && isFirstToken && nextIsSpace {
 					braceDepth++
@@ -5629,6 +6119,10 @@ func splitCommands(script string) []commandEntry {
 			// Also track ) for $() even inside double quotes
 			if !inSingle && inDouble && c == ')' && cmdSubDepth > 0 {
 				cmdSubDepth--
+			}
+			if !inSingle && inDouble && arithDepth > 0 && c == ')' && i+1 < len(line) && line[i+1] == ')' {
+				arithDepth--
+				i++
 			}
 			// Split on semicolons outside quotes and subshells
 			if c == ';' && i+1 < len(line) && line[i+1] == ';' && !inSingle && !inDouble && !inBacktick && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
@@ -5708,8 +6202,8 @@ func splitCommands(script string) []commandEntry {
 			buf.WriteByte('\n')
 		}
 	}
-	if lastLineContinued {
-		// The last line ended with \ but there's no next line - restore the backslash
+	if lastLineContinued && !strings.HasSuffix(script, "\n") {
+		// The last line ended with \ and no trailing newline - restore the backslash
 		buf.WriteByte('\\')
 	}
 	raw := buf.String()
@@ -5732,6 +6226,7 @@ func splitTokens(cmd string) []string {
 	var inCmdSub int    // depth of $(...) nesting
 	var inBrace int     // depth of ${...} nesting
 	var inBacktick bool // inside `...`
+	procSubDepth := 0
 	escape := false
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
@@ -5743,6 +6238,23 @@ func splitTokens(cmd string) []string {
 		if c == '\\' {
 			buf.WriteByte(c)
 			escape = true
+			continue
+		}
+		// Track process substitutions <( ) and >( )
+		if !inSingle && !inDouble && !inBacktick && procSubDepth == 0 && (c == '<' || c == '>') && i+1 < len(cmd) && cmd[i+1] == '(' {
+			buf.WriteByte(c)
+			buf.WriteByte('(')
+			procSubDepth = 1
+			i++
+			continue
+		}
+		if procSubDepth > 0 {
+			if c == '(' {
+				procSubDepth++
+			} else if c == ')' {
+				procSubDepth--
+			}
+			buf.WriteByte(c)
 			continue
 		}
 		// Track ${...} brace substitution
@@ -6569,13 +7081,50 @@ func splitReadFields(s string, ifs string, maxFields int) []string {
 	for i < len(s) {
 		// If we've collected enough fields, put the rest in the last field
 		if maxFields > 0 && len(fields) == maxFields-1 {
-			// Strip trailing IFS whitespace from remainder
 			rest := s[i:]
+			// Trim leading IFS whitespace
+			for len(rest) > 0 && isWhitespaceIFS(rest[0]) {
+				rest = rest[1:]
+			}
+			// Trim trailing IFS whitespace only
 			end := len(rest)
 			for end > 0 && isWhitespaceIFS(rest[end-1]) {
 				end--
 			}
-			fields = append(fields, rest[:end])
+			rest = rest[:end]
+			onlyIFS := true
+			nonWhitespaceCount := 0
+			for idx := 0; idx < len(rest); idx++ {
+				if isIFS(rest[idx]) {
+					if !isWhitespaceIFS(rest[idx]) {
+						nonWhitespaceCount++
+					}
+					continue
+				}
+				onlyIFS = false
+			}
+			if onlyIFS && nonWhitespaceCount == 1 {
+				rest = ""
+			} else if !onlyIFS && nonWhitespaceCount == 1 && len(rest) > 0 && isIFS(rest[len(rest)-1]) && !isWhitespaceIFS(rest[len(rest)-1]) {
+				hasFieldSep := false
+				hasNonIFSAfter := false
+				for idx := len(rest) - 1; idx >= 0; idx-- {
+					if !isIFS(rest[idx]) {
+						hasNonIFSAfter = true
+					}
+					if isWhitespaceIFS(rest[idx]) && hasNonIFSAfter {
+						hasFieldSep = true
+						break
+					}
+				}
+				if !hasFieldSep {
+					rest = rest[:len(rest)-1]
+					for len(rest) > 0 && isWhitespaceIFS(rest[len(rest)-1]) {
+						rest = rest[:len(rest)-1]
+					}
+				}
+			}
+			fields = append(fields, rest)
 			return fields
 		}
 		if isIFS(s[i]) {
@@ -6605,25 +7154,17 @@ func splitReadFields(s string, ifs string, maxFields int) []string {
 }
 
 func splitOnIFS(s string, ifs string) []string {
-	if ifs == "" {
-		ifs = " \t\n"
+	fields := splitReadFields(s, ifs, 0)
+	if s == "" || ifs == "" {
+		return fields
 	}
-	var result []string
-	var buf strings.Builder
-	for _, c := range s {
-		if strings.ContainsRune(ifs, c) {
-			if buf.Len() > 0 {
-				result = append(result, buf.String())
-				buf.Reset()
-			}
-		} else {
-			buf.WriteRune(c)
+	last := s[len(s)-1]
+	if strings.IndexByte(ifs, last) >= 0 {
+		if len(fields) > 0 && fields[len(fields)-1] == "" {
+			fields = fields[:len(fields)-1]
 		}
 	}
-	if buf.Len() > 0 {
-		result = append(result, buf.String())
-	}
-	return result
+	return fields
 }
 
 func splitOnIFSWithQuotes(s string, ifs string) []string {
@@ -6685,6 +7226,85 @@ func expandGlobs(pattern string) []string {
 	return matches
 }
 
+func formatTraceCommand(prefix []prefixAssign, args []string, quoted []bool) string {
+	parts := make([]string, 0, len(prefix)+len(args))
+	for _, pa := range prefix {
+		parts = append(parts, formatTraceAssign(pa))
+	}
+	for i, arg := range args {
+		force := false
+		if i < len(quoted) {
+			force = quoted[i]
+		}
+		parts = append(parts, formatTraceWord(arg, force))
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatTraceAssign(pa prefixAssign) string {
+	val := pa.newVal
+	if pa.quoted || needsTraceQuote(val) {
+		val = formatTraceWord(val, true)
+	}
+	return pa.name + "=" + val
+}
+
+func formatTraceWord(word string, forceQuote bool) string {
+	if forceQuote || needsTraceQuote(word) {
+		return singleQuoteWord(word)
+	}
+	return word
+}
+
+func needsTraceQuote(word string) bool {
+	if word == "" {
+		return true
+	}
+	for i := 0; i < len(word); i++ {
+		if !isTraceSafeChar(word[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTraceSafeChar(c byte) bool {
+	if c >= 'a' && c <= 'z' {
+		return true
+	}
+	if c >= 'A' && c <= 'Z' {
+		return true
+	}
+	if c >= '0' && c <= '9' {
+		return true
+	}
+	switch c {
+	case '_', '.', '/', '-', ':', '=', '+':
+		return true
+	}
+	return false
+}
+
+func singleQuoteWord(word string) string {
+	if word == "" {
+		return "''"
+	}
+	if !strings.Contains(word, "'") {
+		return "'" + word + "'"
+	}
+	var buf strings.Builder
+	buf.WriteByte('\'')
+	for i := 0; i < len(word); i++ {
+		if word[i] == '\'' {
+			buf.WriteString("'\"'\"'")
+			continue
+		}
+		buf.WriteByte(word[i])
+	}
+	buf.WriteByte('\'')
+	return buf.String()
+}
+
 func isQuotedToken(tok string) bool {
 	if len(tok) >= 2 && ((tok[0] == '\'' && tok[len(tok)-1] == '\'') || (tok[0] == '"' && tok[len(tok)-1] == '"')) {
 		return true
@@ -6721,7 +7341,95 @@ func expandToken(tok string, expand func(string) string, expandQuoted func(strin
 	return expand(tok)
 }
 
+func (r *runner) expandProcessSubToken(tok string) (string, bool) {
+	if len(tok) < 4 {
+		return "", false
+	}
+	if tok[1] != '(' || tok[len(tok)-1] != ')' {
+		return "", false
+	}
+	mode := tok[0]
+	if mode != '<' && mode != '>' {
+		return "", false
+	}
+	cmd := strings.TrimSpace(tok[2 : len(tok)-1])
+	if cmd == "" {
+		return "", false
+	}
+	path, err := r.startProcessSub(cmd, mode)
+	if err != nil {
+		r.reportExecError(tok, err.Error(), r.stdio.Err)
+		r.exitFlag = true
+		r.exitCode = core.ExitFailure
+		return "", true
+	}
+	return path, true
+}
+
+func (r *runner) startProcessSub(cmd string, mode byte) (string, error) {
+	file, err := os.CreateTemp("", "ash-procsub")
+	if err != nil {
+		return "", err
+	}
+	path := file.Name()
+	_ = file.Close()
+	_ = os.Remove(path)
+	if err := unix.Mkfifo(path, 0600); err != nil {
+		return "", err
+	}
+	go func() {
+		var fifo *os.File
+		if mode == '<' {
+			fifo, err = os.OpenFile(path, os.O_WRONLY, 0600)
+		} else {
+			fifo, err = os.OpenFile(path, os.O_RDONLY, 0600)
+		}
+		if err != nil {
+			_ = os.Remove(path)
+			return
+		}
+		out := io.Discard
+		errOut := io.Discard
+		if r.stdio != nil {
+			out = r.stdio.Out
+			errOut = r.stdio.Err
+		}
+		std := &core.Stdio{In: strings.NewReader(""), Out: out, Err: errOut}
+		if mode == '<' {
+			std.Out = fifo
+		} else {
+			std.In = fifo
+		}
+		sub := &runner{
+			stdio:      std,
+			vars:       copyStringMap(r.vars),
+			exported:   copyBoolMap(r.exported),
+			funcs:      copyStringMap(r.funcs),
+			aliases:    copyStringMap(r.aliases),
+			traps:      copyStringMap(r.traps),
+			ignored:    copySignalMap(r.ignored),
+			options:    copyBoolMap(r.options),
+			positional: append([]string{}, r.positional...),
+			scriptName: r.scriptName,
+			argv0:      r.argv0,
+			jobs:       map[int]*job{},
+			jobByPid:   map[int]int{},
+			nextJobID:  1,
+			signalCh:   make(chan os.Signal, 8),
+		}
+		_ = sub.runScript(cmd)
+		_ = fifo.Close()
+		_ = os.Remove(path)
+	}()
+	return path, nil
+}
+
 func expandTokenWithRunner(tok string, r *runner) string {
+	if !isQuotedToken(tok) {
+		if path, ok := r.expandProcessSubToken(tok); ok {
+			return path
+		}
+	}
 	return expandToken(tok, r.expandVarsWithRunner, r.expandVarsWithRunnerNoQuotes)
 }
 
@@ -6892,7 +7600,7 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 		}
 		// $0
 		if next == '0' {
-			buf.WriteString(r.scriptName)
+			buf.WriteString(r.argv0)
 			i++
 			continue
 		}
@@ -7018,7 +7726,7 @@ func (r *runner) expandVarsWithRunnerNoQuotes(tok string) string {
 		}
 		// $0
 		if next == '0' {
-			buf.WriteString(r.scriptName)
+			buf.WriteString(r.argv0)
 			i++
 			continue
 		}
@@ -7140,7 +7848,7 @@ func (r *runner) expandHereDoc(content string) string {
 
 // expandBraceExprWithRunner handles ${VAR:-default} etc with positional param support
 func (r *runner) expandBraceExprWithRunner(expr string, mode braceQuoteMode) (string, bool) {
-	if len(expr) == 0 || expr[0] == '+' || expr[0] == '-' || expr[0] == '=' || expr[0] == '?' || expr[0] == ':' {
+	badSubst := func() (string, bool) {
 		line := r.currentLine
 		if line == 0 || (line == 1 && r.scriptName == "SHELL") {
 			line = 0
@@ -7149,6 +7857,19 @@ func (r *runner) expandBraceExprWithRunner(expr string, mode braceQuoteMode) (st
 		r.exitFlag = true
 		r.exitCode = 2
 		return "", false
+	}
+	badVarName := func(name string) (string, bool) {
+		line := r.currentLine
+		if line == 0 || (line == 1 && r.scriptName == "SHELL") {
+			line = 0
+		}
+		fmt.Fprintf(r.stdio.Err, "%s: line %d: %s: bad variable name\n", r.scriptName, line, name)
+		r.exitFlag = true
+		r.exitCode = 2
+		return "", false
+	}
+	if len(expr) == 0 || expr[0] == '+' || expr[0] == '-' || expr[0] == '=' || expr[0] == '?' || expr[0] == ':' {
+		return badSubst()
 	}
 	// Handle positional params ${1}, ${10}, etc.
 	if len(expr) > 0 && expr[0] >= '0' && expr[0] <= '9' {
@@ -7166,6 +7887,31 @@ func (r *runner) expandBraceExprWithRunner(expr string, mode braceQuoteMode) (st
 	// ${@} ${*}
 	if expr == "@" || expr == "*" {
 		return strings.Join(r.positional, " "), true
+	}
+	if name, rest, ok := splitSpecialParamOperator(expr); ok {
+		if strings.HasPrefix(rest, ":=") || strings.HasPrefix(rest, "=") {
+			if name == "#" {
+				if strings.HasPrefix(rest, ":=") {
+					return strconv.Itoa(len(r.positional)), false
+				}
+				return badSubst()
+			}
+			if len(name) > 0 && name[0] >= '0' && name[0] <= '9' {
+				if val, set := r.specialParamValue(name); set {
+					return val, true
+				}
+				return badVarName(name)
+			}
+			return badSubst()
+		}
+		if strings.HasPrefix(rest, ":-") || strings.HasPrefix(rest, ":+") || strings.HasPrefix(rest, ":?") ||
+			strings.HasPrefix(rest, "-") || strings.HasPrefix(rest, "+") || strings.HasPrefix(rest, "?") {
+			varsCopy := copyStringMap(r.vars)
+			if val, set := r.specialParamValue(name); set {
+				varsCopy[name] = val
+			}
+			return expandBraceExpr(expr, varsCopy, mode)
+		}
 	}
 	// ${#}
 	if expr == "#" {
@@ -7234,6 +7980,65 @@ func (r *runner) expandBraceExprWithRunner(expr string, mode braceQuoteMode) (st
 		}
 	}
 	return expandBraceExpr(expr, r.vars, mode)
+}
+
+func splitSpecialParamOperator(expr string) (string, string, bool) {
+	if expr == "" {
+		return "", "", false
+	}
+	if expr[0] >= '0' && expr[0] <= '9' {
+		i := 1
+		for i < len(expr) && expr[i] >= '0' && expr[i] <= '9' {
+			i++
+		}
+		if i < len(expr) {
+			return expr[:i], expr[i:], true
+		}
+		return "", "", false
+	}
+	switch expr[0] {
+	case '$', '?', '!', '-', '*', '@', '#':
+		if len(expr) > 1 {
+			return expr[:1], expr[1:], true
+		}
+	}
+	return "", "", false
+}
+
+func (r *runner) specialParamValue(name string) (string, bool) {
+	switch name {
+	case "#":
+		return strconv.Itoa(len(r.positional)), true
+	case "$":
+		return strconv.Itoa(os.Getpid()), true
+	case "?":
+		return strconv.Itoa(r.lastStatus), true
+	case "!":
+		if r.lastBgPid == 0 {
+			return "", false
+		}
+		return strconv.Itoa(r.lastBgPid), true
+	case "@", "*":
+		if len(r.positional) == 0 {
+			return "", false
+		}
+		return strings.Join(r.positional, " "), true
+	case "-":
+		return r.vars["-"], true
+	}
+	if len(name) > 0 && name[0] >= '0' && name[0] <= '9' {
+		idx, err := strconv.Atoi(name)
+		if err == nil {
+			if idx == 0 {
+				return r.argv0, true
+			}
+			if idx-1 < len(r.positional) {
+				return r.positional[idx-1], true
+			}
+			return "", false
+		}
+	}
+	return "", false
 }
 
 // expandArithmetic expands $((...)) arithmetic expressions
@@ -8362,7 +9167,7 @@ const (
 )
 
 func isGlobChar(c byte) bool {
-	return c == '*' || c == '?' || c == '[' || c == ']'
+	return c == '*' || c == '?' || c == '[' || c == ']' || c == '-'
 }
 
 func maybeEscapeBackslashes(value string, inDouble bool) string {
@@ -8401,53 +9206,53 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 			// Check if this is a substring operation (rest starts with digit, space+digit, or space+-)
 			trimmedRest := strings.TrimSpace(rest)
 			if len(trimmedRest) > 0 && (trimmedRest[0] >= '0' && trimmedRest[0] <= '9' || trimmedRest[0] == '-' || trimmedRest[0] == '(' || trimmedRest[0] == ':' || trimmedRest[0] == '$') {
-			name := expr[:idx]
-			val := vars[name]
-			// Parse offset and optional length
-			parts := strings.SplitN(rest, ":", 2)
-			offsetStr := strings.TrimSpace(parts[0])
-			offset := 0
-			if offsetStr != "" {
-				// Simple arithmetic evaluation for offset
-				if n, err := strconv.Atoi(offsetStr); err == nil {
-					offset = n
-				} else {
-					// Try evaluating as arithmetic
-					offset = int(evalArithmetic(offsetStr, vars))
-				}
-			}
-			if offset < 0 {
-				offset = len(val) + offset
-				if offset < 0 {
-					offset = 0
-				}
-			}
-			if offset > len(val) {
-				offset = len(val)
-			}
-			if len(parts) > 1 {
-				lengthStr := strings.TrimSpace(parts[1])
-				length := 0
-				if n, err := strconv.Atoi(lengthStr); err == nil {
-					length = n
-				} else {
-					length = int(evalArithmetic(lengthStr, vars))
-				}
-				if length < 0 {
-					endPos := len(val) + length
-					if endPos < offset {
-						return "", true
+				name := expr[:idx]
+				val := vars[name]
+				// Parse offset and optional length
+				parts := strings.SplitN(rest, ":", 2)
+				offsetStr := strings.TrimSpace(parts[0])
+				offset := 0
+				if offsetStr != "" {
+					// Simple arithmetic evaluation for offset
+					if n, err := strconv.Atoi(offsetStr); err == nil {
+						offset = n
+					} else {
+						// Try evaluating as arithmetic
+						offset = int(evalArithmetic(offsetStr, vars))
 					}
-					return val[offset:endPos], true
 				}
-				end := offset + length
-				if end > len(val) {
-					end = len(val)
+				if offset < 0 {
+					offset = len(val) + offset
+					if offset < 0 {
+						offset = 0
+					}
 				}
-				return val[offset:end], true
+				if offset > len(val) {
+					offset = len(val)
+				}
+				if len(parts) > 1 {
+					lengthStr := strings.TrimSpace(parts[1])
+					length := 0
+					if n, err := strconv.Atoi(lengthStr); err == nil {
+						length = n
+					} else {
+						length = int(evalArithmetic(lengthStr, vars))
+					}
+					if length < 0 {
+						endPos := len(val) + length
+						if endPos < offset {
+							return "", true
+						}
+						return val[offset:endPos], true
+					}
+					end := offset + length
+					if end > len(val) {
+						end = len(val)
+					}
+					return val[offset:end], true
+				}
+				return val[offset:], true
 			}
-			return val[offset:], true
-		}
 		}
 	}
 	// ${VAR:-default}
@@ -8506,7 +9311,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		return "", false // The error reporting is handled at a higher level
 	}
 	// ${VAR-default} (no colon - only applies when unset, not when empty)
-	if idx := strings.Index(expr, "-"); idx > 0 && !strings.Contains(expr[:idx], ":") && !strings.Contains(expr[:idx], "/") && !strings.Contains(expr[:idx], "#") && !strings.Contains(expr[:idx], "%") {
+	if idx := strings.Index(expr, "-"); idx > 0 && !strings.Contains(expr[:idx], ":") && !strings.Contains(expr[:idx], "/") && (expr[:idx] == "#" || !strings.Contains(expr[:idx], "#")) && !strings.Contains(expr[:idx], "%") {
 		name := expr[:idx]
 		expanded := expandVarsPreserveQuotes(expr[idx+1:], vars)
 		defVal := unescapeParamExpansionValue(maybeStrip(expanded))
@@ -8516,7 +9321,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		return defVal, false
 	}
 	// ${VAR+alt} (no colon - only applies when set)
-	if idx := strings.Index(expr, "+"); idx > 0 && !strings.Contains(expr[:idx], ":") && !strings.Contains(expr[:idx], "/") && !strings.Contains(expr[:idx], "#") && !strings.Contains(expr[:idx], "%") {
+	if idx := strings.Index(expr, "+"); idx > 0 && !strings.Contains(expr[:idx], ":") && !strings.Contains(expr[:idx], "/") && (expr[:idx] == "#" || !strings.Contains(expr[:idx], "#")) && !strings.Contains(expr[:idx], "%") {
 		name := expr[:idx]
 		expanded := expandVarsPreserveQuotes(expr[idx+1:], vars)
 		alt := unescapeParamExpansionValue(maybeStrip(expanded))
@@ -8526,7 +9331,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		return "", false
 	}
 	// ${VAR?error} (no colon)
-	if idx := strings.Index(expr, "?"); idx > 0 && !strings.Contains(expr[:idx], ":") && !strings.Contains(expr[:idx], "/") && !strings.Contains(expr[:idx], "#") && !strings.Contains(expr[:idx], "%") {
+	if idx := strings.Index(expr, "?"); idx > 0 && !strings.Contains(expr[:idx], ":") && !strings.Contains(expr[:idx], "/") && (expr[:idx] == "#" || !strings.Contains(expr[:idx], "#")) && !strings.Contains(expr[:idx], "%") {
 		name := expr[:idx]
 		if val, ok := vars[name]; ok {
 			return val, true
@@ -8746,8 +9551,6 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 
 // expandCommandSubs expands $(...) and `...` command substitutions
 func findBacktickEnd(tok string, start int) int {
-	inSingle := false
-	inDouble := false
 	escape := false
 	for i := start + 1; i < len(tok); i++ {
 		c := tok[i]
@@ -8755,19 +9558,11 @@ func findBacktickEnd(tok string, start int) int {
 			escape = false
 			continue
 		}
-		if c == '\\' && !inSingle {
+		if c == '\\' {
 			escape = true
 			continue
 		}
-		if c == '\'' && !inDouble {
-			inSingle = !inSingle
-			continue
-		}
-		if c == '"' && !inSingle {
-			inDouble = !inDouble
-			continue
-		}
-		if c == '`' && !inSingle && !inDouble {
+		if c == '`' {
 			return i
 		}
 	}
@@ -8977,29 +9772,49 @@ func (r *runner) runCommandSubWithRunner(cmdStr string, backtick bool) string {
 	if r.stdio != nil && r.stdio.Err != nil {
 		errOut = r.stdio.Err
 	}
+	if !strings.ContainsAny(cmdStr, "\n;&|<>") {
+		if tokens := splitTokens(cmdStr); len(tokens) > 0 && tokens[0] == "expr" {
+			cmdSpec, err := r.parseCommandSpecWithRunner(tokens)
+			if err == nil && !r.exitFlag && !r.arithFailed && len(cmdSpec.hereDocs) == 0 && cmdSpec.redirIn == "" && cmdSpec.redirOut == "" && cmdSpec.redirErr == "" {
+				status, err := r.evalExprBuiltin(cmdSpec.args[1:], &out, errOut)
+				if err == nil {
+					r.lastStatus = status
+					r.vars["?"] = strconv.Itoa(status)
+					r.hadCommandSub = true
+					r.lastCommandSubStatus = status
+					r.commandSubSeq++
+					return strings.TrimSuffix(out.String(), "\n")
+				}
+			}
+		}
+	}
 	std := &core.Stdio{In: strings.NewReader(""), Out: &out, Err: errOut}
 	lineOffset := r.currentLine - 1
 	if backtick {
 		lineOffset = r.currentLine - 2
 	}
 	sub := &runner{
-		stdio:      std,
-		vars:       copyStringMap(r.vars),
-		exported:   copyBoolMap(r.exported),
-		funcs:      copyStringMap(r.funcs),
-		aliases:    copyStringMap(r.aliases),
-		traps:      copyStringMap(r.traps),
-		ignored:    copySignalMap(r.ignored),
-		options:    copyBoolMap(r.options),
-		positional: append([]string{}, r.positional...),
-		scriptName: r.scriptName,
-		lineOffset: lineOffset,
-		jobs:       map[int]*job{},
-		jobOrder:   []int{},
-		jobByPid:   map[int]int{},
-		nextJobID:  1,
-		lastStatus: r.lastStatus,
-		signalCh:   make(chan os.Signal, 8),
+		stdio:            std,
+		vars:             copyStringMap(r.vars),
+		exported:         copyBoolMap(r.exported),
+		funcs:            copyStringMap(r.funcs),
+		aliases:          copyStringMap(r.aliases),
+		traps:            copyStringMap(r.traps),
+		ignored:          copySignalMap(r.ignored),
+		options:          copyBoolMap(r.options),
+		positional:       append([]string{}, r.positional...),
+		scriptName:       r.scriptName,
+		argv0:            r.argv0,
+		lineOffset:       lineOffset,
+		jobs:             map[int]*job{},
+		jobOrder:         []int{},
+		jobByPid:         map[int]int{},
+		nextJobID:        1,
+		lastStatus:       r.lastStatus,
+		signalCh:         make(chan os.Signal, 8),
+		scriptCache:      r.scriptCache,
+		scriptLinesCache: r.scriptLinesCache,
+		caseCache:        r.caseCache,
 	}
 	sub.vars["?"] = strconv.Itoa(r.lastStatus)
 	_ = sub.runScript(cmdStr)
@@ -9007,12 +9822,81 @@ func (r *runner) runCommandSubWithRunner(cmdStr string, backtick bool) string {
 	if sub.exitFlag {
 		status = sub.exitCode
 	}
+	if sub.syntaxError {
+		r.syntaxError = true
+		r.exitFlag = true
+		r.exitCode = sub.exitCode
+	}
 	r.lastStatus = status
 	r.vars["?"] = strconv.Itoa(status)
 	r.hadCommandSub = true
 	r.lastCommandSubStatus = status
 	r.commandSubSeq++
 	return strings.TrimSuffix(out.String(), "\n")
+}
+
+func (r *runner) evalExprBuiltin(args []string, stdout io.Writer, stderr io.Writer) (int, error) {
+	if len(args) == 0 {
+		return core.ExitFailure, nil
+	}
+	if len(args) == 1 {
+		if _, err := fmt.Fprintln(stdout, args[0]); err != nil {
+			return core.ExitFailure, err
+		}
+		if args[0] == "" || args[0] == "0" {
+			return core.ExitFailure, nil
+		}
+		return core.ExitSuccess, nil
+	}
+	if len(args) >= 3 {
+		left, op, right := args[0], args[1], args[2]
+		leftVal, leftErr := strconv.Atoi(left)
+		rightVal, rightErr := strconv.Atoi(right)
+		if leftErr != nil || rightErr != nil {
+			if _, err := fmt.Fprintln(stderr, "expr: non-numeric argument"); err != nil {
+				return core.ExitFailure, err
+			}
+			return 2, nil
+		}
+		result := 0
+		switch op {
+		case "+":
+			result = leftVal + rightVal
+		case "-":
+			result = leftVal - rightVal
+		case "*":
+			result = leftVal * rightVal
+		case "/":
+			if rightVal == 0 {
+				if _, err := fmt.Fprintln(stderr, "expr: division by zero"); err != nil {
+					return core.ExitFailure, err
+				}
+				return 2, nil
+			}
+			result = leftVal / rightVal
+		case "%":
+			if rightVal == 0 {
+				if _, err := fmt.Fprintln(stderr, "expr: division by zero"); err != nil {
+					return core.ExitFailure, err
+				}
+				return 2, nil
+			}
+			result = leftVal % rightVal
+		default:
+			if _, err := fmt.Fprintln(stderr, "expr: syntax error"); err != nil {
+				return core.ExitFailure, err
+			}
+			return 2, nil
+		}
+		if _, err := fmt.Fprintln(stdout, result); err != nil {
+			return core.ExitFailure, err
+		}
+		if result == 0 {
+			return core.ExitFailure, nil
+		}
+		return core.ExitSuccess, nil
+	}
+	return core.ExitFailure, nil
 }
 
 // expandSimpleVars expands only $VAR and ${VAR} without command substitution
