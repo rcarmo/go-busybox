@@ -6435,9 +6435,6 @@ func splitOnIFSWithQuotes(s string, ifs string) []string {
 
 func expandGlobs(pattern string) []string {
 	orig := pattern
-	if strings.ContainsRune(pattern, literalBackslashMarker) {
-		return []string{unescapeGlob(pattern)}
-	}
 	normalized, hasGlob := normalizeGlobPattern(pattern)
 	if !hasGlob {
 		return []string{unescapeGlob(pattern)}
@@ -6554,8 +6551,16 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 	for i := 0; i < len(tok); i++ {
 		c := tok[i]
 		if escape {
-			if !inSingle && !inDouble && isGlobChar(c) {
-				buf.WriteByte(globEscapeMarker)
+			if !inSingle && !inDouble {
+				if c == '\\' {
+					buf.WriteByte(literalBackslashMarker)
+					buf.WriteByte('\\')
+					escape = false
+					continue
+				}
+				if isGlobChar(c) {
+					buf.WriteByte(globEscapeMarker)
+				}
 			}
 			buf.WriteByte(c)
 			escape = false
