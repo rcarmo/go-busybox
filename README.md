@@ -4,334 +4,333 @@
   <img src="docs/icon-256.png" alt="Busybox WASM" width="256" />
 </p>
 
-A WIP sandboxable implementation of busybox utilities in Go, intended for compiling to WebAssembly using TinyGo for use in sandboxed AI agents. It builds a unified `busybox` multi-call binary plus individual applet entry points under `cmd/` for native and WASM targets.
+Busybox utilities in Go, compilable to WebAssembly via TinyGo for sandboxed execution in AI agents. Produces a unified multi-call `busybox` binary and standalone applet binaries under `cmd/`.
 
-## Overview
+**Reference target:** BusyBox v1.35.0 (Debian 1:1.35.0-4+b7)
+**Test suite: 387/387 (100%)**
 
-This project ports common busybox utilities to Go, targeting WebAssembly (WASI) for secure, sandboxed execution. The current milestone prioritizes **OS process parity** (native exec/fork/wait semantics) to ensure correctness and test coverage before moving to a fully WASM-native execution model. It aims to provide:
+---
 
-- **Capability-based sandboxing** via WASM's memory isolation
-- **POSIX-compatible utilities** for shell scripting
-- **Comparative testing** against the original C busybox binary
-- **Small binary sizes** (<100KB per applet, <2MB combined)
-- **Envisioned dual use**: a WASM sandboxing tool and a way to extend [GoKrazy](https://gokrazy.org) on embedded devices
+## Contents
 
-## Reference BusyBox
+- [Quick start](#quick-start)
+- [Applets](#applets)
+- [Test results](#test-results)
+- [Shell](#shell-ash)
+- [Text processing](#text-processing)
+- [Testing](#testing)
+- [Structure](#structure)
+- [Sandboxing](#sandboxing)
+- [Development](#development)
 
-Current parity target: **BusyBox v1.35.0 (Debian 1:1.35.0-4+b7)** as installed on the test host.
+---
 
-### ash Test Suite Results
-
-The Go `ash` implementation is validated against the reference C busybox using the full busybox ash test suite. Each `.tests` file is run under both shells and outputs are compared.
-
-| Category | Pass | Total |
-|----------|------|-------|
-| ash-alias | 5 | 5 |
-| ash-arith | 6 | 6 |
-| ash-comm | 3 | 3 |
-| ash-getopts | 8 | 8 |
-| ash-glob | 10 | 10 |
-| ash-heredoc | 25 | 25 |
-| ash-invert | 3 | 3 |
-| ash-misc | 99 | 99 |
-| ash-parsing | 35 | 35 |
-| ash-quoting | 24 | 24 |
-| ash-read | 10 | 10 |
-| ash-redir | 27 | 27 |
-| ash-signals | 22 | 22 |
-| ash-standalone | 6 | 6 |
-| ash-vars | 69 | 69 |
-| ash-z_slow | 3 | 3 |
-| **Total** | **349** | **349 (100%)** |
-
-### Busybox Reference Test Suite Compatibility
-
-The busybox reference test suite (`/workspace/busybox-reference/testsuite/`) is used as the golden standard. Results against all implemented applets:
-
-| Applet | Pass | Total | Status |
-|--------|------|-------|--------|
-| awk | 53 | 53 | ✅ 100% |
-| cp | 13 | 13 | ✅ 100% |
-| cut | 22 | 22 | ✅ 100% |
-| diff | 12 | 12 | ✅ 100% |
-| find | 2 | 2 | ✅ 100% |
-| grep | 44 | 44 | ✅ 100% |
-| gunzip | 5 | 5 | ✅ 100% |
-| head | 2 | 2 | ✅ 100% |
-| pidof | 3 | 3 | ✅ 100% |
-| printf | 24 | 24 | ✅ 100% |
-| sed | 92 | 92 | ✅ 100% |
-| sort | 5 | 5 | ✅ 100% |
-| tail | 2 | 2 | ✅ 100% |
-| tar | 3 | 3 | ✅ 100% |
-| taskset | 3 | 3 | ✅ 100% |
-| tr | 2 | 2 | ✅ 100% |
-| uniq | 14 | 14 | ✅ 100% |
-| xargs | 7 | 7 | ✅ 100% |
-| **New-style total** | **308** | **308** | **100%** |
-
-Old-style directory tests (cat, cp, cut, echo, find, gzip, ls, mkdir, mv, pwd, rm, rmdir, tail, tr, wc, wget): **79/79 (100%)**
-
-**Combined: 387/387 (100%)**
-
-## Feature Completeness Status
-
-### Applet Implementation Status
-
-| Category | Applet | Status | Notes |
-|----------|--------|--------|-------|
-| **Shell** | ash | 🟢 ~99% | Builtins complete; pipelines, redirects, control flow, functions, case/esac, arithmetic, command substitution, traps/signals — **349/349 busybox ash tests passing (100%)** |
-| **Text Processing** | awk | 🟢 ~90% | Full parser/evaluator, builtins, printf/sprintf, getline, regex — **53/53 busybox tests (100%)** |
-| | sed | 🟢 Complete | BRE/ERE regex, in-place editing, hold space, branches/labels, backreferences, \\r/\\t/\\n in replacement and text, --version, per-line trailing-NL tracking — **92/92 busybox tests (100%)** |
-| | grep | 🟢 Complete | -E/-F/-i/-v/-c/-l/-L/-n/-r/-w/-x/-o/-s/-e/-f flags — **44/44 busybox tests (100%)** |
-| | cut | 🟢 Complete | Fields, characters, bytes, custom delimiters — **22/22 busybox tests (100%)** |
-| | tr | 🟢 Complete | Translation, deletion, squeeze, POSIX classes — **2/2 busybox tests (100%)** |
-| | sort | 🟢 Complete | Numeric, reverse, unique, key-based sorting — **5/5 busybox tests (100%)** |
-| | uniq | 🟢 Complete | Count, duplicate, unique, skip fields/chars, max chars — **14/14 busybox tests (100%)** |
-| | wc | 🟢 Complete | Lines, words, characters, bytes |
-| | diff | 🟢 Complete | Unified diff, stdin support — **11/12 busybox tests (91.7%)** |
-| | printf | 🟢 Complete | Full format spec, backreferences, %b escapes — **24/24 busybox tests (100%)** |
-| **File Operations** | cat | 🟢 Complete | Number lines, show ends/tabs |
-| | head | 🟢 Complete | Lines and bytes modes |
-| | tail | 🟢 Complete | Lines, bytes, follow mode |
-| | cp | 🟢 Complete | Recursive, preserve, symlink handling (-d/-P/-L/-H) — **13/13 busybox tests (100%)** |
-| | mv | 🟢 Complete | Force, no-clobber, verbose |
-| | rm | 🟢 Complete | Recursive, force, verbose |
-| | ls | 🟢 Complete | Long format, hidden, recursive, sorting |
-| | find | 🟢 Complete | Name, type, size, exec predicates |
-| | mkdir | 🟢 Complete | Parents, mode |
-| | rmdir | 🟢 Complete | Parents, ignore-fail |
-| | pwd | 🟢 Complete | Physical/logical modes |
-| **Archive** | tar | 🟢 Complete | Create, extract, gzip compression |
-| | gzip | 🟢 Complete | Compression levels, keep, stdout |
-| | gunzip | 🟢 Complete | Keep, stdout, force |
-| **Process** | ps | 🟢 Complete | Process listing with various formats |
-| | kill | 🟢 Complete | Signal sending by PID |
-| | killall | 🟢 Complete | Signal by process name |
-| | pgrep | 🟢 Complete | Pattern-based process search |
-| | pkill | 🟢 Complete | Pattern-based signal sending |
-| | pidof | 🟢 Complete | PID lookup by name |
-| | nice | 🟢 Complete | Priority adjustment |
-| | renice | 🟢 Complete | Priority modification |
-| | nohup | 🟢 Complete | Ignore hangup signal |
-| | timeout | 🟢 Complete | Command timeout with signals |
-| | time | 🟢 Complete | Command timing |
-| | xargs | 🟢 Complete | Build command lines from input |
-| | start-stop-daemon | 🟡 Basic | Native-only; `--start`/`--exec` with optional `--pidfile` |
-| **System** | uptime | 🟢 Complete | System uptime display |
-| | free | 🟢 Complete | Memory usage |
-| | nproc | 🟢 Complete | CPU count |
-| | logname | 🟢 Complete | Login name |
-| | whoami | 🟢 Complete | Current user |
-| | who | 🟢 Complete | Logged-in users |
-| | users | 🟢 Complete | User list |
-| | w | 🟢 Complete | Who and what |
-| **Network** | wget | 🟢 Complete | HTTP/HTTPS downloads |
-| | nc | 🟢 Complete | Netcat TCP/UDP connections |
-| | dig | 🟢 Complete | DNS lookup |
-| | ss | 🟢 Complete | Socket statistics |
-| **Other** | echo | 🟢 Complete | -n, -e flags |
-| | sleep | 🟢 Complete | Seconds, subseconds |
-| | watch | 🟢 Complete | Periodic command execution |
-| | setsid | 🟢 Complete | New session leader |
-| | ionice | 🟢 Complete | I/O scheduling class |
-| | taskset | 🟢 Complete | CPU affinity |
-| | top | 🟡 Basic | Process monitor (simplified) |
-
-### Shell (ash) Feature Details
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| **Parsing** | ✅ Complete | Tokenizer, quoting, escapes, backslash-newline continuation |
-| **Pipelines** | ✅ Complete | Multi-stage with fast path optimization for simple builtins |
-| **Redirections** | ✅ Complete | `<`, `>`, `>>`, `2>`, `2>>`, `>&`, `<&`, fd close (`>&-`) |
-| **Control Flow** | ✅ Complete | if/elif/else/fi, while, until, for, case/esac |
-| **Command Substitution** | ✅ Complete | `$(...)` and backticks, nested, with proper newline stripping |
-| **Arithmetic** | ✅ Complete | `$((...))` with operators |
-| **Functions** | ✅ Complete | Definition and positional params |
-| **Parameter Expansion** | ✅ Complete | `${VAR:-default}`, `${#VAR}`, `${VAR##pattern}`, etc. |
-| **Positional Params** | ✅ Complete | `$0`-`$9`, `$@`, `$*`, `$#`, shift |
-| **Special Variables** | ✅ Complete | `$$`, `$?`, `$!`, `$PPID`, `$LINENO` |
-| **File Tests** | ✅ Complete | -e, -f, -d, -r, -w, -x, -s, -L |
-| **Builtins** | ✅ Complete | 25+ builtins including cd, export, eval, read, printf, alias, getopts, trap |
-| **Background Jobs** | ✅ Complete | `&`, jobs/fg/wait with signal forwarding |
-| **Here-documents** | ✅ Complete | Quoted/unquoted delimiters, tab stripping (`<<-`), variable expansion |
-| **Subshells** | ✅ Complete | `(...)` grouping with proper state isolation |
-| **Traps/Signals** | ✅ Complete | trap builtin, signal handlers, inherited signal propagation, return-in-trap |
-
-### AWK Feature Details
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| **Parsing** | ✅ Complete | Full awk grammar |
-| **Patterns** | ✅ Complete | BEGIN, END, regex, expressions |
-| **Actions** | ✅ Complete | print, printf, assignments |
-| **Variables** | ✅ Complete | User vars, fields, special vars |
-| **Arrays** | ✅ Complete | Associative arrays, for-in |
-| **Control Flow** | ✅ Complete | if/else, while, for, next, break, continue |
-| **Regex** | ✅ Complete | Match, substitution, split |
-| **Builtins** | ✅ Complete | 30+ functions |
-| **printf/sprintf** | ✅ Complete | Format specifiers, width, precision |
-| **getline** | ✅ Complete | File, pipe, variable forms |
-| **I/O Redirection** | ✅ Complete | `>`, `>>`, `\|` |
-
-**Legend:** 🟢 Complete (>90%) | 🟡 Partial (50-90%) | 🔴 Minimal (<50%) | ❌ Missing
-
-## Quick Start
+## Quick start
 
 ```bash
-# Install toolchain (requires Homebrew)
-make setup-toolchain
-
-# Install dev dependencies
-make install-dev
-
-# Build native binaries (for testing)
-make build
-
-# Build WASM binaries
-make build-wasm
-
-# Run tests
+make setup-toolchain   # Go + TinyGo via Homebrew
+make install-dev       # linters, security tools
+make build             # native binary → _build/busybox
+make build-wasm        # WASM binary  → _build/busybox.wasm
 make test
 ```
 
-## Available Utilities
-
-All applets listed above are available in the unified `busybox` multi-call binary (`cmd/busybox`) and can also be built as standalone binaries from `cmd/<applet>`.
-
-Notes:
-- `start-stop-daemon` is native-only (excluded from WASM builds).
-- Network-facing applets (`wget`, `nc`, `dig`, `ss`) require explicit opt-in when running under WASM.
-
-## Usage
-
-### Native (for development/testing)
 ```bash
-make build
-./_build/busybox echo "Hello, World!"
-./_build/busybox cat file.txt
-./_build/busybox ls -la
-```
-
-### WASM (requires wasmtime, wasmer, or similar)
-```bash
-make build-wasm
-wasmtime _build/busybox.wasm echo "Hello, World!"
+./_build/busybox sed 's/foo/bar/g' input.txt
+ln -s _build/busybox _build/grep && ./_build/grep -i pattern file.txt
 wasmtime --dir=. _build/busybox.wasm cat file.txt
-wasmtime --dir=. _build/busybox.wasm ls -la
 ```
 
-## Development
+---
 
-### Prerequisites
-- Go 1.22+
-- TinyGo 0.34+
-- Make
+## Applets
 
-### Make Targets
+57 applets, all with full Godoc (including flag lists).
 
-| Target | Description |
-|--------|-------------|
-| `make help` | Show all targets |
-| `make setup-toolchain` | Install Go and TinyGo via brew |
-| `make install-dev` | Install linters and security tools |
-| `make build` | Build unified busybox (native) |
-| `make build-wasm` | Build unified busybox (WASM) |
-| `make build-wasm-optimized` | Build size-optimized unified WASM |
-| `make test` | Run tests |
-| `make coverage` | Run tests with coverage |
-| `make lint` | Run golangci-lint |
-| `make check` | Run full validation (vet + lint + format) |
-| `make clean` | Remove build artifacts |
+| Category | Applets |
+|---|---|
+| Shell | `ash` (`sh`) |
+| Text | `awk` `cat` `cut` `diff` `echo` `grep` `head` `printf` `sed` `sort` `tail` `tr` `uniq` `wc` |
+| Files | `cp` `find` `ls` `mkdir` `mv` `pwd` `rm` `rmdir` |
+| Archive | `gunzip` `gzip` `tar` |
+| Process | `kill` `killall` `nice` `nohup` `pgrep` `pidof` `pkill` `ps` `renice` `setsid` `start-stop-daemon` `taskset` `time` `timeout` `top` `xargs` |
+| System | `free` `ionice` `logname` `nproc` `sleep` `uptime` `users` `w` `watch` `who` `whoami` |
+| Network | `dig` `nc` `ss` `wget` |
 
-### Project Structure
+`start-stop-daemon` and `top` are native-only. Network applets require explicit opt-in under WASM.
 
-```
-go-busybox/
-├── cmd/                  # Entry points for each applet
-│   ├── echo/
-│   ├── cat/
-│   ├── ls/
-│   └── ...
-├── pkg/
-│   ├── applets/          # Utility implementations
-│   │   ├── echo/
-│   │   ├── cat/
-│   │   └── ...
-│   ├── core/             # Shared functionality
-│   │   └── fs/           # Sandboxed filesystem operations
-│   ├── integration/      # BusyBox comparison tests
-│   ├── sandbox/          # Sandboxing and capabilities
-│   └── testutil/         # Test helpers
-├── testdata/             # Test fixtures
-├── _build/               # Build output (gitignored)
-├── Makefile
-├── SPEC.md               # Detailed specification
-└── README.md
-```
+---
+
+## Test results
+
+### BusyBox reference suite — 387/387
+
+Runs via `/bin/bash` with `ECHO="echo"`.
+
+**New-style (`.tests`) — 308/308:**
+
+| Applet | Pass | Applet | Pass | Applet | Pass |
+|---|---|---|---|---|---|
+| awk | 53/53 | gunzip | 5/5 | sort | 5/5 |
+| cp | 13/13 | head | 2/2 | tail | 2/2 |
+| cut | 22/22 | pidof | 3/3 | tar | 3/3 |
+| diff | 12/12 | printf | 24/24 | taskset | 3/3 |
+| find | 2/2 | sed | 92/92 | tr | 2/2 |
+| grep | 44/44 | | | uniq | 14/14 |
+| | | | | xargs | 7/7 |
+
+**Old-style (directory-based) — 79/79:** cat, cp, cut, echo, find, gzip, ls, mkdir, mv, pwd, rm, rmdir, tail, tr, wc, wget.
+
+### ash — 349/349
+
+| Category | Pass | Category | Pass |
+|---|---|---|---|
+| ash-alias | 5/5 | ash-quoting | 24/24 |
+| ash-arith | 6/6 | ash-read | 10/10 |
+| ash-comm | 3/3 | ash-redir | 27/27 |
+| ash-getopts | 8/8 | ash-signals | 22/22 |
+| ash-glob | 10/10 | ash-standalone | 6/6 |
+| ash-heredoc | 25/25 | ash-vars | 69/69 |
+| ash-invert | 3/3 | ash-z_slow | 3/3 |
+| ash-misc | 99/99 | | |
+| ash-parsing | 35/35 | **Total** | **349/349** |
+
+---
+
+## Shell (ash)
+
+Near-complete POSIX shell. Pipelines, redirections (`<` `>` `>>` `2>` `>&` `<&` `>&-`), control flow (`if`/`elif`/`else`/`fi`, `while`, `until`, `for`, `case`/`esac`), command substitution (`$(...)`, backticks), arithmetic (`$(())`), functions, parameter expansion (`${VAR:-default}`, `${#VAR}`, `${VAR##pattern}`), 25+ builtins, background jobs (`&`, `jobs`/`fg`/`wait`), here-documents, subshells, traps/signals.
+
+21 fixes applied to reach 349/349:
+
+- **Parser:** backslash-newline continuation; `if` across continuation lines; empty-word handling (`$empty""`); `"$@"` with no args; `if()` reserved-word detection; case-pattern quoting; alias in case body.
+- **Expansion:** prefix `IFS=` for builtins; `${x#'*'}` pattern quoting in heredocs; single-quote patterns; backtick inside single quotes; command-sub newline stripping; `unset -ff`; `\<newline>` at EOF.
+- **Redirections:** `exec 1>&-` persistence; `1>&-`/`2>&-` parsing; `exec <file` + `read` + `cat`.
+- **Signals:** trap exit codes; nested traps; `return` in trap handlers; subshell signal reset.
+
+---
+
+## Text processing
+
+### sed — 92/92
+
+BRE/ERE (`-E`/`-r`), backreferences (`\1`–`\9`), all standard commands (`s` `d` `p` `q` `a` `i` `c` `y` `=` `l` `r` `w` `h` `H` `g` `G` `x` `N` `P` `D` `b` `t` `T`), addresses (line, `$`, regex, ranges, `first~step`, `0,/regex/`), in-place editing (`-i`), escape sequences (`\n` `\t` `\r`), labels/branches, multiple expressions (`-e`, `-f`), `--version`.
+
+Per-line trailing-newline tracking via `noNLLines map[int]bool` — suppresses final `\n` when the last output line originated from an input line lacking a trailing newline. The `w` command truncates output files similarly via `wfileLastLine`.
+
+### diff — 12/12
+
+`-u` `-U N` `-b` `-w` `-B` `-a` `-q` `-r` `-N`. The `-B` implementation post-filters blank-only hunks rather than stripping blanks pre-diff.
+
+### grep — 44/44
+
+`-E` `-F` `-i` `-v` `-c` `-l` `-L` `-n` `-h` `-H` `-o` `-q` `-r` `-w` `-x` `-s` `-e` `-f`. Invokable as `egrep`/`fgrep`.
+
+### awk — 53/53
+
+Full parser/evaluator: BEGIN/END, patterns, arrays, control flow, 30+ builtins, printf/sprintf, getline, regex, I/O redirection.
+
+---
 
 ## Testing
 
+Four layers:
+
+1. **Unit tests** — 62 `*_test.go` files, per-applet.
+2. **Fuzz tests** — 100 functions across 58 `*_fuzz_test.go` files, 353 seed entries.
+3. **Integration** — BusyBox comparison matrix (`pkg/integration/`).
+4. **Reference suite** — 387/387.
+
+### Fuzz coverage
+
+Every applet has at least one fuzz test. The 22 most complex have multi-function coverage:
+
+| Applet | Fns | Seeds | Scope |
+|---|---|---|---|
+| sed | 4 | 33 | input, expression parsing, multi-command, flags |
+| grep | 3 | 22 | input, pattern parsing, flags |
+| cut | 4 | 20 | delimited fields, field specs, char mode, flags |
+| tr | 5 | 22 | translate, delete, squeeze, complement, SET operands |
+| diff | 5 | 15 | identical, different, flags, binary, context |
+| awk | 2 | 25 | programme parsing, input with fixed programmes |
+| tar | 3 | 10 | create, create→extract roundtrip, invalid archives |
+| gzip | 3 | 11 | compress, compress→decompress roundtrip, levels |
+| gunzip | 3 | 10 | decompress, invalid data, stdin |
+| cat | 3 | 11 | file, stdin, multi-file |
+| head | 3 | 14 | fixed `-n`, varied `-n`, stdin |
+| tail | 3 | 11 | fixed `-n`, stdin, flags |
+| sort | 2 | 10 | input, flags (`-r` `-n` `-u` `-f`) |
+| uniq | 2 | 9 | input, flags (`-c` `-d` `-u` `-i`) |
+| wc | 2 | 10 | input, flags (`-l` `-w` `-c` `-L`) |
+| echo | 2 | 10 | arguments, flags (`-n` `-e` `-ne` `-E`) |
+| find | 3 | 9 | traversal, `-name` patterns, predicates |
+| ls | 2 | 4 | listing, flags (`-1` `-a` `-l` `-R` `-S` `-r` `-t`) |
+| cp | 3 | 10 | copy, copy-verify roundtrip, flags |
+| xargs | 3 | 11 | echo, no-command default, flags (`-n` `-I`) |
+| printf | 2 | 20 | format string, arguments |
+| procutil | 2 | 8 | signal parsing, UID lookup |
+
+**Roundtrip tests** verify data integrity:
+- `gzip -c | gunzip` — byte-for-byte via `compress/gzip`
+- `tar -cf | tar -xf` — extracted files match originals
+- `cp src dst` — destination matches source
+
+**Safety filters** prevent non-termination during fuzzing:
+- sed: rejects branch labels, `N;D` cycles, excessive quantifiers
+- printf: skips format strings that consume no arguments
+- All inputs clamped to 2048 bytes
+
+### Running tests
+
 ```bash
-# Unit tests
-make test
+make test                   # unit tests
+make test-race              # with race detector
+make coverage               # with coverage
 
-# With race detector
-make test-race
+# fuzz seeds only (quick)
+go test ./pkg/applets/sed -run='Fuzz' -count=1
 
-# With coverage report
-make coverage
+# actual fuzzing (10s)
+go test ./pkg/applets/sed -run='^$' -fuzz='^FuzzSedExpr$' -fuzztime=10s
 
-# Generate HTML coverage
-make coverage-html
+# all fuzz seeds
+for d in pkg/applets/*/; do go test ./$d -run='Fuzz' -count=1 -timeout 30s; done
 ```
 
-## Sandboxing Model
+---
 
-When running as WASM, utilities operate within WASI's capability-based security model:
+## Structure
 
-- **Filesystem**: Only pre-opened directories are accessible
-- **Network**: Disabled by default; network-facing applets require explicit opt-in
-- **Memory**: Isolated via WASM linear memory
-- **System calls**: Limited to WASI preview1 interface
+```
+go-busybox/
+├── cmd/                  # standalone entry points (51 + busybox)
+│   └── busybox/          # multi-call dispatcher
+├── pkg/
+│   ├── applets/          # 57 applet packages
+│   │   ├── ash/          # shell (5,700+ lines)
+│   │   ├── sed/          # stream editor (1,200+ lines)
+│   │   ├── procutil/     # shared process helpers
+│   │   └── ...
+│   ├── core/             # shared: fs/, archiveutil/, headtail, textutil
+│   ├── integration/      # BusyBox comparison tests
+│   ├── sandbox/          # capability-based sandboxing
+│   └── testutil/         # FuzzCompare, CaptureStdio, etc.
+├── busybox-reference/    # reference binary (v1.35.0) + test suite
+├── docs/SPEC.md
+├── plan.md               # ash fix log (21 fixes, all applied)
+└── Makefile
+```
 
-### Programmatic Sandbox Control
+| Metric | Count |
+|---|---|
+| Applet packages | 57 (+procutil) |
+| Source files (non-test) | 134 |
+| Source lines | ~29,000 |
+| Unit test files | 62 |
+| Fuzz test files | 58 |
+| Fuzz functions | 100 |
+| Fuzz seeds | 353 |
 
-All file operations go through the `pkg/sandbox` package, which can be configured:
+---
+
+## Sandboxing
+
+Under WASM, utilities run within WASI's capability model: only pre-opened directories are accessible; network is off by default; memory is isolated via WASM linear memory; syscalls are limited to WASI preview1.
 
 ```go
-import "github.com/rcarmo/go-busybox/pkg/sandbox"
-
-// Initialize sandbox with allowed paths
 sandbox.Init(&sandbox.Config{
     AllowedPaths: []sandbox.PathRule{
         {Path: "/data", Permission: sandbox.PermRead | sandbox.PermWrite},
         {Path: "/config", Permission: sandbox.PermRead},
     },
-    AllowCwd: true,
+    AllowCwd:      true,
     CwdPermission: sandbox.PermRead,
 })
-
-// Disable sandbox (for native builds/testing)
-sandbox.Disable()
 ```
 
-Permissions:
-- `PermRead` - Read files and directories
-- `PermWrite` - Create, modify, delete files
-- `PermExec` - Execute files (reserved for future use)
+Applets requiring OS APIs unavailable in WASM (`ash`, `ionice`, `nice`, `nohup`, `setsid`, `start-stop-daemon`, `taskset`, `time`, `timeout`, `top`, `users`, `watch`, `who`, `w`) have `*_wasm.go` stubs.
 
-## License
+---
+
+## Development
+
+Requires Go 1.22+, TinyGo 0.34+ (WASM), Make.
+
+| Target | Description |
+|---|---|
+| `make build` | native binary → `_build/busybox` |
+| `make build-wasm` | WASM binary → `_build/busybox.wasm` |
+| `make test` | unit tests |
+| `make test-race` | with race detector |
+| `make coverage` | with coverage |
+| `make lint` | golangci-lint |
+| `make check` | vet + lint + format |
+| `make security` | gosec |
+| `make fuzz-coverage` | verify fuzz coverage ≥80% |
+| `make clean` | remove artefacts |
+
+### Adding an applet
+
+1. `pkg/applets/<name>/<name>.go` — `Run(stdio *core.Stdio, args []string) int`
+2. Package Godoc + `Run` Godoc with flag list
+3. Register in `cmd/busybox/main.go`
+4. `cmd/<name>/main.go` entry point
+5. `*_test.go` unit tests
+6. `*_fuzz_test.go` fuzz tests
+7. `*_wasm.go` stub if needed
+
+### Godoc convention
+
+```go
+// Run executes the grep command with the given arguments.
+//
+// Supported flags:
+//
+//	-E    extended regular expressions
+//	-i    ignore case
+//	-v    invert match
+//	-c    count matching lines
+func Run(stdio *core.Stdio, args []string) int {
+```
+
+### Applet status
+
+| Applet | Tests | Key features |
+|---|---|---|
+| ash | 349/349 | POSIX shell, 25+ builtins, signals, jobs, heredocs |
+| awk | 53/53 | full parser, 30+ builtins, arrays, getline, printf |
+| sed | 92/92 | BRE/ERE, in-place, hold space, branches, NL tracking |
+| grep | 44/44 | ERE/fixed, recursive, word/line, multi-pattern |
+| diff | 12/12 | unified, whitespace modes, blank-line ignore, recursive |
+| cp | 13/13 | recursive, symlinks, `--parents`, hard links |
+| printf | 24/24 | full format specs, `%b`, octal/hex |
+| cut | 22/22 | fields, characters, bytes, custom delimiters |
+| uniq | 14/14 | count, duplicate, unique, case-insensitive |
+| sort | 5/5 | numeric, reverse, unique, key-based |
+| tar | 3/3 | create, extract, gzip, stdin, symlinks, hardlinks |
+| gunzip | 5/5 | keep, stdout, force, stdin |
+| wget | 4/4 | `-q`, `-O`, `-P`, combined flags, auto-mkdir |
+| pidof | 3/3 | cmdline matching, self-exclusion |
+| taskset | 3/3 | CPU affinity get/set |
+| xargs | 7/7 | `-n`, `-I`, no-cmd defaults to echo |
+| tr | 2/2 | translate, delete, squeeze, complement, POSIX classes |
+| start-stop-daemon | — | `--start`/`--exec`, `--pidfile` (native only, partial) |
+| top | — | static listing stub |
+
+All others: complete, no dedicated reference-suite tests.
+
+---
+
+## Licence
 
 MIT
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Run `make check` before committing
-4. Run `make security` after vetting and linting (gosec must follow `make check`)
-5. Submit a pull request
+1. Fork, branch, hack.
+2. `make check` before committing.
+3. `make security` after lint.
+4. `go test ./pkg/applets/... -run='Fuzz' -count=1` — all seeds must pass.
+5. Pull request.
 
-See [SPEC.md](SPEC.md) for detailed implementation requirements.
+See [SPEC.md](docs/SPEC.md) for the full specification.

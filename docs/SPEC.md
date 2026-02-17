@@ -1,177 +1,137 @@
-# Busybox WASM
+# Busybox WASM — Specification
 
-The goal of this project is to create a sandboxable version of busybox using WASM, by porting it entirely to `tinygo` and doing extensive comparative testing (including fuzzing) against the original C binary.
+Sandboxable busybox in Go, compiled to WASM via TinyGo. Extensive comparative testing (including fuzzing) against the reference C binary.
 
 ## Architecture
 
-### Overview
-The project consists of three main components:
+Three components:
 
-1. **Core Runtime** - WASM runtime environment handling syscall emulation and sandboxing
-2. **Applet Library** - Individual busybox utilities ported to TinyGo
-3. **Test Harness** - Comparative testing framework against the original C busybox
-
-### Components
+1. **Applet library** — 57 utilities under `pkg/applets/`, each a self-contained package.
+2. **Core runtime** — shared helpers (`core/`, `sandbox/`, `procutil/`), sandboxed filesystem via `pkg/core/fs/`.
+3. **Test harness** — unit tests, fuzz tests, integration parity matrix, BusyBox reference suite.
 
 ```
-busybox-wasm/
-├── cmd/              # Entry points for each applet
+go-busybox/
+├── cmd/              # entry points (51 standalone + busybox multi-call)
 ├── pkg/
-│   ├── applets/      # Individual utility implementations
-│   ├── runtime/      # WASM runtime and syscall handling
-│   └── sandbox/      # Sandboxing and capability management
-├── testdata/         # Test fixtures and expected outputs
-└── fuzz/             # Fuzzing corpus and harnesses
+│   ├── applets/      # 57 applet packages + procutil
+│   ├── core/         # fs/, archiveutil/, headtail, textutil
+│   ├── integration/  # BusyBox comparison tests
+│   ├── sandbox/      # capability-based access control
+│   └── testutil/     # FuzzCompare, CaptureStdio, helpers
+├── busybox-reference/# reference binary (v1.35.0) + test suite
+└── docs/SPEC.md
 ```
 
-### Sandboxing Model
-- Capability-based filesystem access
-- Restricted network operations
+### Sandboxing
+
+- Capability-based filesystem: only pre-opened directories accessible
+- Network gated: `wget`, `nc`, `dig`, `ss` require explicit opt-in
 - Memory isolation via WASM linear memory
-- Configurable resource limits (CPU, memory, file descriptors)
+- Syscalls limited to WASI preview1
 
-## Technical Requirements
+## Requirements
 
-### Language & Toolchain
-- **TinyGo** (latest stable) targeting `wasm32-wasi`
-- Compatible with WASI preview1 interface
+### Toolchain
+- Go 1.22+, TinyGo 0.34+ (WASM target: `wasm32-wasi`)
 - No CGO dependencies
 
-### Compatibility Targets
-- Busybox v1.36.x as reference implementation
+### Compatibility
+- BusyBox v1.35.0 as reference
 - POSIX compliance where applicable
-- Support for common shell scripts using busybox utilities
 
 ### Constraints
-- Binary size: Target <2MB for full build, <100KB per applet
-- Startup time: <10ms cold start
-- Memory usage: <16MB baseline
+- Binary size: <2MB combined, <100KB per applet
+- Startup: <10ms cold start
+- Memory: <16MB baseline
 
-## Implementation Phases
+## Implementation phases
 
-### Phase 1: Foundation
-- [x] Set up TinyGo WASM build pipeline
-- [x] Implement core runtime with basic syscall support
-- [x] Port initial utilities: `echo`, `cat`, `ls`, `cp`, `mv`, `rm`
-- [x] Create basic test harness
+### Phase 1: Foundation ✅
+- TinyGo WASM build pipeline
+- Core runtime with syscall support
+- Initial utilities: `echo`, `cat`, `ls`, `cp`, `mv`, `rm`
+- Basic test harness
 
-### Phase 2: Core Utilities
-- [x] File utilities: `head`, `tail`, `wc`, `sort`, `uniq`, `cut`, `grep`
-- [x] Directory utilities: `mkdir`, `rmdir`, `pwd`, `find`
-- [x] Text utilities: `sed`, `tr`, `diff`
-- [x] `awk` parity via goawk (BusyBox testsuite)
-- [x] Implement filesystem sandbox
+### Phase 2: Core utilities ✅
+- File: `head`, `tail`, `wc`, `sort`, `uniq`, `cut`, `grep`
+- Directory: `mkdir`, `rmdir`, `pwd`, `find`
+- Text: `sed`, `tr`, `diff`, `awk` (via goawk)
+- Filesystem sandbox
 
-### Phase 3: Advanced Features
-- [x] Shell implementation (`ash` subset; BusyBox testsuite parity)
-- [x] Process utilities: `ps`, `kill`, `xargs`, `killall`, `pidof`, `pgrep`, `pkill`, `nice`, `renice`, `uptime`, `who`, `w`, `top`, `time`, `nohup`, `watch`, `setsid`, `start-stop-daemon`, `sleep`, `timeout`, `taskset`, `ionice`, `nproc`, `free`, `logname`, `users`, `whoami` (baseline implementations complete; parity gaps tracked in TODOs/tests)
-- [x] Archive utilities: `tar`, `gzip`, `gunzip` (baseline implemented)
-- [x] Network utilities (sandboxed and gated via environment variable/CLI options): `wget`, `nc`, `dig`, `ss` (baseline implemented)
+### Phase 3: Advanced ✅
+- Shell: `ash` — near-complete POSIX shell, 349/349 BusyBox tests
+- Process: `ps`, `kill`, `killall`, `pidof`, `pgrep`, `pkill`, `nice`, `renice`, `nohup`, `time`, `timeout`, `taskset`, `ionice`, `setsid`, `start-stop-daemon`, `xargs`, `top`, `watch`, `sleep`, `nproc`, `free`, `logname`, `uptime`, `users`, `who`, `w`, `whoami`
+- Archive: `tar`, `gzip`, `gunzip`
+- Network: `wget`, `nc`, `dig`, `ss`
 
-### Phase 4: Hardening
-- [x] Comprehensive fuzzing campaign
+### Phase 4: Hardening (current)
+- [x] Comprehensive fuzzing (100 functions, 353 seeds)
+- [x] Full Godoc coverage (all packages, all exported symbols)
+- [x] BusyBox reference suite 387/387
 - [ ] Security audit
-- [ ] Performance optimization
-- [x] Documentation and examples
+- [ ] Performance optimisation
 
-## Testing Strategy
+## Testing strategy
 
-### Unit Testing
-- Per-applet unit tests for core logic
-- Mock filesystem and I/O for isolation
+### Four layers
 
-### Integration Testing
-- End-to-end tests comparing output with C busybox
-- Test across multiple WASM runtimes (TBD)
+| Layer | Files | Scope |
+|---|---|---|
+| Unit tests | 62 `*_test.go` | per-applet logic |
+| Fuzz tests | 58 `*_fuzz_test.go`, 100 functions, 353 seeds | crash/panic detection, differential comparison |
+| Integration | `pkg/integration/` | parity matrix vs reference BusyBox |
+| Reference suite | `busybox-reference/testsuite/` | 387/387 (308 new-style + 79 old-style) |
 
-### Comparative Testing
+### Fuzz testing
 
-### WASM Parity
-- Integration tests run the BusyBox parity matrix against the unified busybox.wasm using wasmtime when available.
-- Deviations are expected for network-facing applets (e.g. `dig`, `ss`) which are skipped in WASM parity runs.
-- Automated test generation from busybox test suite
-- Output diffing with normalization for acceptable variations
-- Exit code and stderr validation
+Every applet has at least one fuzz test. Complex applets (sed, grep, awk, diff, tr, cut, tar, gzip, gunzip) have multiple functions covering:
 
-### Per-applet parity coverage
-Coverage sources:
-- BusyBox testsuite: `awk.tests`, `ash.tests`
-- Integration parity matrix: `pkg/integration/busybox_compare_test.go`
-- Others: baseline implementations without parity matrix/tests yet
+- **Input fuzzing** — random data with fixed flags
+- **Expression/DSL fuzzing** — fuzzed sed expressions, grep patterns, awk programmes, find predicates, tr character sets, cut field specs
+- **Flag combination fuzzing** — fixed input with varied flag sets
+- **Roundtrip fuzzing** — gzip→gunzip, tar create→extract, cp source→destination byte-for-byte verification
+- **Invalid input fuzzing** — arbitrary bytes fed to gunzip, tar to verify graceful failure
 
-| Applet | Parity coverage | Notes |
-| --- | --- | --- |
-| `ash` | BusyBox testsuite (`ash.tests`) | Line-edit focused tests. |
-| `awk` | BusyBox testsuite (`awk.tests`) | goawk parity adaptations. |
-| `cat` | Integration parity matrix |  |
-| `cp` | Integration parity matrix |  |
-| `cut` | Integration parity matrix |  |
-| `diff` | Integration parity matrix |  |
-| `dig` | None yet | Network-facing; parity skipped in WASM runs. |
-| `echo` | Integration parity matrix |  |
-| `find` | Integration parity matrix | BusyBox `./` path prefix is normalized. |
-| `free` | Integration parity matrix |  |
-| `grep` | Integration parity matrix |  |
-| `gunzip` | Integration parity matrix |  |
-| `gzip` | Integration parity matrix |  |
-| `head` | Integration parity matrix |  |
-| `ionice` | Integration parity matrix |  |
-| `kill` | Integration parity matrix |  |
-| `killall` | Integration parity matrix |  |
-| `logname` | Integration parity matrix |  |
-| `ls` | Integration parity matrix |  |
-| `mkdir` | Integration parity matrix |  |
-| `mv` | Integration parity matrix |  |
-| `nc` | Integration parity matrix | Loopback-only parity checks. |
-| `nice` | None yet | Baseline implementation only. |
-| `nohup` | None yet | Baseline implementation only. |
-| `nproc` | Integration parity matrix |  |
-| `pgrep` | None yet | Baseline implementation only. |
-| `pidof` | Integration parity matrix |  |
-| `pkill` | None yet | Baseline implementation only. |
-| `ps` | Integration parity matrix | Output normalization applied. |
-| `pwd` | Integration parity matrix | Compared per temporary directory. |
-| `renice` | Integration parity matrix |  |
-| `rm` | Integration parity matrix |  |
-| `rmdir` | Integration parity matrix |  |
-| `sed` | Integration parity matrix |  |
-| `setsid` | Integration parity matrix |  |
-| `sleep` | Integration parity matrix |  |
-| `sort` | Integration parity matrix |  |
-| `ss` | None yet | Network-facing; parity skipped in WASM runs. |
-| `start-stop-daemon` | Integration parity matrix | Skipped in CI parity run (output varies). |
-| `tail` | Integration parity matrix |  |
-| `tar` | Integration parity matrix |  |
-| `taskset` | Integration parity matrix | PID output normalized. |
-| `time` | Integration parity matrix | Output timing varies; excluded from strict compare. |
-| `timeout` | Integration parity matrix |  |
-| `top` | Integration parity matrix | Skipped in CI parity run (output varies). |
-| `tr` | Integration parity matrix |  |
-| `uniq` | Integration parity matrix |  |
-| `uptime` | Integration parity matrix | Output varies across systems. |
-| `users` | None yet | Baseline implementation only. |
-| `w` | Integration parity matrix | Output varies across systems. |
-| `watch` | None yet | No parity tests; output differs from BusyBox. |
-| `wc` | Integration parity matrix |  |
-| `wget` | Integration parity matrix | Loopback-only parity checks. |
-| `who` | Integration parity matrix | Output varies across systems. |
-| `whoami` | Integration parity matrix |  |
-| `xargs` | Integration parity matrix |  |
+Safety filters prevent non-termination: sed rejects branch-label loops and excessive regex quantifiers; printf skips non-consuming format strings; all inputs clamped to 2048 bytes.
 
-Parity matrix normalizations: invalid option/missing file exit codes accept BusyBox=1 vs ours=2, `ps` output normalized, `find` strips leading `./`, `pwd` compares per temp directory, `taskset` PID normalized, `wget` stderr ignored, loopback-only `nc`/`wget` checks, and time/uptime/who/w skipped for strict output comparison.
+### Parity coverage
 
-### Fuzz Testing
+All applets below pass their respective BusyBox reference tests at 100%:
 
-### Fuzzing Harness
-- Each applet includes a Go fuzz test (testing.F) with shared fixtures and BusyBox differential comparisons when available.
-- Fuzzing clamps input sizes to keep runs deterministic and bounded.
-- **Input fuzzing**: Random/mutated command-line arguments and stdin
-- **Corpus seeding**: Real-world usage patterns and edge cases
-- **Differential fuzzing**: Compare WASM output vs C binary for same inputs
-- Coverage-guided fuzzing using libFuzzer or go-fuzz
-- Continuous fuzzing via OSS-Fuzz integration
+| Applet | Tests | Source |
+|---|---|---|
+| ash | 349/349 | BusyBox ash test suite |
+| awk | 53/53 | `awk.tests` |
+| sed | 92/92 | `sed.tests` |
+| grep | 44/44 | `grep.tests` |
+| printf | 24/24 | `printf.tests` |
+| cut | 22/22 | `cut.tests` |
+| uniq | 14/14 | `uniq.tests` |
+| cp | 13/13 | `cp.tests` + old-style |
+| diff | 12/12 | `diff.tests` |
+| xargs | 7/7 | `xargs.tests` |
+| sort | 5/5 | `sort.tests` |
+| gunzip | 5/5 | `gunzip.tests` |
+| tar | 3/3 | `tar.tests` |
+| taskset | 3/3 | `taskset.tests` |
+| pidof | 3/3 | `pidof.tests` |
+| find | 2/2 | `find.tests` |
+| head | 2/2 | `head.tests` |
+| tail | 2/2 | `tail.tests` + old-style |
+| tr | 2/2 | `tr.tests` + old-style |
+| wget | 4/4 | old-style |
+| wc | 5/5 | old-style |
+| cat, echo, gzip, ls, mkdir, mv, pwd, rm, rmdir | — | old-style (all pass) |
 
-### Performance Testing
-- Benchmark suite for critical paths
-- Memory profiling
-- Startup latency measurements
+Remaining applets (`kill`, `killall`, `pgrep`, `pkill`, `nice`, `nohup`, `renice`, `ps`, `free`, `nproc`, `ionice`, `setsid`, `sleep`, `timeout`, `time`, `top`, `watch`, `logname`, `uptime`, `users`, `w`, `who`, `whoami`, `dig`, `nc`, `ss`, `start-stop-daemon`) have unit tests and fuzz tests but no dedicated BusyBox reference-suite entries.
+
+### Parity normalisations
+
+- Exit codes: BusyBox returns 1 for usage errors where we return 2 — both accepted.
+- `ps` output: whitespace normalised.
+- `find` output: leading `./` stripped.
+- `pwd`: compared per temp directory.
+- `taskset`: PID normalised.
+- `wget` stderr: ignored.
+- `time`/`uptime`/`who`/`w`: timing/session-dependent output excluded from strict comparison.
