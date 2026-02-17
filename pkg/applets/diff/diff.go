@@ -371,9 +371,23 @@ func diffData(stdio *core.Stdio, leftData []byte, rightData []byte, left string,
 	}
 	leftOrig := splitLines(string(leftData))
 	rightOrig := splitLines(string(rightData))
-	leftNorm, leftMap := normalizeLinesWithMap(leftOrig, opts)
-	rightNorm, rightMap := normalizeLinesWithMap(rightOrig, opts)
-	lines := buildDiffLinesWithOriginal(leftOrig, rightOrig, leftNorm, rightNorm, leftMap, rightMap)
+
+	// For -B mode: diff on ORIGINAL lines, then filter blank-only hunks.
+	// For other normalization modes (-b, -w, -i): diff on normalized lines
+	// and map back to originals.
+	var lines []diffLine
+	if opts.ignoreBlank {
+		// Build normalization opts WITHOUT ignoreBlank for the actual diff
+		diffOpts := opts
+		diffOpts.ignoreBlank = false
+		leftNorm, leftMap := normalizeLinesWithMap(leftOrig, diffOpts)
+		rightNorm, rightMap := normalizeLinesWithMap(rightOrig, diffOpts)
+		lines = buildDiffLinesWithOriginal(leftOrig, rightOrig, leftNorm, rightNorm, leftMap, rightMap)
+	} else {
+		leftNorm, leftMap := normalizeLinesWithMap(leftOrig, opts)
+		rightNorm, rightMap := normalizeLinesWithMap(rightOrig, opts)
+		lines = buildDiffLinesWithOriginal(leftOrig, rightOrig, leftNorm, rightNorm, leftMap, rightMap)
+	}
 	leftLabel := left
 	rightLabel := right
 	if opts.labelLeft != "" {
@@ -535,6 +549,16 @@ func buildDiffLinesWithOriginal(leftOrig []string, rightOrig []string, left []st
 	return lines
 }
 
+// hunkIsBlankOnly returns true if all changed lines in the hunk are blank.
+func hunkIsBlankOnly(hunkLines []diffLine) bool {
+	for _, line := range hunkLines {
+		if line.tag != ' ' && strings.TrimSpace(line.text) != "" {
+			return false
+		}
+	}
+	return true
+}
+
 func makeHunks(lines []diffLine, context int) []hunk {
 	var hunks []hunk
 	i := 0
@@ -576,6 +600,19 @@ func writeUnified(stdio *core.Stdio, lines []diffLine, left string, right string
 	hunks := makeHunks(lines, contextLines)
 	if len(hunks) == 0 {
 		return
+	}
+	// When -B is active, filter out hunks that contain only blank-line changes
+	if opts.ignoreBlank {
+		var filtered []hunk
+		for _, h := range hunks {
+			if !hunkIsBlankOnly(lines[h.start:h.end]) {
+				filtered = append(filtered, h)
+			}
+		}
+		hunks = filtered
+		if len(hunks) == 0 {
+			return
+		}
 	}
 	stdio.Printf("--- %s\n", left)
 	stdio.Printf("+++ %s\n", right)
