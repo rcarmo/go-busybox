@@ -11,9 +11,11 @@ import (
 func TestXargs(t *testing.T) {
 	tests := []testutil.AppletTestCase{
 		{
-			Name:     "missing",
+			Name:     "no_args_defaults_to_echo",
 			Args:     []string{},
-			WantCode: core.ExitUsage,
+			Input:    "hello world",
+			WantOut:  "hello world\n",
+			WantCode: core.ExitSuccess,
 		},
 		{
 			Name:     "basic",
