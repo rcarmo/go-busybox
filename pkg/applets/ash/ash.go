@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -41,6 +42,7 @@ func Run(stdio *core.Stdio, args []string) int {
 		vars:       map[string]string{},
 		exported:   map[string]bool{},
 		funcs:      map[string]string{},
+		funcLines:  map[string]int{},
 		aliases:    map[string]string{},
 		traps:      map[string]string{},
 		ignored:    map[os.Signal]bool{},
@@ -49,6 +51,7 @@ func Run(stdio *core.Stdio, args []string) int {
 		argv0:      "ash",
 		options:    map[string]bool{},
 		jobs:       map[int]*job{},
+		readonly:   map[string]bool{},
 		jobByPid:   map[int]int{},
 		nextJobID:  1,
 		signalCh:   make(chan os.Signal, 8),
@@ -75,6 +78,7 @@ func Run(stdio *core.Stdio, args []string) int {
 				shell.positional = args[3:]
 			}
 		}
+		shell.lineOffset = -1
 		code := shell.runScript(args[1])
 		if shell.exitFlag {
 			return shell.exitCode
@@ -199,6 +203,29 @@ func (r *runner) reportExecBuiltinError(name string, msg string, stderr io.Write
 		return
 	}
 	fmt.Fprintf(stderr, "ash: exec: line %d: %s: %s\n", r.currentLine, name, msg)
+}
+
+func (r *runner) reportReadonly(name string, builtin string) {
+	r.exitFlag = true
+	r.exitCode = 2
+	script := r.scriptName
+	line := r.currentLine
+	if line == 1 && script == "SHELL" {
+		line = 0
+	}
+	if script != "" && script != "ash" {
+		if builtin != "" {
+			fmt.Fprintf(r.stdio.Err, "%s: %s: line %d: %s: is read only\n", script, builtin, line, name)
+			return
+		}
+		fmt.Fprintf(r.stdio.Err, "%s: line %d: %s: is read only\n", script, line, name)
+		return
+	}
+	if builtin != "" {
+		fmt.Fprintf(r.stdio.Err, "ash: %s: line %d: %s: is read only\n", builtin, line, name)
+		return
+	}
+	fmt.Fprintf(r.stdio.Err, "ash: line %d: %s: is read only\n", line, name)
 }
 
 func isPermissionError(err error) bool {
@@ -364,7 +391,9 @@ type runner struct {
 	stdio                  *core.Stdio
 	vars                   map[string]string
 	exported               map[string]bool
+	readonly               map[string]bool
 	funcs                  map[string]string
+	funcLines              map[string]int
 	aliases                map[string]string
 	traps                  map[string]string
 	ignored                map[os.Signal]bool
@@ -407,6 +436,7 @@ type runner struct {
 	pendingHereDocs        []string
 	skipHereDocRead        bool
 	fdReaders              map[int]*bufio.Reader
+	fdWriters              map[int]io.Writer
 	readBufs               map[io.Reader]*bufio.Reader
 	localStack             []localFrame
 	scriptCache            map[string][]commandEntry
@@ -631,6 +661,9 @@ func (r *runner) runScript(script string) int {
 	script = strings.TrimRight(script, "\r")
 	r.exitFlag = false
 	r.exitCode = core.ExitSuccess
+	if r.scriptName == "SHELL" && r.lineOffset == 0 {
+		r.lineOffset = -1
+	}
 	isTop := !r.options["__trap_exit"]
 	if isTop {
 		r.lastStatus = core.ExitSuccess
@@ -1138,7 +1171,13 @@ func (r *runner) withRedirections(spec commandSpec, fn func() (int, bool)) (int,
 		}
 		stdin = reader
 	} else if spec.redirIn != "" {
-		file, err := os.Open(spec.redirIn)
+		var file *os.File
+		var err error
+		if spec.redirInWrite {
+			file, err = os.OpenFile(spec.redirIn, os.O_RDWR|os.O_CREATE, 0600)
+		} else {
+			file, err = os.Open(spec.redirIn)
+		}
 		if err != nil {
 			r.reportRedirError(spec.redirIn, err, false)
 			return core.ExitFailure, false
@@ -1473,17 +1512,26 @@ func (r *runner) runForScript(script string) (int, bool) {
 		// Expand the word list with word splitting and glob expansion
 		var expandedWords []string
 		for _, word := range words {
-			exp := r.expandVarsWithRunner(word)
+			exp := expandTokenWithRunner(word, r)
 			parts := []string{exp}
 			if !isQuotedToken(word) && strings.ContainsAny(word, "$`") {
-				ifs := r.vars["IFS"]
-				if ifs == "" {
+				ifs, ifsSet := r.vars["IFS"]
+				if !ifsSet {
 					ifs = " \t\n"
 				}
+				exp = r.expandVarsWithRunnerMarkedIFS(word, ifs, containsUnescapedQuote(word))
+				parts = []string{exp}
 				if strings.ContainsAny(exp, ifs) || strings.ContainsAny(exp, "'\"") {
-					parts = splitOnIFSWithQuotes(exp, ifs)
+					if containsUnescapedQuote(word) {
+						parts = splitOnIFSWithQuotes(exp, ifs)
+					} else {
+						parts = splitOnIFS(exp, ifs)
+					}
+				} else {
+					parts = []string{stripLiteralIFSMarkers(exp)}
 				}
 			}
+			parts = splitWordMarkers(parts)
 			for _, part := range parts {
 				if !isQuotedToken(word) {
 					globbed := expandGlobs(part)
@@ -1555,7 +1603,8 @@ func (r *runner) runForScript(script string) (int, bool) {
 //	function f() ( body )      -- bash-style subshell
 //	function f() compound      -- bash-style compound body
 //	function f compound         -- bash-style compound body without parens
-func parseFuncDef(script string) (name string, body string, ok bool) {
+func parseFuncDef(script string) (name string, body string, lineOffset int, ok bool) {
+	script = strings.ReplaceAll(script, string(lineContMarker), " ")
 	trimmed := strings.TrimSpace(script)
 
 	hasFunctionKeyword := false
@@ -1563,6 +1612,21 @@ func parseFuncDef(script string) (name string, body string, ok bool) {
 	if strings.HasPrefix(trimmed, "function ") {
 		hasFunctionKeyword = true
 		rest = strings.TrimSpace(trimmed[len("function "):])
+	}
+
+	bodyLineOffset := func(spec string) int {
+		offset := 0
+		for i := 1; i < len(spec); i++ {
+			c := spec[i]
+			if c == '\n' {
+				offset++
+			}
+			if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+				continue
+			}
+			break
+		}
+		return offset
 	}
 
 	// Extract the function name
@@ -1573,7 +1637,7 @@ func parseFuncDef(script string) (name string, body string, ok bool) {
 		// "function f() ..." or "function f ..."
 		idx := strings.IndexAny(rest, " \t\n(){")
 		if idx == -1 {
-			return "", "", false
+			return "", "", 0, false
 		}
 		funcName = rest[:idx]
 		afterName = strings.TrimSpace(rest[idx:])
@@ -1593,37 +1657,39 @@ func parseFuncDef(script string) (name string, body string, ok bool) {
 			funcName = strings.TrimSpace(rest[:idx])
 			afterName = strings.TrimSpace(rest[idx+3:])
 		} else {
-			return "", "", false
+			return "", "", 0, false
 		}
 	}
 
 	if funcName == "" || !isName(funcName) {
-		return "", "", false
+		return "", "", 0, false
 	}
 
 	// Now parse the body - can be { ... }, ( ... ), or a compound command
 	if len(afterName) == 0 {
-		return "", "", false
+		return "", "", 0, false
 	}
 
 	if afterName[0] == '{' {
 		braceEnd := findMatchingBrace(afterName, 0)
 		if braceEnd == -1 {
-			return "", "", false
+			return "", "", 0, false
 		}
+		lineOffset = bodyLineOffset(afterName)
 		body = strings.TrimSpace(afterName[1:braceEnd])
-		return funcName, body, true
+		return funcName, body, lineOffset, true
 	}
 
 	if afterName[0] == '(' {
 		parenEnd := findMatchingParen(afterName, 0)
 		if parenEnd == -1 {
-			return "", "", false
+			return "", "", 0, false
 		}
+		lineOffset = bodyLineOffset(afterName)
 		// Subshell body - wrap in subshell for execution
 		inner := strings.TrimSpace(afterName[1:parenEnd])
 		body = "( " + inner + " )"
-		return funcName, body, true
+		return funcName, body, lineOffset, true
 	}
 
 	// Compound body: for/while/until/if/case
@@ -1632,18 +1698,18 @@ func parseFuncDef(script string) (name string, body string, ok bool) {
 		switch tokens[0] {
 		case "for", "while", "until", "if", "case":
 			if compoundComplete(tokens) {
-				return funcName, afterName, true
+				return funcName, afterName, 0, true
 			}
 			// Incomplete compound - not a valid func def yet
-			return "", "", false
+			return "", "", 0, false
 		}
 	}
 
-	return "", "", false
+	return "", "", 0, false
 }
 
 func (r *runner) runFuncDef(script string) (int, bool) {
-	name, body, ok := parseFuncDef(script)
+	name, body, lineOffset, ok := parseFuncDef(script)
 	if !ok {
 		return 0, false
 	}
@@ -1656,11 +1722,12 @@ func (r *runner) runFuncDef(script string) (int, bool) {
 		return 2, true
 	}
 	r.funcs[name] = body
+	r.funcLines[name] = r.currentLine + lineOffset
 	return core.ExitSuccess, true
 }
 
 func isFuncDefCommand(script string) bool {
-	_, _, ok := parseFuncDef(script)
+	_, _, _, ok := parseFuncDef(script)
 	return ok
 }
 
@@ -2204,6 +2271,14 @@ func copyBoolMap(src map[string]bool) map[string]bool {
 	return dst
 }
 
+func copyIntMap(src map[string]int) map[string]int {
+	dst := make(map[string]int, len(src))
+	for key, val := range src {
+		dst[key] = val
+	}
+	return dst
+}
+
 func copySignalMap(src map[os.Signal]bool) map[os.Signal]bool {
 	dst := make(map[os.Signal]bool, len(src))
 	for key, val := range src {
@@ -2217,6 +2292,17 @@ func copyFdReaders(src map[int]*bufio.Reader) map[int]*bufio.Reader {
 		return nil
 	}
 	dst := make(map[int]*bufio.Reader, len(src))
+	for key, val := range src {
+		dst[key] = val
+	}
+	return dst
+}
+
+func copyFdWriters(src map[int]io.Writer) map[int]io.Writer {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[int]io.Writer, len(src))
 	for key, val := range src {
 		dst[key] = val
 	}
@@ -2268,6 +2354,7 @@ func (r *runner) runSubshell(inner string) int {
 	savedInSubshell := r.inSubshell
 	savedPendingHereDocs := r.pendingHereDocs
 	savedFdReaders := r.fdReaders
+	savedFdWriters := r.fdWriters
 
 	r.vars = copyStringMap(savedVars)
 	r.exported = copyBoolMap(savedExported)
@@ -2294,6 +2381,7 @@ func (r *runner) runSubshell(inner string) int {
 	r.exitCode = core.ExitSuccess
 	r.pendingHereDocs = nil
 	r.fdReaders = copyFdReaders(savedFdReaders)
+	r.fdWriters = copyFdWriters(savedFdWriters)
 	r.lineOffset = 0
 	if savedCurrentLine > 0 {
 		r.lineOffset = savedCurrentLine - 1
@@ -2354,6 +2442,7 @@ func (r *runner) runSubshell(inner string) int {
 	r.exitCode = savedExitCode
 	r.pendingHereDocs = savedPendingHereDocs
 	r.fdReaders = savedFdReaders
+	r.fdWriters = savedFdWriters
 	r.lineOffset = savedLineOffset
 	r.currentLine = savedCurrentLine
 	r.signalCh = savedSignalCh
@@ -2376,7 +2465,9 @@ func (r *runner) startSubshellBackground(inner string) int {
 		stdio:      r.stdio,
 		vars:       copyStringMap(r.vars),
 		exported:   copyBoolMap(r.exported),
+		readonly:   copyBoolMap(r.readonly),
 		funcs:      copyStringMap(r.funcs),
+		funcLines:  copyIntMap(r.funcLines),
 		aliases:    copyStringMap(r.aliases),
 		options:    copyBoolMap(r.options),
 		traps:      map[string]string{},
@@ -2388,6 +2479,8 @@ func (r *runner) startSubshellBackground(inner string) int {
 		jobs:       map[int]*job{},
 		jobByPid:   map[int]int{},
 		nextJobID:  1,
+		fdReaders:  copyFdReaders(r.fdReaders),
+		fdWriters:  copyFdWriters(r.fdWriters),
 		signalCh:   make(chan os.Signal, 8),
 	}
 	if job := r.jobs[jobID]; job != nil {
@@ -2415,7 +2508,9 @@ func (r *runner) startSubshellBackgroundWithStdio(inner string, stdio *core.Stdi
 		stdio:      stdio,
 		vars:       copyStringMap(r.vars),
 		exported:   copyBoolMap(r.exported),
+		readonly:   copyBoolMap(r.readonly),
 		funcs:      copyStringMap(r.funcs),
+		funcLines:  copyIntMap(r.funcLines),
 		aliases:    copyStringMap(r.aliases),
 		options:    copyBoolMap(r.options),
 		traps:      map[string]string{},
@@ -2427,6 +2522,8 @@ func (r *runner) startSubshellBackgroundWithStdio(inner string, stdio *core.Stdi
 		jobs:       map[int]*job{},
 		jobByPid:   map[int]int{},
 		nextJobID:  1,
+		fdReaders:  copyFdReaders(r.fdReaders),
+		fdWriters:  copyFdWriters(r.fdWriters),
 		signalCh:   make(chan os.Signal, 8),
 	}
 	if job := r.jobs[jobID]; job != nil {
@@ -2532,7 +2629,7 @@ func (r *runner) runCommand(cmd string) (int, bool) {
 		}
 	}
 	trimmedCmd := strings.TrimSpace(cmd)
-	if len(trimmedCmd) > 2 && trimmedCmd[0] == '{' && trimmedCmd[len(trimmedCmd)-1] == '}' {
+	if !background && len(trimmedCmd) > 2 && trimmedCmd[0] == '{' && trimmedCmd[len(trimmedCmd)-1] == '}' {
 		if tokens := tokenizeScript(trimmedCmd); len(tokens) > 0 && tokens[0] == "{" {
 			if matchIdx := findMatchingTerminator(tokens, 0); matchIdx == len(tokens)-1 {
 				inner := strings.TrimSpace(trimmedCmd[1 : len(trimmedCmd)-1])
@@ -2555,7 +2652,7 @@ func (r *runner) runCommand(cmd string) (int, bool) {
 		}
 		return r.runSubshell(inner), false
 	}
-	segments := splitPipelines(cmd)
+	segments := splitPipelinesWithLines(cmd)
 	if background {
 		return r.startBackground(cmd), false
 	}
@@ -2621,7 +2718,13 @@ func (r *runner) startBackground(cmd string) int {
 				return core.ExitFailure
 			}
 		} else if cmdSpec.redirIn != "" {
-			file, err := os.Open(cmdSpec.redirIn)
+			var file *os.File
+			var err error
+			if cmdSpec.redirInWrite {
+				file, err = os.OpenFile(cmdSpec.redirIn, os.O_RDWR|os.O_CREATE, 0600)
+			} else {
+				file, err = os.Open(cmdSpec.redirIn)
+			}
 			if err != nil {
 				r.reportRedirError(cmdSpec.redirIn, err, false)
 				return core.ExitFailure
@@ -2791,6 +2894,32 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		}
 		return code, false
 	}
+	// Check for subshell with trailing redirections
+	if inner, rest, ok := subshellInnerWithRedirs(trimmedCmd); ok && rest != "" {
+		redirTokens := splitTokens(rest)
+		savedVars := copyStringMap(r.vars)
+		savedExported := copyBoolMap(r.exported)
+		spec, err := r.parseCommandSpecWithRunner(redirTokens)
+		r.vars = savedVars
+		r.exported = savedExported
+		if err == nil && len(spec.args) == 0 {
+			stdin2, stdout2, stderr2, fdWriters, closers, redirErr := r.applyCommandRedirections(spec, stdin, stdout, stderr)
+			if redirErr != nil {
+				return core.ExitFailure, false
+			}
+			savedStdio := r.stdio
+			savedFdWriters := r.fdWriters
+			r.stdio = &core.Stdio{In: stdin2, Out: stdout2, Err: stderr2}
+			r.fdWriters = fdWriters
+			code := r.runSubshell(inner)
+			r.stdio = savedStdio
+			r.fdWriters = savedFdWriters
+			for _, closer := range closers {
+				_ = closer.Close()
+			}
+			return code, false
+		}
+	}
 	// Check for subshell
 	if inner, ok := subshellInner(trimmedCmd); ok {
 		return r.runSubshell(inner), false
@@ -2806,6 +2935,28 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 	tokens := splitTokens(cmd)
 	if len(tokens) == 0 {
 		return core.ExitSuccess, false
+	}
+	assignEnd := 0
+	for assignEnd < len(tokens) {
+		if name, _, ok := parseAssignment(tokens[assignEnd]); ok && isName(name) {
+			assignEnd++
+			continue
+		}
+		break
+	}
+	if assignEnd > 0 && assignEnd < len(tokens) && tokens[assignEnd] == "exec" {
+		probeSpec, err := r.parseCommandSpecWithRunner(tokens[assignEnd:])
+		if err == nil && (probeSpec.redirIn != "" || probeSpec.redirOut != "" || probeSpec.redirErr != "" || probeSpec.closeStdout || probeSpec.closeStderr || len(probeSpec.hereDocs) > 0 || len(probeSpec.fdDup) > 0) {
+			_, _, _, _, closers, redirErr := r.applyCommandRedirections(probeSpec, stdin, stdout, stderr)
+			for _, closer := range closers {
+				_ = closer.Close()
+			}
+			if redirErr != nil {
+				r.exitFlag = true
+				r.exitCode = core.ExitFailure
+				return core.ExitFailure, true
+			}
+		}
 	}
 	cmdSpec, err := r.parseCommandSpecWithRunner(tokens)
 	if err != nil {
@@ -2827,6 +2978,12 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			isSpecialBuiltin = true
 		}
 	}
+	isFunc := false
+	if len(cmdSpec.args) > 0 {
+		if _, ok := r.funcs[cmdSpec.args[0]]; ok {
+			isFunc = true
+		}
+	}
 	if len(cmdSpec.prefixAssigns) > 0 && len(cmdSpec.args) > 0 && !isSpecialBuiltin {
 		defer func() {
 			for _, pa := range cmdSpec.prefixAssigns {
@@ -2842,8 +2999,13 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			}
 		}()
 	}
+	if len(cmdSpec.prefixAssigns) > 0 && (isSpecialBuiltin || isFunc) {
+		for _, pa := range cmdSpec.prefixAssigns {
+			r.vars[pa.name] = pa.newVal
+		}
+	}
 	// Temporarily export prefix assignments for external commands
-	if len(cmdSpec.prefixAssigns) > 0 && !isSpecialBuiltin {
+	if len(cmdSpec.prefixAssigns) > 0 && !isSpecialBuiltin && !isFunc {
 		for i := range cmdSpec.prefixAssigns {
 			cmdSpec.prefixAssigns[i].wasExported = r.exported[cmdSpec.prefixAssigns[i].name]
 			r.exported[cmdSpec.prefixAssigns[i].name] = true
@@ -2889,121 +3051,30 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			r.fdReaders = savedFdReaders
 		}()
 	}
-	if strings.HasPrefix(cmdSpec.redirIn, "&") {
-		fd, err := strconv.Atoi(strings.TrimPrefix(cmdSpec.redirIn, "&"))
+	skipRedirs := len(cmdSpec.args) > 0 && cmdSpec.args[0] == "exec" && len(cmdSpec.args) < 2
+	if !skipRedirs {
+		var fdWriters map[int]io.Writer
+		var redirClosers []io.Closer
+		var err error
+		stdin, stdout, stderr, fdWriters, redirClosers, err = r.applyCommandRedirections(cmdSpec, stdin, stdout, stderr)
 		if err != nil {
-			r.stdio.Errorf("ash: %v\n", err)
+			if len(cmdSpec.args) > 0 && cmdSpec.args[0] == "exec" {
+				r.exitFlag = true
+				r.exitCode = core.ExitFailure
+				return core.ExitFailure, true
+			}
 			return core.ExitFailure, false
 		}
-		reader, ok := r.fdReaders[fd]
-		if !ok {
-			r.stdio.Errorf("ash: bad file descriptor\n")
-			return core.ExitFailure, false
-		}
-		stdin = reader
-	} else if cmdSpec.redirIn != "" {
-		file, err := os.Open(cmdSpec.redirIn)
-		if err != nil {
-			r.reportRedirError(cmdSpec.redirIn, err, false)
-			return core.ExitFailure, false
-		}
-		syscall.CloseOnExec(int(file.Fd()))
-		defer file.Close()
-		stdin = file
-	}
-	if cmdSpec.closeStdout {
-		stdout = badFdWriter{}
-	}
-	if cmdSpec.closeStderr {
-		stderr = badFdWriter{}
-	}
-	if cmdSpec.redirOut != "" {
-		if cmdSpec.redirOut == "&2" {
-			stdout = stderr
-		} else if strings.HasPrefix(cmdSpec.redirOut, "&") {
-			// Duplicate fd: >&N
-			fdStr := cmdSpec.redirOut[1:]
-			fdNum, err := strconv.Atoi(fdStr)
-			if err != nil || fdNum < 0 {
-				r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
-				return core.ExitFailure, false
-			}
-			// Only allow dup of stdout/stderr; other fds are treated as closed
-			if fdNum > 2 {
-				r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
-				return core.ExitFailure, false
-			}
-			// Try to dup the fd
-			newFd, err := syscall.Dup(fdNum)
-			if err != nil {
-				r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
-				return core.ExitFailure, false
-			}
-			f := os.NewFile(uintptr(newFd), fmt.Sprintf("fd%d", fdNum))
-			defer f.Close()
-			stdout = f
-		} else {
-			if r.restricted && strings.Contains(cmdSpec.redirOut, "/") {
-				r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.redirOut)
-				return core.ExitFailure, false
-			}
-			flags := os.O_CREATE | os.O_WRONLY
-			if cmdSpec.redirOutAppend {
-				flags |= os.O_APPEND
-			} else {
-				flags |= os.O_TRUNC
-			}
-			file, err := os.OpenFile(cmdSpec.redirOut, flags, 0600) // #nosec G304 -- shell redirection uses user path
-			if err != nil {
-				r.reportRedirError(cmdSpec.redirOut, err, true)
-				return core.ExitFailure, false
-			}
-			syscall.CloseOnExec(int(file.Fd()))
-			defer file.Close()
-			stdout = file
+		_ = fdWriters
+		for _, closer := range redirClosers {
+			defer closer.Close()
 		}
 	}
-	if cmdSpec.redirErr != "" {
-		if strings.HasPrefix(cmdSpec.redirErr, "&") {
-			fdStr := strings.TrimPrefix(cmdSpec.redirErr, "&")
-			fdNum, err := strconv.Atoi(fdStr)
-			if err != nil || fdNum < 0 {
-				r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
-				return core.ExitFailure, false
-			}
-			switch fdNum {
-			case 1:
-				stderr = stdout
-			case 2:
-				// no-op
-			default:
-				newFd, err := syscall.Dup(fdNum)
-				if err != nil {
-					r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
-					return core.ExitFailure, false
-				}
-				stderr = os.NewFile(uintptr(newFd), fmt.Sprintf("fd%d", fdNum))
-			}
-		} else if r.restricted && strings.Contains(cmdSpec.redirErr, "/") {
-			r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.redirErr)
-			return core.ExitFailure, false
-		} else {
-			flags := os.O_CREATE | os.O_WRONLY
-			if cmdSpec.redirErrAppend {
-				flags |= os.O_APPEND
-			} else {
-				flags |= os.O_TRUNC
-			}
-			file, err := os.OpenFile(cmdSpec.redirErr, flags, 0600) // #nosec G304 -- shell redirection uses user path
-			if err != nil {
-				r.reportRedirError(cmdSpec.redirErr, err, true)
-				return core.ExitFailure, false
-			}
-			syscall.CloseOnExec(int(file.Fd()))
-			defer file.Close()
-			stderr = file
-		}
-	}
+	savedStdio := r.stdio
+	r.stdio = &core.Stdio{In: stdin, Out: stdout, Err: stderr}
+	defer func() {
+		r.stdio = savedStdio
+	}()
 	if len(cmdSpec.args) >= 2 && cmdSpec.args[0] == "{" && cmdSpec.args[len(cmdSpec.args)-1] == "}" {
 		inner := ""
 		if start := strings.IndexByte(cmd, '{'); start >= 0 {
@@ -3182,7 +3253,9 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 							newFd, err := syscall.Dup(fdNum)
 							if err != nil {
 								r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
-								return core.ExitFailure, false
+								r.exitFlag = true
+								r.exitCode = core.ExitFailure
+								return core.ExitFailure, true
 							}
 							r.stdio.Out = os.NewFile(uintptr(newFd), fmt.Sprintf("fd%d", fdNum))
 						}
@@ -3197,7 +3270,9 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 					file, err := os.OpenFile(cmdSpec.redirOut, flags, 0600)
 					if err != nil {
 						r.reportRedirError(cmdSpec.redirOut, err, true)
-						return core.ExitFailure, false
+						r.exitFlag = true
+						r.exitCode = core.ExitFailure
+						return core.ExitFailure, true
 					}
 					r.stdio.Out = file
 				}
@@ -3208,7 +3283,9 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 					fdNum, err := strconv.Atoi(fdStr)
 					if err != nil || fdNum < 0 {
 						r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
-						return core.ExitFailure, false
+						r.exitFlag = true
+						r.exitCode = core.ExitFailure
+						return core.ExitFailure, true
 					}
 					switch fdNum {
 					case 1:
@@ -3219,7 +3296,9 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 						newFd, err := syscall.Dup(fdNum)
 						if err != nil {
 							r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
-							return core.ExitFailure, false
+							r.exitFlag = true
+							r.exitCode = core.ExitFailure
+							return core.ExitFailure, true
 						}
 						r.stdio.Err = os.NewFile(uintptr(newFd), fmt.Sprintf("fd%d", fdNum))
 					}
@@ -3233,7 +3312,9 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 					file, err := os.OpenFile(cmdSpec.redirErr, flags, 0600)
 					if err != nil {
 						r.reportRedirError(cmdSpec.redirErr, err, true)
-						return core.ExitFailure, false
+						r.exitFlag = true
+						r.exitCode = core.ExitFailure
+						return core.ExitFailure, true
 					}
 					r.stdio.Err = file
 				}
@@ -3247,10 +3328,18 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 						}
 					}
 				} else {
-					file, err := os.Open(cmdSpec.redirIn)
+					var file *os.File
+					var err error
+					if cmdSpec.redirInWrite {
+						file, err = os.OpenFile(cmdSpec.redirIn, os.O_RDWR|os.O_CREATE, 0600)
+					} else {
+						file, err = os.Open(cmdSpec.redirIn)
+					}
 					if err != nil {
 						r.stdio.Errorf("ash: %v\n", err)
-						return core.ExitFailure, false
+						r.exitFlag = true
+						r.exitCode = core.ExitFailure
+						return core.ExitFailure, true
 					}
 					r.stdio.In = file
 				}
@@ -3259,7 +3348,9 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 				for dst, src := range cmdSpec.fdDup {
 					if err := syscall.Dup2(src, dst); err != nil {
 						r.stdio.Errorf("%s: line %d: %d: Bad file descriptor\n", r.scriptName, r.currentLine, dst)
-						return core.ExitFailure, false
+						r.exitFlag = true
+						r.exitCode = core.ExitFailure
+						return core.ExitFailure, true
 					}
 				}
 			}
@@ -3274,10 +3365,14 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		cmdArgs := append([]string{}, cmdSpec.args[2:]...)
 		if cmdSpec.args[1] == "" {
 			r.reportExecBuiltinError("", "Permission denied", stderr)
+			r.exitFlag = true
+			r.exitCode = 126
 			return 126, true
 		}
 		if r.restricted && strings.Contains(cmdSpec.args[1], "/") {
 			r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.args[1])
+			r.exitFlag = true
+			r.exitCode = core.ExitFailure
 			return core.ExitFailure, true
 		}
 		command := exec.Command(cmdSpec.args[1], cmdArgs...) // #nosec G204 -- ash executes user command
@@ -3288,22 +3383,24 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		command.Stderr = stderr
 		command.Stdin = stdin
 		command.Env = buildEnv(r.vars, r.exported)
+		status := core.ExitSuccess
 		if err := command.Run(); err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
-				return exitErr.ExitCode(), true
-			}
-			if errors.Is(err, exec.ErrNotFound) || isNotFoundError(err) {
+				status = exitErr.ExitCode()
+			} else if errors.Is(err, exec.ErrNotFound) || isNotFoundError(err) {
 				r.reportExecBuiltinError(cmdSpec.args[1], "not found", stderr)
-				return 127, true
-			}
-			if isPermissionError(err) {
+				status = 127
+			} else if isPermissionError(err) {
 				r.reportExecBuiltinError(cmdSpec.args[1], "Permission denied", stderr)
-				return 126, true
+				status = 126
+			} else {
+				r.reportExecBuiltinError(cmdSpec.args[1], cleanExecError(err), stderr)
+				status = 126
 			}
-			r.reportExecBuiltinError(cmdSpec.args[1], cleanExecError(err), stderr)
-			return 126, true
 		}
-		return core.ExitSuccess, true
+		r.exitFlag = true
+		r.exitCode = status
+		return status, true
 	case "true":
 		return core.ExitSuccess, false
 	case "false":
@@ -3386,8 +3483,19 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			}
 			return core.ExitSuccess, false
 		}
+		if len(cmdSpec.args) > 1 && cmdSpec.args[1] == "-n" {
+			for _, arg := range cmdSpec.args[2:] {
+				delete(r.exported, arg)
+				_ = os.Unsetenv(arg)
+			}
+			return core.ExitSuccess, false
+		}
 		for _, arg := range cmdSpec.args[1:] {
 			if name, val, ok := parseAssignment(arg); ok {
+				if r.readonly[name] {
+					r.reportReadonly(name, "export")
+					continue
+				}
 				r.vars[name] = val
 				r.exported[name] = true
 			} else if isName(arg) {
@@ -3400,13 +3508,80 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			}
 		}
 		return core.ExitSuccess, false
-	case "unset":
-		if len(cmdSpec.args) > 1 && strings.HasPrefix(cmdSpec.args[1], "-") {
-			cmdSpec.args = append([]string{cmdSpec.args[0]}, cmdSpec.args[2:]...)
+	case "readonly":
+		if len(cmdSpec.args) == 1 || (len(cmdSpec.args) > 1 && cmdSpec.args[1] == "-p") {
+			var names []string
+			for name := range r.readonly {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				fmt.Fprintf(stdout, "readonly %s=%s\n", name, singleQuoteWord(r.vars[name]))
+			}
+			return core.ExitSuccess, false
 		}
 		for _, arg := range cmdSpec.args[1:] {
+			if arg == "-p" {
+				continue
+			}
+			if name, val, ok := parseAssignment(arg); ok {
+				if r.readonly[name] {
+					r.reportReadonly(name, "readonly")
+					continue
+				}
+				r.vars[name] = val
+				r.readonly[name] = true
+				continue
+			}
+			if isName(arg) {
+				r.readonly[arg] = true
+			}
+		}
+		return core.ExitSuccess, false
+	case "unset":
+		args := cmdSpec.args[1:]
+		if len(args) > 0 && strings.HasPrefix(args[0], "-") {
+			opt := args[0]
+			if opt == "-" {
+				line := r.currentLine
+				if line == 1 && r.scriptName == "SHELL" {
+					line = 0
+				}
+				fmt.Fprintf(stderr, "%s: unset: line %d: -: bad variable name\n", r.scriptName, line)
+				r.exitFlag = true
+				r.exitCode = 2
+				return 2, false
+			}
+			if opt != "-v" && opt != "-f" {
+				line := r.currentLine
+				if line == 1 && r.scriptName == "SHELL" {
+					line = 0
+				}
+				fmt.Fprintf(stderr, "%s: unset: line %d: illegal option %s\n", r.scriptName, line, opt)
+				r.exitFlag = true
+				r.exitCode = 2
+				return 2, false
+			}
+			args = args[1:]
+		}
+		for _, arg := range args {
+			if !isName(arg) {
+				line := r.currentLine
+				if line == 1 && r.scriptName == "SHELL" {
+					line = 0
+				}
+				fmt.Fprintf(stderr, "%s: unset: line %d: %s: bad variable name\n", r.scriptName, line, arg)
+				r.exitFlag = true
+				r.exitCode = 2
+				return 2, false
+			}
+			if r.readonly[arg] {
+				r.reportReadonly(arg, "unset")
+				continue
+			}
 			delete(r.vars, arg)
 			delete(r.exported, arg)
+			delete(r.readonly, arg)
 			delete(r.funcs, arg)
 			delete(r.aliases, arg)
 			_ = os.Unsetenv(arg)
@@ -3489,64 +3664,76 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		readCh := make(chan readResult, 1)
 		var data string
 		var readErr error
-		fastRead := timeout < 0 && len(r.traps) == 0 && !r.inTrap
-		if fastRead {
-			if nChars >= 0 {
-				buf := make([]byte, nChars)
-				n, err := io.ReadFull(reader, buf)
-				data = string(buf[:n])
-				readErr = err
-			} else {
-				line, err := reader.ReadString(delim)
-				data = line
-				readErr = err
+		skipRead := false
+		if timeout == 0 {
+			if !readReady(reader, stdin) {
+				return core.ExitFailure, false
 			}
+			skipRead = true
 		} else {
-			go func() {
+			fastRead := timeout < 0 && len(r.traps) == 0 && !r.inTrap
+			if fastRead {
 				if nChars >= 0 {
 					buf := make([]byte, nChars)
 					n, err := io.ReadFull(reader, buf)
-					readCh <- readResult{data: string(buf[:n]), err: err}
-					return
+					data = string(buf[:n])
+					readErr = err
+				} else {
+					line, err := reader.ReadString(delim)
+					data = line
+					readErr = err
 				}
-				line, err := reader.ReadString(delim)
-				readCh <- readResult{data: line, err: err}
-			}()
-		}
-		if !fastRead {
-			if timeout >= 0 {
-				dur := time.Duration(timeout * float64(time.Second))
-				if dur == 0 {
-					// Check if data is available
-					select {
-					case res := <-readCh:
-						data = res.data
-						readErr = res.err
-					default:
-						return core.ExitFailure, false
+			} else {
+				go func() {
+					if nChars >= 0 {
+						buf := make([]byte, nChars)
+						n, err := io.ReadFull(reader, buf)
+						readCh <- readResult{data: string(buf[:n]), err: err}
+						return
+					}
+					line, err := reader.ReadString(delim)
+					readCh <- readResult{data: line, err: err}
+				}()
+			}
+			if !fastRead {
+				if timeout >= 0 {
+					dur := time.Duration(timeout * float64(time.Second))
+					if dur == 0 {
+						// Check if data is available
+						select {
+						case res := <-readCh:
+							data = res.data
+							readErr = res.err
+						default:
+							return core.ExitFailure, false
+						}
+					} else {
+						select {
+						case res := <-readCh:
+							data = res.data
+							readErr = res.err
+						case <-time.After(dur):
+							return core.ExitFailure, false
+						case sig := <-r.signalCh:
+							r.runTrap(sig)
+							return signalExitStatus(sig), true
+						}
 					}
 				} else {
 					select {
 					case res := <-readCh:
 						data = res.data
 						readErr = res.err
-					case <-time.After(dur):
-						return core.ExitFailure, false
 					case sig := <-r.signalCh:
 						r.runTrap(sig)
 						return signalExitStatus(sig), true
 					}
 				}
-			} else {
-				select {
-				case res := <-readCh:
-					data = res.data
-					readErr = res.err
-				case sig := <-r.signalCh:
-					r.runTrap(sig)
-					return signalExitStatus(sig), true
-				}
 			}
+		}
+		if skipRead {
+			data = ""
+			readErr = nil
 		}
 		if readErr != nil && data == "" {
 			return core.ExitFailure, false
@@ -3583,8 +3770,8 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 				r.vars[varNames[0]] = data
 			} else {
 				// Named variable: strip leading/trailing IFS whitespace
-				ifs := r.vars["IFS"]
-				if ifs == "" {
+				ifs, ifsSet := r.vars["IFS"]
+				if !ifsSet {
 					ifs = " \t\n"
 				}
 				stripped := data
@@ -3597,8 +3784,8 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 				r.vars[varNames[0]] = stripped
 			}
 		} else {
-			ifs := r.vars["IFS"]
-			if ifs == "" {
+			ifs, ifsSet := r.vars["IFS"]
+			if !ifsSet {
 				ifs = " \t\n"
 			}
 			fields := splitReadFields(data, ifs, len(varNames))
@@ -3981,7 +4168,17 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		// Execute the command, skipping functions and aliases
 		cmdLine := strings.Join(args, " ")
 		_ = useDefaultPath
-		return r.runSimpleCommand(cmdLine, stdin, stdout, stderr)
+		savedExitFlag := r.exitFlag
+		savedExitCode := r.exitCode
+		r.exitFlag = false
+		r.exitCode = core.ExitSuccess
+		status, _ := r.runSimpleCommand(cmdLine, stdin, stdout, stderr)
+		if r.exitFlag {
+			status = r.exitCode
+		}
+		r.exitFlag = savedExitFlag
+		r.exitCode = savedExitCode
+		return status, false
 	case "type":
 		// Describe command type
 		if len(cmdSpec.args) < 2 {
@@ -4349,6 +4546,11 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 		}
 		return code, false
 	}
+	if len(cmdSpec.prefixAssigns) > 0 && len(cmdSpec.args) >= 2 && cmdSpec.args[0] == "(" && cmdSpec.args[len(cmdSpec.args)-1] == ")" {
+		for _, pa := range cmdSpec.prefixAssigns {
+			r.vars[pa.name] = pa.newVal
+		}
+	}
 	if len(cmdSpec.args) >= 2 && cmdSpec.args[0] == "(" && cmdSpec.args[len(cmdSpec.args)-1] == ")" {
 		inner := ""
 		if start := strings.IndexByte(cmd, '('); start >= 0 {
@@ -4375,10 +4577,16 @@ runFunction:
 		savedExitFlag := r.exitFlag
 		savedExitCode := r.exitCode
 		savedStdio := r.stdio
+		savedLineOffset := r.lineOffset
 		r.positional = cmdSpec.args[1:]
 		r.returnFlag = false
 		r.returnCode = core.ExitSuccess
 		r.stdio = &core.Stdio{In: stdin, Out: stdout, Err: stderr}
+		if line, ok := r.funcLines[cmdSpec.args[0]]; ok {
+			r.lineOffset = line - 1
+		} else {
+			r.lineOffset = 0
+		}
 		// Push a local variable frame
 		r.localStack = append(r.localStack, localFrame{saved: map[string]savedVar{}})
 		code := r.runScript(body)
@@ -4399,6 +4607,7 @@ runFunction:
 			}
 		}
 		r.stdio = savedStdio
+		r.lineOffset = savedLineOffset
 		exitFlag := r.exitFlag
 		exitCode := r.exitCode
 		if r.returnFlag {
@@ -4444,7 +4653,17 @@ runFunction:
 	command.Stdout = stdout
 	command.Stderr = stderr
 	command.Stdin = stdin
-	command.Env = buildEnv(r.vars, r.exported)
+	envVars := r.vars
+	exportedVars := r.exported
+	if len(cmdSpec.prefixAssigns) > 0 {
+		envVars = copyStringMap(r.vars)
+		exportedVars = copyBoolMap(r.exported)
+		for _, pa := range cmdSpec.prefixAssigns {
+			envVars[pa.name] = pa.newVal
+			exportedVars[pa.name] = true
+		}
+	}
+	command.Env = buildEnv(envVars, exportedVars)
 	if err := command.Start(); err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
 			r.commandNotFound(cmdSpec.args[0], stderr)
@@ -4509,7 +4728,156 @@ runFunction:
 	}
 }
 
-func (r *runner) runPipeline(segments []string) int {
+func resolveProcSelfFdWriter(target string, stdout io.Writer, stderr io.Writer) (io.Writer, bool) {
+	const prefix = "/proc/self/fd/"
+	if strings.HasPrefix(target, prefix) {
+		fdStr := strings.TrimPrefix(target, prefix)
+		switch fdStr {
+		case "1":
+			return stdout, true
+		case "2":
+			return stderr, true
+		}
+	}
+	return nil, false
+}
+
+func (r *runner) applyCommandRedirections(cmdSpec commandSpec, stdin io.Reader, stdout io.Writer, stderr io.Writer) (io.Reader, io.Writer, io.Writer, map[int]io.Writer, []io.Closer, error) {
+	var closers []io.Closer
+	if strings.HasPrefix(cmdSpec.redirIn, "&") {
+		fd, err := strconv.Atoi(strings.TrimPrefix(cmdSpec.redirIn, "&"))
+		if err != nil {
+			r.stdio.Errorf("ash: %v\n", err)
+			return stdin, stdout, stderr, nil, closers, err
+		}
+		reader, ok := r.fdReaders[fd]
+		if !ok {
+			r.stdio.Errorf("ash: bad file descriptor\n")
+			return stdin, stdout, stderr, nil, closers, fmt.Errorf("bad fd")
+		}
+		stdin = reader
+	} else if cmdSpec.redirIn != "" {
+		var file *os.File
+		var err error
+		if cmdSpec.redirInWrite {
+			file, err = os.OpenFile(cmdSpec.redirIn, os.O_RDWR|os.O_CREATE, 0600)
+		} else {
+			file, err = os.Open(cmdSpec.redirIn)
+		}
+		if err != nil {
+			r.reportRedirError(cmdSpec.redirIn, err, false)
+			return stdin, stdout, stderr, nil, closers, err
+		}
+		syscall.CloseOnExec(int(file.Fd()))
+		closers = append(closers, file)
+		stdin = file
+	}
+	if cmdSpec.closeStdout {
+		stdout = badFdWriter{}
+	}
+	if cmdSpec.closeStderr {
+		stderr = badFdWriter{}
+	}
+	fdWriters := map[int]io.Writer{1: stdout, 2: stderr}
+	for fd, writer := range r.fdWriters {
+		fdWriters[fd] = writer
+	}
+	if len(cmdSpec.fdDup) > 0 {
+		for dst, src := range cmdSpec.fdDup {
+			writer, ok := fdWriters[src]
+			if !ok {
+				r.stdio.Errorf("%s: line %d: %d: Bad file descriptor\n", r.scriptName, r.currentLine, src)
+				return stdin, stdout, stderr, fdWriters, closers, fmt.Errorf("bad fd")
+			}
+			fdWriters[dst] = writer
+		}
+	}
+	if cmdSpec.redirOut != "" {
+		if strings.HasPrefix(cmdSpec.redirOut, "&") {
+			fdStr := strings.TrimPrefix(cmdSpec.redirOut, "&")
+			fdNum, err := strconv.Atoi(fdStr)
+			if err != nil || fdNum < 0 {
+				r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
+				return stdin, stdout, stderr, fdWriters, closers, fmt.Errorf("bad fd")
+			}
+			writer, ok := fdWriters[fdNum]
+			if !ok {
+				r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
+				return stdin, stdout, stderr, fdWriters, closers, fmt.Errorf("bad fd")
+			}
+			stdout = writer
+		} else {
+			if writer, ok := resolveProcSelfFdWriter(cmdSpec.redirOut, stdout, stderr); ok {
+				stdout = writer
+			} else {
+				if r.restricted && strings.Contains(cmdSpec.redirOut, "/") {
+					r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.redirOut)
+					return stdin, stdout, stderr, fdWriters, closers, fmt.Errorf("restricted")
+				}
+				flags := os.O_CREATE | os.O_WRONLY
+				if cmdSpec.redirOutAppend {
+					flags |= os.O_APPEND
+				} else {
+					flags |= os.O_TRUNC
+				}
+				file, err := os.OpenFile(cmdSpec.redirOut, flags, 0600) // #nosec G304 -- shell redirection uses user path
+				if err != nil {
+					r.reportRedirError(cmdSpec.redirOut, err, true)
+					return stdin, stdout, stderr, fdWriters, closers, err
+				}
+				syscall.CloseOnExec(int(file.Fd()))
+				closers = append(closers, file)
+				stdout = file
+			}
+		}
+	}
+	fdWriters[1] = stdout
+	if cmdSpec.redirErr != "" {
+		if strings.HasPrefix(cmdSpec.redirErr, "&") {
+			fdStr := strings.TrimPrefix(cmdSpec.redirErr, "&")
+			fdNum, err := strconv.Atoi(fdStr)
+			if err != nil || fdNum < 0 {
+				r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
+				return stdin, stdout, stderr, fdWriters, closers, fmt.Errorf("bad fd")
+			}
+			writer, ok := fdWriters[fdNum]
+			if !ok {
+				r.stdio.Errorf("%s: line %d: %s: Bad file descriptor\n", r.scriptName, r.currentLine, fdStr)
+				return stdin, stdout, stderr, fdWriters, closers, fmt.Errorf("bad fd")
+			}
+			stderr = writer
+		} else if writer, ok := resolveProcSelfFdWriter(cmdSpec.redirErr, stdout, stderr); ok {
+			stderr = writer
+		} else if r.restricted && strings.Contains(cmdSpec.redirErr, "/") {
+			r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.redirErr)
+			return stdin, stdout, stderr, fdWriters, closers, fmt.Errorf("restricted")
+		} else {
+			flags := os.O_CREATE | os.O_WRONLY
+			if cmdSpec.redirErrAppend {
+				flags |= os.O_APPEND
+			} else {
+				flags |= os.O_TRUNC
+			}
+			file, err := os.OpenFile(cmdSpec.redirErr, flags, 0600) // #nosec G304 -- shell redirection uses user path
+			if err != nil {
+				r.reportRedirError(cmdSpec.redirErr, err, true)
+				return stdin, stdout, stderr, fdWriters, closers, err
+			}
+			syscall.CloseOnExec(int(file.Fd()))
+			closers = append(closers, file)
+			stderr = file
+		}
+	}
+	fdWriters[2] = stderr
+	return stdin, stdout, stderr, fdWriters, closers, nil
+}
+
+type pipelineSegment struct {
+	seg        string
+	lineOffset int
+}
+
+func (r *runner) runPipeline(segments []pipelineSegment) int {
 	if len(segments) == 0 {
 		return core.ExitSuccess
 	}
@@ -4519,6 +4887,7 @@ func (r *runner) runPipeline(segments []string) int {
 	// Stage represents a pipeline segment with its I/O setup and type.
 	type stage struct {
 		seg        string
+		lineOffset int
 		isBuiltin  bool
 		prevReader io.Reader
 		writer     io.WriteCloser
@@ -4526,9 +4895,13 @@ func (r *runner) runPipeline(segments []string) int {
 
 	stages := make([]stage, 0, len(segments))
 	var prevReader io.Reader = r.stdio.In
-	for i, seg := range segments {
+	for i, segment := range segments {
+		seg := segment.seg
 		// reject segments containing control characters to avoid hangs
 		if strings.IndexFunc(seg, func(r rune) bool {
+			if r == lineContMarker || r == wordSplitMarker || r == literalIFSMarker || r == literalBackslashMarker || r == globEscapeMarker || r == varEscapeMarker || r == commandSubBacktickMarker || r == commandSubBackslashMarker || r == commandSubSingleQuoteMarker || r == commandSubDoubleQuoteMarker || r == commandSubDollarMarker || r == hereDocDollarMarker || r == hereDocBacktickMarker || r == hereDocBackslashMarker {
+				return false
+			}
 			return r < 32 && r != '\n' && r != '\t' && r != '\r'
 		}) != -1 {
 			return core.ExitFailure
@@ -4537,18 +4910,22 @@ func (r *runner) runPipeline(segments []string) int {
 		var nextReader io.Reader
 		var writer io.WriteCloser
 		if !last {
-			pr, pw := io.Pipe()
+			pr, pw, err := os.Pipe()
+			if err != nil {
+				return core.ExitFailure
+			}
 			nextReader = pr
 			writer = pw
 		}
+		cmdTokens := splitTokens(seg)
 		isBuiltin := isBuiltinSegment(seg)
-		if !isBuiltin {
-			cmdTokens := splitTokens(seg)
-			if len(cmdTokens) > 0 {
-				if _, ok := r.funcs[cmdTokens[0]]; ok {
-					isBuiltin = true
-				}
+		if !isBuiltin && len(cmdTokens) > 0 {
+			if _, ok := r.funcs[cmdTokens[0]]; ok {
+				isBuiltin = true
 			}
+		}
+		if !isBuiltin && isNoCommandSegment(cmdTokens) {
+			isBuiltin = true
 		}
 		if !isBuiltin {
 			trimmed := strings.TrimSpace(seg)
@@ -4558,6 +4935,7 @@ func (r *runner) runPipeline(segments []string) int {
 		}
 		stages = append(stages, stage{
 			seg:        seg,
+			lineOffset: segment.lineOffset,
 			isBuiltin:  isBuiltin,
 			prevReader: prevReader,
 			writer:     writer,
@@ -4642,7 +5020,13 @@ func (r *runner) runPipeline(segments []string) int {
 				}
 			}
 			if cmdSpec.redirIn != "" {
-				file, err := os.Open(cmdSpec.redirIn)
+				var file *os.File
+				var err error
+				if cmdSpec.redirInWrite {
+					file, err = os.OpenFile(cmdSpec.redirIn, os.O_RDWR|os.O_CREATE, 0o644)
+				} else {
+					file, err = os.Open(cmdSpec.redirIn)
+				}
 				if err != nil {
 					r.stdio.Errorf("ash: %v\n", err)
 					if s.writer != nil {
@@ -4655,42 +5039,50 @@ func (r *runner) runPipeline(segments []string) int {
 				closers = append(closers, file)
 			}
 			if cmdSpec.redirOut != "" {
-				flags := os.O_CREATE | os.O_WRONLY
-				if cmdSpec.redirOutAppend {
-					flags |= os.O_APPEND
+				if writer, ok := resolveProcSelfFdWriter(cmdSpec.redirOut, outWriter, errWriter); ok {
+					outWriter = writer
 				} else {
-					flags |= os.O_TRUNC
-				}
-				file, err := os.OpenFile(cmdSpec.redirOut, flags, 0o644)
-				if err != nil {
-					r.stdio.Errorf("ash: %v\n", err)
-					if s.writer != nil {
-						_ = s.writer.Close()
+					flags := os.O_CREATE | os.O_WRONLY
+					if cmdSpec.redirOutAppend {
+						flags |= os.O_APPEND
+					} else {
+						flags |= os.O_TRUNC
 					}
-					done <- core.ExitFailure
-					return
+					file, err := os.OpenFile(cmdSpec.redirOut, flags, 0o644)
+					if err != nil {
+						r.stdio.Errorf("ash: %v\n", err)
+						if s.writer != nil {
+							_ = s.writer.Close()
+						}
+						done <- core.ExitFailure
+						return
+					}
+					outWriter = file
+					closers = append(closers, file)
 				}
-				outWriter = file
-				closers = append(closers, file)
 			}
 			if cmdSpec.redirErr != "" {
-				flags := os.O_CREATE | os.O_WRONLY
-				if cmdSpec.redirErrAppend {
-					flags |= os.O_APPEND
+				if writer, ok := resolveProcSelfFdWriter(cmdSpec.redirErr, outWriter, errWriter); ok {
+					errWriter = writer
 				} else {
-					flags |= os.O_TRUNC
-				}
-				file, err := os.OpenFile(cmdSpec.redirErr, flags, 0o644)
-				if err != nil {
-					r.stdio.Errorf("ash: %v\n", err)
-					if s.writer != nil {
-						_ = s.writer.Close()
+					flags := os.O_CREATE | os.O_WRONLY
+					if cmdSpec.redirErrAppend {
+						flags |= os.O_APPEND
+					} else {
+						flags |= os.O_TRUNC
 					}
-					done <- core.ExitFailure
-					return
+					file, err := os.OpenFile(cmdSpec.redirErr, flags, 0o644)
+					if err != nil {
+						r.stdio.Errorf("ash: %v\n", err)
+						if s.writer != nil {
+							_ = s.writer.Close()
+						}
+						done <- core.ExitFailure
+						return
+					}
+					errWriter = file
+					closers = append(closers, file)
 				}
-				errWriter = file
-				closers = append(closers, file)
 			}
 			if cmdSpec.closeStdout {
 				outWriter = io.Discard
@@ -4716,6 +5108,9 @@ func (r *runner) runPipeline(segments []string) int {
 				fmt.Fprintf(r.stdio.Err, "+ %s\n", formatTraceCommand(cmdSpec.prefixAssigns, cmdSpec.args, cmdSpec.argQuoted))
 			}
 			for _, closer := range closers {
+				defer closer.Close()
+			}
+			if closer, ok := stdin.(io.Closer); ok && stdin != r.stdio.In {
 				defer closer.Close()
 			}
 			err := command.Run()
@@ -4774,11 +5169,14 @@ func (r *runner) runPipeline(segments []string) int {
 					}
 				}
 			}
+			lineBase := r.currentLine + s.lineOffset
 			sub := &runner{
 				stdio:      &core.Stdio{In: s.prevReader, Out: stdout, Err: stderr},
 				vars:       copyStringMap(r.vars),
 				exported:   copyBoolMap(r.exported),
+				readonly:   copyBoolMap(r.readonly),
 				funcs:      copyStringMap(r.funcs),
+				funcLines:  copyIntMap(r.funcLines),
 				aliases:    copyStringMap(r.aliases),
 				options:    copyBoolMap(r.options),
 				traps:      copyStringMap(r.traps),
@@ -4790,8 +5188,12 @@ func (r *runner) runPipeline(segments []string) int {
 				jobByPid:   map[int]int{},
 				nextJobID:  1,
 				fdReaders:  copyFdReaders(r.fdReaders),
+				fdWriters:  copyFdWriters(r.fdWriters),
 				signalCh:   make(chan os.Signal, 8),
 			}
+			sub.currentLine = lineBase
+			sub.lineOffset = lineBase - 1
+			sub.vars["LINENO"] = strconv.Itoa(lineBase)
 			trimmedSeg = strings.TrimSpace(segToRun)
 			isCompound := false
 			if strings.HasPrefix(trimmedSeg, "{") || strings.HasPrefix(trimmedSeg, "(") {
@@ -4993,7 +5395,7 @@ func isBuiltinSegment(cmd string) bool {
 	}
 	switch tokens[idx] {
 	case "echo", "true", "false", "pwd", "cd", "exit", "test", "[",
-		"export", "unset", "read", "local", "return", "set", "shift",
+		"export", "readonly", "unset", "read", "local", "return", "set", "shift",
 		"source", ".", ":", "eval", "break", "continue", "wait", "kill",
 		"jobs", "fg", "bg", "trap", "type", "alias", "unalias", "hash",
 		"getopts", "printf", "command", "let", "exec", "expr",
@@ -5004,10 +5406,59 @@ func isBuiltinSegment(cmd string) bool {
 	}
 }
 
+func isNoCommandSegment(tokens []string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+	for i := 0; i < len(tokens); i++ {
+		tok := tokens[i]
+		next := ""
+		if i+1 < len(tokens) {
+			next = tokens[i+1]
+		}
+		if _, usedNext, ok := parseHereDocToken(tok, next); ok {
+			if usedNext {
+				i++
+			}
+			continue
+		}
+		if _, _, ok := parseAssignment(tok); ok {
+			continue
+		}
+		switch tok {
+		case "<", ">", ">>", "2>", "2>>", "1>&-", "2>&-":
+			if tok == "1>&-" || tok == "2>&-" {
+				continue
+			}
+			if i+1 < len(tokens) {
+				i++
+				continue
+			}
+			return false
+		}
+		if strings.Contains(tok, "<&") || strings.Contains(tok, ">&") {
+			if strings.HasSuffix(tok, "<&") || strings.HasSuffix(tok, ">&") {
+				if i+1 < len(tokens) {
+					i++
+					continue
+				}
+				return false
+			}
+			continue
+		}
+		if _, _, ok := splitInlineRedir(tok); ok {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 type commandSpec struct {
 	args           []string
 	argQuoted      []bool
 	redirIn        string
+	redirInWrite   bool
 	redirOut       string
 	redirOutAppend bool
 	redirErr       string
@@ -5044,6 +5495,9 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 	args := []string{}
 	argQuoted := []bool{}
 	seenCmd := false
+	baseVars := r.vars
+	assignVars := copyStringMap(r.vars)
+	hadAssign := false
 	braceClose := -1
 	if len(tokens) > 0 && tokens[0] == "{" {
 		for idx := len(tokens) - 1; idx >= 0; idx-- {
@@ -5108,6 +5562,16 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 				target = tokens[i+1]
 				i++
 			}
+			if target == "-" {
+				if fdStr == "" || fdStr == "1" {
+					spec.closeStdout = true
+					continue
+				}
+				if fdStr == "2" {
+					spec.closeStderr = true
+					continue
+				}
+			}
 			if fdStr == "" || fdStr == "1" {
 				spec.redirOut = "&" + target
 				continue
@@ -5133,7 +5597,7 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 		case "1>&2":
 			spec.redirOut = "&2"
 			continue
-		case "<", ">", ">>", "2>", "2>>", "1>&-", "2>&-":
+		case "<", "<>", "0<>", ">", ">>", "2>", "2>>", "1>&-", "2>&-":
 			if i+1 >= len(tokens) {
 				if tok == "1>&-" || tok == "2>&-" {
 					if tok == "1>&-" {
@@ -5146,9 +5610,25 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 				return spec, fmt.Errorf("missing redirection target")
 			}
 			target := expandTokenWithRunner(tokens[i+1], r)
+			target = unescapeGlob(target)
+			if strings.ContainsRune(target, wordSplitMarker) {
+				sep := " "
+				ifsValue, ifsSet := r.vars["IFS"]
+				if ifsSet {
+					if ifsValue == "" {
+						sep = ""
+					} else {
+						sep = string(ifsValue[0])
+					}
+				}
+				target = strings.ReplaceAll(target, string(wordSplitMarker), sep)
+			}
 			switch tok {
 			case "<":
 				spec.redirIn = target
+			case "<>", "0<>":
+				spec.redirIn = target
+				spec.redirInWrite = true
 			case ">":
 				spec.redirOut = target
 				spec.redirOutAppend = false
@@ -5167,9 +5647,25 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 		default:
 			if redir, target, ok := splitInlineRedir(tok); ok {
 				target = expandTokenWithRunner(target, r)
+				target = unescapeGlob(target)
+				if strings.ContainsRune(target, wordSplitMarker) {
+					sep := " "
+					ifsValue, ifsSet := r.vars["IFS"]
+					if ifsSet {
+						if ifsValue == "" {
+							sep = ""
+						} else {
+							sep = string(ifsValue[0])
+						}
+					}
+					target = strings.ReplaceAll(target, string(wordSplitMarker), sep)
+				}
 				switch redir {
 				case "<", "0<":
 					spec.redirIn = target
+				case "<>", "0<>":
+					spec.redirIn = target
+					spec.redirInWrite = true
 				case ">", "1>":
 					spec.redirOut = target
 					spec.redirOutAppend = false
@@ -5198,9 +5694,15 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 				expandedTok := expandTokenWithRunner(tok, r)
 				if redir, target, ok := splitInlineRedir(expandedTok); ok {
 					target = expandTokenWithRunner(target, r)
+					target = unescapeGlob(target)
+					target = unescapeGlob(target)
+					target = unescapeGlob(target)
 					switch redir {
 					case "<", "0<":
 						spec.redirIn = target
+					case "<>", "0<>":
+						spec.redirIn = target
+						spec.redirInWrite = true
 					case ">", "1>":
 						spec.redirOut = target
 						spec.redirOutAppend = false
@@ -5226,35 +5728,66 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 				}
 			}
 			if name, val, ok := parseAssignment(tok); ok && !seenCmd {
+				hadAssign = true
 				beforeSeq := r.commandSubSeq
+				savedVars := r.vars
+				r.vars = assignVars
 				expandedVal := expandTokenWithRunner(val, r)
+				r.vars = savedVars
 				if r.commandSubSeq != beforeSeq {
 					r.hadAssignCommandSub = true
 					r.assignCommandSubStatus = r.lastCommandSubStatus
 				}
 				expandedVal = unescapeGlob(expandedVal)
-				oldVal, oldExists := r.vars[name]
+				if strings.ContainsRune(expandedVal, wordSplitMarker) {
+					sep := " "
+					ifsValue, ifsSet := r.vars["IFS"]
+					if ifsSet {
+						if ifsValue == "" {
+							sep = ""
+						} else {
+							sep = string(ifsValue[0])
+						}
+					}
+					expandedVal = strings.ReplaceAll(expandedVal, string(wordSplitMarker), sep)
+				}
+				if !isQuotedToken(val) {
+					expandedVal = expandTildeAssignment(expandedVal, assignVars)
+				}
+				if r.readonly[name] {
+					r.reportReadonly(name, "")
+					r.exitFlag = true
+					r.exitCode = 2
+					return spec, nil
+				}
+				oldVal, oldExists := baseVars[name]
 				spec.prefixAssigns = append(spec.prefixAssigns, prefixAssign{
 					name: name, newVal: expandedVal,
 					oldVal: oldVal, oldExist: oldExists,
 					quoted: isQuotedToken(val),
 				})
-				r.vars[name] = expandedVal
+				assignVars[name] = expandedVal
 				continue
 			}
 			tokQuoted := isQuotedToken(tok)
-			expanded := expandTokenWithRunner(tok, r)
-			if expanded == "" && !tokQuoted && hasUnquotedExpansion(tok) {
+			hasUnquoted := !tokQuoted && hasUnquotedExpansion(tok)
+			ifs, ifsSet := r.vars["IFS"]
+			if !ifsSet {
+				ifs = " \t\n"
+			}
+			expanded := ""
+			if hasUnquoted {
+				expanded = r.expandVarsWithRunnerMarkedIFS(tok, ifs, containsUnescapedQuote(tok))
+			} else {
+				expanded = expandTokenWithRunner(tok, r)
+			}
+			if expanded == "" && hasUnquoted {
 				continue
 			}
 			expandedArgs := []string{expanded}
 			if !tokQuoted {
 				// Word splitting on unquoted variable expansions
-				ifs := r.vars["IFS"]
-				if ifs == "" {
-					ifs = " \t\n"
-				}
-				if hasUnquotedExpansion(tok) && (strings.ContainsAny(expanded, ifs) || strings.ContainsAny(expanded, "'\"")) {
+				if hasUnquoted && (strings.ContainsAny(expanded, ifs) || strings.ContainsAny(expanded, "'\"")) {
 					var split []string
 					if containsUnescapedQuote(tok) {
 						split = splitOnIFSWithQuotes(expanded, ifs)
@@ -5268,7 +5801,10 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 					} else {
 						expandedArgs = []string{}
 					}
+				} else if hasUnquoted {
+					expandedArgs[0] = stripLiteralIFSMarkers(expandedArgs[0])
 				}
+				expandedArgs = splitWordMarkers(expandedArgs)
 				// Glob expansion
 				var globbed []string
 				for _, arg := range expandedArgs {
@@ -5276,6 +5812,8 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 					globbed = append(globbed, g...)
 				}
 				expandedArgs = globbed
+			} else {
+				expandedArgs = splitWordMarkers(expandedArgs)
 			}
 			args = append(args, expandedArgs...)
 			for range expandedArgs {
@@ -5285,6 +5823,9 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 				seenCmd = true
 			}
 		}
+	}
+	if hadAssign && !seenCmd {
+		r.vars = assignVars
 	}
 	spec.args = args
 	spec.argQuoted = argQuoted
@@ -5333,6 +5874,16 @@ func parseCommandSpec(tokens []string, vars map[string]string) (commandSpec, err
 				target = tokens[i+1]
 				i++
 			}
+			if target == "-" {
+				if fdStr == "" || fdStr == "1" {
+					spec.closeStdout = true
+					continue
+				}
+				if fdStr == "2" {
+					spec.closeStderr = true
+					continue
+				}
+			}
 			if fdStr == "" || fdStr == "1" {
 				spec.redirOut = "&" + target
 				continue
@@ -5374,6 +5925,9 @@ func parseCommandSpec(tokens []string, vars map[string]string) (commandSpec, err
 			switch tok {
 			case "<":
 				spec.redirIn = target
+			case "<>", "0<>":
+				spec.redirIn = target
+				spec.redirInWrite = true
 			case ">":
 				spec.redirOut = target
 				spec.redirOutAppend = false
@@ -5392,9 +5946,13 @@ func parseCommandSpec(tokens []string, vars map[string]string) (commandSpec, err
 		default:
 			if redir, target, ok := splitInlineRedir(tok); ok {
 				target = expandToken(target, func(s string) string { return expandVars(s, vars) }, func(s string) string { return expandVarsNoQuotes(s, vars) })
+				target = unescapeGlob(target)
 				switch redir {
 				case "<", "0<":
 					spec.redirIn = target
+				case "<>", "0<>":
+					spec.redirIn = target
+					spec.redirInWrite = true
 				case ">", "1>":
 					spec.redirOut = target
 					spec.redirOutAppend = false
@@ -5411,7 +5969,12 @@ func parseCommandSpec(tokens []string, vars map[string]string) (commandSpec, err
 				continue
 			}
 			if name, val, ok := parseAssignment(tok); ok && !seenCmd {
-				vars[name] = expandToken(val, func(s string) string { return expandVars(s, vars) }, func(s string) string { return expandVarsNoQuotes(s, vars) })
+				expanded := expandToken(val, func(s string) string { return expandVars(s, vars) }, func(s string) string { return expandVarsNoQuotes(s, vars) })
+				expanded = unescapeGlob(expanded)
+				if !isQuotedToken(val) {
+					expanded = expandTildeAssignment(expanded, vars)
+				}
+				vars[name] = expanded
 				continue
 			}
 			expanded := expandToken(tok, func(s string) string { return expandVars(s, vars) }, func(s string) string { return expandVarsNoQuotes(s, vars) })
@@ -5432,8 +5995,8 @@ func parseCommandSpec(tokens []string, vars map[string]string) (commandSpec, err
 	return spec, nil
 }
 
-func splitPipelines(cmd string) []string {
-	var parts []string
+func splitPipelinesWithLines(cmd string) []pipelineSegment {
+	var parts []pipelineSegment
 	var buf strings.Builder
 	var inSingle bool
 	var inDouble bool
@@ -5441,8 +6004,14 @@ func splitPipelines(cmd string) []string {
 	escape := false
 	cmdSubDepth := 0
 	arithDepth := 0
+	parenDepth := 0
+	lineOffset := 0
+	segLineOffset := 0
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
+		if c == '\n' || c == lineContMarker {
+			lineOffset++
+		}
 		if escape {
 			buf.WriteByte(c)
 			escape = false
@@ -5493,22 +6062,39 @@ func splitPipelines(cmd string) []string {
 				continue
 			}
 		}
-		if c == '|' && !inSingle && !inDouble && !inBacktick && cmdSubDepth == 0 && arithDepth == 0 {
+		if !inSingle && !inDouble && !inBacktick && cmdSubDepth == 0 && arithDepth == 0 {
+			if c == '(' {
+				parenDepth++
+			} else if c == ')' && parenDepth > 0 {
+				parenDepth--
+			}
+		}
+		if c == '|' && !inSingle && !inDouble && !inBacktick && cmdSubDepth == 0 && arithDepth == 0 && parenDepth == 0 {
 			if i+1 < len(cmd) && cmd[i+1] == '|' {
 				buf.WriteString("||")
 				i++
 				continue
 			}
-			parts = append(parts, strings.TrimSpace(buf.String()))
+			parts = append(parts, pipelineSegment{seg: strings.TrimSpace(buf.String()), lineOffset: segLineOffset})
 			buf.Reset()
+			segLineOffset = lineOffset
 			continue
 		}
 		buf.WriteByte(c)
 	}
 	if buf.Len() > 0 {
-		parts = append(parts, strings.TrimSpace(buf.String()))
+		parts = append(parts, pipelineSegment{seg: strings.TrimSpace(buf.String()), lineOffset: segLineOffset})
 	}
 	return parts
+}
+
+func splitPipelines(cmd string) []string {
+	parts := splitPipelinesWithLines(cmd)
+	segs := make([]string, 0, len(parts))
+	for _, part := range parts {
+		segs = append(segs, part.seg)
+	}
+	return segs
 }
 
 func splitAndOr(cmd string) ([]string, []string) {
@@ -6127,6 +6713,7 @@ func splitCommands(script string) []commandEntry {
 				buf.Reset()
 				buf.WriteString(bufStr[:len(bufStr)-1])
 			}
+			buf.WriteByte(lineContMarker)
 			continue
 		}
 		lastLineContinued = false
@@ -6176,6 +6763,9 @@ func splitTokens(cmd string) []string {
 	escape := false
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
+		if c == lineContMarker {
+			continue
+		}
 		if escape {
 			buf.WriteByte(c)
 			escape = false
@@ -6217,12 +6807,18 @@ func splitTokens(cmd string) []string {
 			continue
 		}
 		// Track $( command substitution
-		if c == '$' && i+1 < len(cmd) && cmd[i+1] == '(' && !inSingle {
-			buf.WriteByte(c)
-			buf.WriteByte('(')
-			inCmdSub++
-			i++
-			continue
+		if c == '$' && !inSingle {
+			j := i + 1
+			for j < len(cmd) && cmd[j] == lineContMarker {
+				j++
+			}
+			if j < len(cmd) && cmd[j] == '(' {
+				buf.WriteByte(c)
+				buf.WriteByte('(')
+				inCmdSub++
+				i = j
+				continue
+			}
 		}
 		if c == '(' && inCmdSub > 0 {
 			buf.WriteByte(c)
@@ -6268,6 +6864,16 @@ func splitTokens(cmd string) []string {
 			inDouble = !inDouble
 			buf.WriteByte(c)
 			continue
+		}
+		if !inSingle && !inDouble && !inBacktick && inCmdSub == 0 && inBrace == 0 && procSubDepth == 0 {
+			if (c == '(' && !(i+1 < len(cmd) && cmd[i+1] == '(')) || (c == ')' && !(i+1 < len(cmd) && cmd[i+1] == ')')) {
+				if buf.Len() > 0 {
+					tokens = append(tokens, buf.String())
+					buf.Reset()
+				}
+				tokens = append(tokens, string(c))
+				continue
+			}
 		}
 		if unicode.IsSpace(rune(c)) && !inSingle && !inDouble && inCmdSub == 0 && !inBacktick && inBrace == 0 {
 			if buf.Len() > 0 {
@@ -6352,6 +6958,10 @@ func splitInlineRedir(tok string) (string, string, bool) {
 			fd := string(tok[0])
 			return fd + ">", tok[2:], true
 		}
+		if tok[1] == '<' && len(tok) > 3 && tok[2] == '>' {
+			fd := string(tok[0])
+			return fd + "<>", tok[3:], true
+		}
 		if tok[1] == '<' && len(tok) > 2 {
 			fd := string(tok[0])
 			return fd + "<", tok[2:], true
@@ -6362,6 +6972,8 @@ func splitInlineRedir(tok string) (string, string, bool) {
 		return "2>>", tok[3:], true
 	case strings.HasPrefix(tok, "2>") && len(tok) > 2:
 		return "2>", tok[2:], true
+	case strings.HasPrefix(tok, "<>") && len(tok) > 2:
+		return "<>", tok[2:], true
 	case strings.HasPrefix(tok, ">>") && len(tok) > 2:
 		return ">>", tok[2:], true
 	case strings.HasPrefix(tok, ">") && len(tok) > 1:
@@ -6412,10 +7024,37 @@ func parseHereDocToken(tok string, next string) (hereDocRequest, bool, bool) {
 	quoted := false
 	marker := rest
 	containsBacktick := strings.Contains(rest, "`")
-	if strings.ContainsAny(rest, "'\"") {
+	hasSingle := strings.Contains(rest, "'")
+	hasDouble := strings.Contains(rest, "\"")
+	if hasSingle || hasDouble {
 		quoted = true
 		marker = strings.ReplaceAll(rest, "'", "")
 		marker = strings.ReplaceAll(marker, "\"", "")
+	}
+	if strings.Contains(marker, "\\") && !hasSingle {
+		quoted = true
+		var buf strings.Builder
+		escape := false
+		for i := 0; i < len(marker); i++ {
+			c := marker[i]
+			if escape {
+				if hasDouble && c != '\\' && c != '"' && c != '$' && c != '`' && c != '\n' {
+					buf.WriteByte('\\')
+				}
+				buf.WriteByte(c)
+				escape = false
+				continue
+			}
+			if c == '\\' {
+				escape = true
+				continue
+			}
+			buf.WriteByte(c)
+		}
+		if escape {
+			buf.WriteByte('\\')
+		}
+		marker = buf.String()
 	}
 	if containsBacktick {
 		quoted = true
@@ -7029,6 +7668,27 @@ func expandDollarSingleQuote(s string) string {
 	return buf.String()
 }
 
+func readReady(reader *bufio.Reader, stdin io.Reader) bool {
+	if reader != nil && reader.Buffered() > 0 {
+		return true
+	}
+	file, ok := stdin.(*os.File)
+	if !ok {
+		return false
+	}
+	fd := int(file.Fd())
+	if fd < 0 {
+		return false
+	}
+	pollFds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	n, err := unix.Poll(pollFds, 0)
+	if err != nil || n == 0 {
+		return false
+	}
+	revents := pollFds[0].Revents
+	return revents&(unix.POLLIN|unix.POLLHUP) != 0
+}
+
 func splitReadFields(s string, ifs string, maxFields int) []string {
 	if ifs == "" {
 		return []string{s}
@@ -7121,13 +7781,126 @@ func splitReadFields(s string, ifs string, maxFields int) []string {
 	return fields
 }
 
+func stripLiteralIFSMarkers(s string) string {
+	if !strings.ContainsRune(s, literalIFSMarker) {
+		return s
+	}
+	var buf strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == literalIFSMarker {
+			if i+1 < len(s) {
+				buf.WriteByte(s[i+1])
+				i++
+			}
+			continue
+		}
+		buf.WriteByte(s[i])
+	}
+	return buf.String()
+}
+
+func splitWordMarkers(args []string) []string {
+	var out []string
+	for _, arg := range args {
+		arg = stripLiteralIFSMarkers(arg)
+		if strings.ContainsRune(arg, wordSplitMarker) {
+			parts := strings.Split(arg, string(wordSplitMarker))
+			out = append(out, parts...)
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+func splitWordFields(s string, ifs string) []string {
+	if ifs == "" {
+		return []string{stripLiteralIFSMarkers(s)}
+	}
+	var fields []string
+	var buf strings.Builder
+	isIFS := func(c byte) bool {
+		return strings.IndexByte(ifs, c) >= 0
+	}
+	isWhitespaceIFS := func(c byte) bool {
+		return (c == ' ' || c == '\t' || c == '\n') && isIFS(c)
+	}
+	i := 0
+	for i < len(s) {
+		if s[i] == literalIFSMarker {
+			break
+		}
+		if !isWhitespaceIFS(s[i]) {
+			break
+		}
+		i++
+	}
+	for i < len(s) {
+		c := s[i]
+		if c == literalIFSMarker {
+			if i+1 < len(s) {
+				buf.WriteByte(s[i+1])
+				i += 2
+				continue
+			}
+			i++
+			continue
+		}
+		if isIFS(c) {
+			fields = append(fields, buf.String())
+			buf.Reset()
+			for i < len(s) {
+				if s[i] == literalIFSMarker {
+					break
+				}
+				if !isWhitespaceIFS(s[i]) {
+					break
+				}
+				i++
+			}
+			if i < len(s) && s[i] != literalIFSMarker && isIFS(s[i]) && !isWhitespaceIFS(s[i]) {
+				i++
+				for i < len(s) {
+					if s[i] == literalIFSMarker {
+						break
+					}
+					if !isWhitespaceIFS(s[i]) {
+						break
+					}
+					i++
+				}
+			}
+			continue
+		}
+		buf.WriteByte(c)
+		i++
+	}
+	if buf.Len() > 0 || len(fields) > 0 {
+		fields = append(fields, buf.String())
+	}
+	return fields
+}
+
+func lastUnescapedChar(s string) (byte, bool, bool) {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == literalIFSMarker {
+			if i+1 < len(s) {
+				return s[i+1], true, true
+			}
+			continue
+		}
+		return s[i], true, false
+	}
+	return 0, false, false
+}
+
 func splitOnIFS(s string, ifs string) []string {
-	fields := splitReadFields(s, ifs, 0)
+	fields := splitWordFields(s, ifs)
 	if s == "" || ifs == "" {
 		return fields
 	}
-	last := s[len(s)-1]
-	if strings.IndexByte(ifs, last) >= 0 {
+	last, ok, escaped := lastUnescapedChar(s)
+	if ok && !escaped && strings.IndexByte(ifs, last) >= 0 {
 		if len(fields) > 0 && fields[len(fields)-1] == "" {
 			fields = fields[:len(fields)-1]
 		}
@@ -7137,7 +7910,7 @@ func splitOnIFS(s string, ifs string) []string {
 
 func splitOnIFSWithQuotes(s string, ifs string) []string {
 	if ifs == "" {
-		ifs = " \t\n"
+		return []string{stripLiteralIFSMarkers(s)}
 	}
 	var result []string
 	var buf strings.Builder
@@ -7146,6 +7919,14 @@ func splitOnIFSWithQuotes(s string, ifs string) []string {
 	tokenStarted := false
 	for i := 0; i < len(s); i++ {
 		c := s[i]
+		if c == literalIFSMarker {
+			if i+1 < len(s) {
+				buf.WriteByte(s[i+1])
+				tokenStarted = true
+				i++
+			}
+			continue
+		}
 		if c == '\'' && !inDouble {
 			inSingle = !inSingle
 			tokenStarted = true
@@ -7372,7 +8153,9 @@ func (r *runner) startProcessSub(cmd string, mode byte) (string, error) {
 			stdio:      std,
 			vars:       copyStringMap(r.vars),
 			exported:   copyBoolMap(r.exported),
+			readonly:   copyBoolMap(r.readonly),
 			funcs:      copyStringMap(r.funcs),
+			funcLines:  copyIntMap(r.funcLines),
 			aliases:    copyStringMap(r.aliases),
 			traps:      copyStringMap(r.traps),
 			ignored:    copySignalMap(r.ignored),
@@ -7468,6 +8251,21 @@ func containsUnescapedQuote(tok string) bool {
 
 // expandVarsWithRunner expands variables including positional parameters
 func (r *runner) expandVarsWithRunner(tok string) string {
+	return r.expandVarsWithRunnerInternal(tok, "", false, false)
+}
+
+func (r *runner) expandVarsWithRunnerMarkedIFS(tok string, ifs string, preserveQuotes bool) string {
+	return r.expandVarsWithRunnerInternal(tok, ifs, true, preserveQuotes)
+}
+
+func appendLiteralWithIFS(buf *strings.Builder, c byte, ifs string, markLiteralIFS bool) {
+	if markLiteralIFS && ifs != "" && strings.IndexByte(ifs, c) >= 0 {
+		buf.WriteByte(literalIFSMarker)
+	}
+	buf.WriteByte(c)
+}
+
+func (r *runner) expandVarsWithRunnerInternal(tok string, ifs string, markLiteralIFS bool, preserveQuotes bool) string {
 	// First expand arithmetic $((...))
 	resetArithError()
 	tok = expandArithmetic(tok, r.vars)
@@ -7493,7 +8291,7 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 			if !inSingle && !inDouble {
 				if c == '\\' {
 					buf.WriteByte(literalBackslashMarker)
-					buf.WriteByte('\\')
+					appendLiteralWithIFS(&buf, '\\', ifs, markLiteralIFS)
 					escape = false
 					continue
 				}
@@ -7501,7 +8299,7 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 					buf.WriteByte(globEscapeMarker)
 				}
 			}
-			buf.WriteByte(c)
+			appendLiteralWithIFS(&buf, c, ifs, markLiteralIFS)
 			escape = false
 			continue
 		}
@@ -7511,7 +8309,7 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 					next := tok[i+1]
 					if next == '\\' {
 						buf.WriteByte(literalBackslashMarker)
-						buf.WriteByte('\\')
+						appendLiteralWithIFS(&buf, '\\', ifs, markLiteralIFS)
 						i++
 						continue
 					}
@@ -7521,7 +8319,7 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 					}
 				}
 				buf.WriteByte(literalBackslashMarker)
-				buf.WriteByte('\\')
+				appendLiteralWithIFS(&buf, '\\', ifs, markLiteralIFS)
 				continue
 			}
 			escape = true
@@ -7529,28 +8327,34 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 		}
 		if c == '\'' && !inDouble {
 			inSingle = !inSingle
+			if preserveQuotes {
+				appendLiteralWithIFS(&buf, c, ifs, markLiteralIFS)
+			}
 			continue
 		}
 		if c == '"' && !inSingle {
 			inDouble = !inDouble
+			if preserveQuotes {
+				appendLiteralWithIFS(&buf, c, ifs, markLiteralIFS)
+			}
 			continue
 		}
 		if inSingle {
 			if isGlobChar(c) {
 				buf.WriteByte(globEscapeMarker)
 			}
-			buf.WriteByte(c)
+			appendLiteralWithIFS(&buf, c, ifs, markLiteralIFS)
 			continue
 		}
 		if inDouble && c != '$' {
 			if isGlobChar(c) {
 				buf.WriteByte(globEscapeMarker)
 			}
-			buf.WriteByte(c)
+			appendLiteralWithIFS(&buf, c, ifs, markLiteralIFS)
 			continue
 		}
 		if c != '$' || i+1 >= len(tok) {
-			buf.WriteByte(c)
+			appendLiteralWithIFS(&buf, c, ifs, markLiteralIFS)
 			continue
 		}
 		next := tok[i+1]
@@ -7615,13 +8419,40 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 		}
 		// $@ - all positional params as separate words
 		if next == '@' {
-			buf.WriteString(strings.Join(r.positional, " "))
+			if markLiteralIFS {
+				buf.WriteString(strings.Join(r.positional, string(wordSplitMarker)))
+			} else {
+				sep := " "
+				ifsValue, ifsSet := r.vars["IFS"]
+				if ifsSet {
+					if ifsValue == "" {
+						sep = ""
+					} else {
+						sep = string(ifsValue[0])
+					}
+				}
+				buf.WriteString(strings.Join(r.positional, sep))
+			}
 			i++
 			continue
 		}
 		// $* - all positional params as single string
 		if next == '*' {
-			buf.WriteString(strings.Join(r.positional, " "))
+			sep := " "
+			ifsValue, ifsSet := r.vars["IFS"]
+			if ifsSet {
+				if ifsValue == "" {
+					if markLiteralIFS {
+						buf.WriteString(strings.Join(r.positional, string(wordSplitMarker)))
+						i++
+						continue
+					}
+					sep = ""
+				} else {
+					sep = string(ifsValue[0])
+				}
+			}
+			buf.WriteString(strings.Join(r.positional, sep))
 			i++
 			continue
 		}
@@ -7645,7 +8476,7 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 			j++
 		}
 		if j == i+1 {
-			buf.WriteByte(tok[i])
+			appendLiteralWithIFS(&buf, tok[i], ifs, markLiteralIFS)
 			continue
 		}
 		name := tok[i+1 : j]
@@ -7653,7 +8484,7 @@ func (r *runner) expandVarsWithRunner(tok string) string {
 		i = j - 1
 	}
 	if escape {
-		buf.WriteByte('\\')
+		appendLiteralWithIFS(&buf, '\\', ifs, markLiteralIFS)
 	}
 	return restoreCommandSubMarkers(buf.String())
 }
@@ -7741,13 +8572,22 @@ func (r *runner) expandVarsWithRunnerNoQuotes(tok string) string {
 		}
 		// $@ - all positional params as separate words
 		if next == '@' {
-			buf.WriteString(strings.Join(r.positional, " "))
+			buf.WriteString(strings.Join(r.positional, string(wordSplitMarker)))
 			i++
 			continue
 		}
 		// $* - all positional params as single string
 		if next == '*' {
-			buf.WriteString(strings.Join(r.positional, " "))
+			sep := " "
+			ifsValue, ifsSet := r.vars["IFS"]
+			if ifsSet {
+				if ifsValue == "" {
+					sep = ""
+				} else {
+					sep = string(ifsValue[0])
+				}
+			}
+			buf.WriteString(strings.Join(r.positional, sep))
 			i++
 			continue
 		}
@@ -7868,8 +8708,75 @@ func (r *runner) expandBraceExprWithRunner(expr string, mode braceQuoteMode) (st
 		r.exitCode = 2
 		return "", false
 	}
-	if len(expr) == 0 || expr[0] == '+' || expr[0] == '-' || expr[0] == '=' || expr[0] == '?' || expr[0] == ':' {
+	missingBrace := func() (string, bool) {
+		line := r.currentLine
+		if line == 0 || (line == 1 && r.scriptName == "SHELL") {
+			line = 0
+		}
+		fmt.Fprintf(r.stdio.Err, "%s: line %d: syntax error: missing '}'\n", r.scriptName, line)
+		r.exitFlag = true
+		r.exitCode = 2
+		return "", false
+	}
+	paramValue := func(name string) (string, bool) {
+		if val, set := r.specialParamValue(name); set {
+			return val, true
+		}
+		val, ok := r.vars[name]
+		return val, ok
+	}
+	paramError := func(name string, msg string) (string, bool) {
+		line := r.currentLine
+		if line == 0 || (line == 1 && r.scriptName == "SHELL") {
+			line = 0
+		}
+		fmt.Fprintf(r.stdio.Err, "%s: line %d: %s: %s\n", r.scriptName, line, name, msg)
+		r.exitFlag = true
+		r.exitCode = 2
+		return "", false
+	}
+	maybeStrip := func(value string) string {
+		switch mode {
+		case braceStripBoth:
+			return escapeGlobCharsInQuotes(value)
+		case braceStripDouble:
+			return removeDoubleQuotes(value)
+		default:
+			return value
+		}
+	}
+	if len(expr) == 0 || expr[0] == '+' || expr[0] == '-' || expr[0] == '=' || expr[0] == ':' || expr[0] == '&' {
 		return badSubst()
+	}
+	if idx := strings.Index(expr, ":"); idx > 0 && idx == len(expr)-1 {
+		return missingBrace()
+	}
+	if idx := strings.Index(expr, ":?"); idx > 0 {
+		name := expr[:idx]
+		val, set := paramValue(name)
+		if set && val != "" {
+			return val, true
+		}
+		expanded := r.expandVarsPreserveQuotesWithRunner(expr[idx+2:])
+		msg := unescapeParamExpansionValue(maybeStrip(expanded))
+		if msg == "" {
+			msg = "parameter not set or null"
+		}
+		return paramError(name, msg)
+	}
+	if idx := strings.Index(expr, "?"); idx > 0 && !strings.HasPrefix(expr, "#") && !strings.Contains(expr[:idx], ":") && !strings.Contains(expr[:idx], "/") &&
+		(expr[:idx] == "#" || !strings.Contains(expr[:idx], "#")) && !strings.Contains(expr[:idx], "%") {
+		name := expr[:idx]
+		val, set := paramValue(name)
+		if set {
+			return val, true
+		}
+		expanded := r.expandVarsPreserveQuotesWithRunner(expr[idx+1:])
+		msg := unescapeParamExpansionValue(maybeStrip(expanded))
+		if msg == "" {
+			msg = "parameter not set"
+		}
+		return paramError(name, msg)
 	}
 	// Handle positional params ${1}, ${10}, etc.
 	if len(expr) > 0 && expr[0] >= '0' && expr[0] <= '9' {
@@ -7882,6 +8789,16 @@ func (r *runner) expandBraceExprWithRunner(expr string, mode braceQuoteMode) (st
 				return r.positional[idx-1], true
 			}
 			return "", true
+		}
+		if name, rest, ok := splitSpecialParamOperator(expr); ok && name != "" {
+			if strings.HasPrefix(rest, ":") || strings.HasPrefix(rest, "+") || strings.HasPrefix(rest, "-") || strings.HasPrefix(rest, "?") ||
+				strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, "#") || strings.HasPrefix(rest, "%") || strings.HasPrefix(rest, "/") {
+				// Allow operator handling below.
+			} else {
+				return badSubst()
+			}
+		} else {
+			return badSubst()
 		}
 	}
 	// ${@} ${*}
@@ -7905,12 +8822,20 @@ func (r *runner) expandBraceExprWithRunner(expr string, mode braceQuoteMode) (st
 			return badSubst()
 		}
 		if strings.HasPrefix(rest, ":-") || strings.HasPrefix(rest, ":+") || strings.HasPrefix(rest, ":?") ||
-			strings.HasPrefix(rest, "-") || strings.HasPrefix(rest, "+") || strings.HasPrefix(rest, "?") {
+			strings.HasPrefix(rest, "-") || strings.HasPrefix(rest, "+") || (strings.HasPrefix(rest, "?") && name != "#") {
 			varsCopy := copyStringMap(r.vars)
 			if val, set := r.specialParamValue(name); set {
 				varsCopy[name] = val
 			}
 			return expandBraceExpr(expr, varsCopy, mode)
+		}
+		if strings.HasPrefix(rest, ":") && !strings.HasPrefix(rest, ":-") && !strings.HasPrefix(rest, ":=") &&
+			!strings.HasPrefix(rest, ":+") && !strings.HasPrefix(rest, ":?") {
+			if val, set := r.specialParamValue(name); set {
+				varsCopy := copyStringMap(r.vars)
+				varsCopy[name] = val
+				return expandBraceExpr(expr, varsCopy, mode)
+			}
 		}
 	}
 	// ${#}
@@ -7941,6 +8866,18 @@ func (r *runner) expandBraceExprWithRunner(expr string, mode braceQuoteMode) (st
 	// ${#*} - number of positional params (same as $#)
 	if expr == "#@" || expr == "#*" {
 		return strconv.Itoa(len(r.positional)), false
+	}
+	if len(expr) > 1 && expr[0] == '#' {
+		name := expr[1:]
+		if val, set := r.specialParamValue(name); set {
+			lang := r.vars["LANG"]
+			lcAll := r.vars["LC_ALL"]
+			if strings.Contains(lang, "UTF-8") || strings.Contains(lang, "utf-8") ||
+				strings.Contains(lcAll, "UTF-8") || strings.Contains(lcAll, "utf-8") {
+				return strconv.Itoa(utf8.RuneCountInString(val)), false
+			}
+			return strconv.Itoa(len(val)), false
+		}
 	}
 	// Delegate to expandBraceExpr for other cases
 	// If expr contains $'...', expand ANSI-C quotes
@@ -7979,7 +8916,13 @@ func (r *runner) expandBraceExprWithRunner(expr string, mode braceQuoteMode) (st
 			}
 		}
 	}
-	return expandBraceExpr(expr, r.vars, mode)
+	varsMap := r.vars
+	if strings.HasPrefix(expr, "##") || strings.HasPrefix(expr, "#%") {
+		varsCopy := copyStringMap(r.vars)
+		varsCopy["#"] = strconv.Itoa(len(r.positional))
+		varsMap = varsCopy
+	}
+	return expandBraceExpr(expr, varsMap, mode)
 }
 
 func splitSpecialParamOperator(expr string) (string, string, bool) {
@@ -8069,6 +9012,7 @@ func expandArithmetic(tok string, vars map[string]string) string {
 		}
 		expr := tok[start+3 : end]
 		expr = expandArithmetic(expr, vars)
+		expr = expandVarsPreserveQuotes(expr, vars)
 		result := evalArithmetic(expr, vars)
 		tok = tok[:start] + strconv.FormatInt(result, 10) + tok[end+2:]
 	}
@@ -9119,6 +10063,127 @@ func stripPatternQuotes(value string) string {
 	return buf.String()
 }
 
+func stripPatternEscapes(value string) string {
+	var buf strings.Builder
+	escape := false
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if escape {
+			if c == '\\' {
+				buf.WriteByte(literalBackslashMarker)
+				buf.WriteByte('\\')
+				escape = false
+				continue
+			}
+			if isGlobChar(c) {
+				buf.WriteByte(globEscapeMarker)
+			}
+			buf.WriteByte(c)
+			escape = false
+			continue
+		}
+		if c == '\\' {
+			escape = true
+			continue
+		}
+		buf.WriteByte(c)
+	}
+	if escape {
+		buf.WriteByte('\\')
+	}
+	return buf.String()
+}
+
+func expandTildePattern(pattern string, vars map[string]string) string {
+	if pattern == "" || pattern[0] != '~' {
+		return pattern
+	}
+	end := strings.IndexByte(pattern, '/')
+	userPart := ""
+	rest := ""
+	if end >= 0 {
+		userPart = pattern[1:end]
+		rest = pattern[end:]
+	} else {
+		userPart = pattern[1:]
+	}
+	home := ""
+	if userPart == "" {
+		home = vars["HOME"]
+		if home == "" {
+			if h, err := os.UserHomeDir(); err == nil {
+				home = h
+			}
+		}
+	} else {
+		if u, err := user.Lookup(userPart); err == nil {
+			home = u.HomeDir
+		}
+	}
+	if home == "" {
+		return pattern
+	}
+	return home + rest
+}
+
+func normalizeBracketBackslash(pattern string) string {
+	var buf strings.Builder
+	inBracket := false
+	for i := 0; i < len(pattern); i++ {
+		c := pattern[i]
+		if c == '[' {
+			inBracket = true
+			buf.WriteByte(c)
+			continue
+		}
+		if c == ']' && inBracket {
+			inBracket = false
+			buf.WriteByte(c)
+			continue
+		}
+		if inBracket && c == '\\' {
+			buf.WriteByte('\\')
+			if i+1 < len(pattern) && pattern[i+1] == '\\' {
+				buf.WriteByte('\\')
+				i++
+				continue
+			}
+			buf.WriteByte('\\')
+			continue
+		}
+		buf.WriteByte(c)
+	}
+	return buf.String()
+}
+
+func expandParamPattern(pattern string, vars map[string]string, mode braceQuoteMode) string {
+	pattern = expandVarsPreserveQuotes(pattern, vars)
+	quoted := false
+	if stripped, wasQuoted := stripOuterQuotes(pattern); wasQuoted {
+		pattern = stripped
+		quoted = true
+	}
+	pattern = stripPatternQuotes(pattern)
+	pattern = normalizeBracketBackslash(pattern)
+	if !quoted && mode == braceStripBoth {
+		pattern = expandTildePattern(pattern, vars)
+	}
+	return pattern
+}
+
+func expandTildeAssignment(value string, vars map[string]string) string {
+	if !strings.Contains(value, "~") {
+		return value
+	}
+	parts := strings.Split(value, ":")
+	for i, part := range parts {
+		if strings.HasPrefix(part, "~") {
+			parts[i] = expandTildePattern(part, vars)
+		}
+	}
+	return strings.Join(parts, ":")
+}
+
 func patternHasGlobMeta(pattern string) bool {
 	marker := false
 	for i := 0; i < len(pattern); i++ {
@@ -9232,7 +10297,10 @@ const (
 	literalBackslashMarker      = '\x1d'
 	globEscapeMarker            = '\x1e'
 	varEscapeMarker             = '\x1f'
+	lineContMarker              = '\x12'
 	commandSubBacktickMarker    = '\x14'
+	wordSplitMarker             = '\x13'
+	literalIFSMarker            = '\x15'
 	commandSubBackslashMarker   = '\x16'
 	commandSubSingleQuoteMarker = '\x17'
 	commandSubDoubleQuoteMarker = '\x18'
@@ -9297,7 +10365,7 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 				if offset < 0 {
 					offset = len(val) + offset
 					if offset < 0 {
-						offset = 0
+						return "", true
 					}
 				}
 				if offset > len(val) {
@@ -9411,6 +10479,12 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		}
 		return "", false
 	}
+	if strings.HasPrefix(expr, "##") || strings.HasPrefix(expr, "#%") {
+		dummy := "__ash_hash__"
+		varsCopy := copyStringMap(vars)
+		varsCopy[dummy] = vars["#"]
+		return expandBraceExpr(dummy+expr[1:], varsCopy, mode)
+	}
 	// ${#VAR} - length (character count, not byte count)
 	if strings.HasPrefix(expr, "#") {
 		name := expr[1:]
@@ -9450,16 +10524,38 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 		if stripped, quoted := stripOuterQuotes(replacement); quoted {
 			replacement = stripped
 		}
-		// Strip quotes from pattern and escape glob chars if quoted
-		if stripped, quoted := stripOuterQuotes(pattern); quoted {
-			pattern = escapeGlobChars(stripped)
+		// Expand pattern variables and preserve escaped glob chars
+		patternHasQuotes := strings.ContainsAny(pattern, "\"'")
+		if patternHasQuotes {
+			pattern = expandParamPattern(pattern, vars, mode)
+			if strings.Contains(pattern, "\\") {
+				var buf strings.Builder
+				for i := 0; i < len(pattern); i++ {
+					if pattern[i] == '\\' {
+						buf.WriteByte(literalBackslashMarker)
+						buf.WriteByte('\\')
+						continue
+					}
+					buf.WriteByte(pattern[i])
+				}
+				pattern = buf.String()
+			}
 		} else {
-			pattern = stripped
+			pattern = expandVarsPreserveQuotes(pattern, vars)
+			pattern = stripPatternEscapes(pattern)
+			pattern = normalizeBracketBackslash(pattern)
+			if mode == braceStripBoth {
+				pattern = expandTildePattern(pattern, vars)
+			}
 		}
-		// Unescape backslashes in pattern and replacement
-		pattern = unescapeBackslashes(pattern)
 		pattern = normalizePatternForMatch(pattern)
+		if normalized, _ := normalizeGlobPattern(pattern); normalized != "" {
+			pattern = normalized
+		}
 		replacement = unescapeReplacement(replacement)
+		if strings.Contains(replacement, "$") {
+			replacement = expandVarsPreserveQuotes(replacement, vars)
+		}
 		val, isSet := vars[name]
 		if !isSet {
 			return "", true
@@ -9531,10 +10627,8 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR##pattern} - remove longest prefix
 	if idx := strings.Index(expr, "##"); idx > 0 {
 		name := expr[:idx]
-		pattern := expr[idx+2:]
+		pattern := expandParamPattern(expr[idx+2:], vars, mode)
 		val := vars[name]
-		pattern = expandVarsPreserveQuotes(pattern, vars)
-		pattern = stripPatternQuotes(pattern)
 		if pattern == "*" {
 			return "", true
 		}
@@ -9559,10 +10653,8 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR#pattern} - remove shortest prefix (simple wildcard support)
 	if idx := strings.Index(expr, "#"); idx > 0 {
 		name := expr[:idx]
-		pattern := expr[idx+1:]
+		pattern := expandParamPattern(expr[idx+1:], vars, mode)
 		val := vars[name]
-		pattern = expandVarsPreserveQuotes(pattern, vars)
-		pattern = stripPatternQuotes(pattern)
 		if len(pattern) == 0 {
 			return val, true
 		}
@@ -9590,10 +10682,8 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR%%pattern} - remove longest suffix
 	if idx := strings.Index(expr, "%%"); idx > 0 {
 		name := expr[:idx]
-		pattern := expr[idx+2:]
+		pattern := expandParamPattern(expr[idx+2:], vars, mode)
 		val := vars[name]
-		pattern = expandVarsPreserveQuotes(pattern, vars)
-		pattern = stripPatternQuotes(pattern)
 		if pattern == "*" {
 			return "", true
 		}
@@ -9618,15 +10708,13 @@ func expandBraceExpr(expr string, vars map[string]string, mode braceQuoteMode) (
 	// ${VAR%pattern} - remove shortest suffix (simple wildcard support)
 	if idx := strings.Index(expr, "%"); idx > 0 {
 		name := expr[:idx]
-		pattern := expr[idx+1:]
+		pattern := expandParamPattern(expr[idx+1:], vars, mode)
 		val := vars[name]
-		pattern = expandVarsPreserveQuotes(pattern, vars)
-		pattern = stripPatternQuotes(pattern)
 		if len(pattern) == 0 {
 			return val, true
 		}
 		if pattern == "*" {
-			return "", true
+			return val, true
 		}
 		if !patternHasGlobMeta(pattern) {
 			literal := unescapeGlob(pattern)
@@ -9947,7 +11035,9 @@ func runCommandSub(cmdStr string, vars map[string]string) string {
 		stdio:      std,
 		vars:       map[string]string{},
 		exported:   map[string]bool{},
+		readonly:   map[string]bool{},
 		funcs:      map[string]string{},
+		funcLines:  map[string]int{},
 		aliases:    map[string]string{},
 		traps:      map[string]string{},
 		ignored:    map[os.Signal]bool{},
@@ -10006,7 +11096,9 @@ func (r *runner) runCommandSubWithRunner(cmdStr string, backtick bool) string {
 		stdio:            std,
 		vars:             copyStringMap(r.vars),
 		exported:         copyBoolMap(r.exported),
+		readonly:         copyBoolMap(r.readonly),
 		funcs:            copyStringMap(r.funcs),
+		funcLines:        copyIntMap(r.funcLines),
 		aliases:          copyStringMap(r.aliases),
 		traps:            copyStringMap(r.traps),
 		ignored:          copySignalMap(r.ignored),

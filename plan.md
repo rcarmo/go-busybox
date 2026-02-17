@@ -3,6 +3,7 @@
 ## Status
 - many_ifs.tests now passes and completes in ~19s.
 - ash-quoting suite passes after backslash/pattern fixes.
+- ash-vars suite now passes (var_in_pipes/var_bash*/var_posix1/var_unbackslash1 fixes).
 - Full ash test suite has not been re-run since latest fixes.
 
 ## Recent Fixes
@@ -17,8 +18,12 @@
 - Fixed backslash handling in tokenization for single-quoted strings.
 - Hardened case pattern parsing to ignore `)` inside bracket expressions.
 - Improved glob/pattern handling for parameter expansion and case patterns (bracket escapes, alternation splitting, normalize glob escapes).
+- Added paren-depth pipeline splitting and ensured prefix assignments apply in subshell/external envs.
+- Fixed bash-style substring offsets, replacement expansion in ${var/pat/repl}, and literal backslash/glob escaping in patterns.
+- Ensured function prefix assignments restore, `%*` keeps value for shortest suffix, and line-continuation `$\
+(` parses as command substitution.
 
 ## Next Steps
 1. Re-run full ash busybox diff suite and update pass/fail counts.
-2. Triage remaining failures by category (function defs, command builtin, errors, local, subshells).
+2. Triage any remaining failures by category (function defs, builtins, errors, local, subshells).
 3. Remove any leftover debug-only code if found.
