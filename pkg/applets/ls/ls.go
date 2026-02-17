@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/rcarmo/go-busybox/pkg/core"
@@ -29,6 +30,7 @@ type Options struct {
 	NoSort     bool // -f: do not sort
 	Classify   bool // -F: append indicator to entries
 	DirSlash   bool // -p: append / to directories
+	ShowBlocks bool // -s: show allocated blocks
 }
 
 // Run executes the ls command with the given arguments.
@@ -71,6 +73,8 @@ func Run(stdio *core.Stdio, args []string) int {
 					opts.Classify = true
 				case 'p':
 					opts.DirSlash = true
+				case 's':
+					opts.ShowBlocks = true
 				default:
 					return core.UsageError(stdio, "ls", "invalid option -- '"+string(c)+"'")
 				}
@@ -179,7 +183,7 @@ func sortEntries(entries []fs.DirEntry, opts *Options) {
 			tj, _ := entries[j].Info()
 			less = ti.Size() > tj.Size()
 		} else {
-			less = strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
+			less = entries[i].Name() < entries[j].Name()
 		}
 
 		if opts.Reverse {
@@ -190,6 +194,10 @@ func sortEntries(entries []fs.DirEntry, opts *Options) {
 }
 
 func printEntry(stdio *core.Stdio, name string, path string, info fs.FileInfo, opts *Options) {
+	if opts.ShowBlocks {
+		blocks := getBlocks(path, info)
+		stdio.Printf("%6d ", blocks)
+	}
 	if opts.Long {
 		mode := info.Mode()
 		size := info.Size()
@@ -242,6 +250,17 @@ func classifyChar(info fs.FileInfo) string {
 
 func formatTime(t time.Time) string {
 	return t.Format("Jan _2 15:04")
+}
+
+func getBlocks(path string, info fs.FileInfo) int64 {
+	if sys := info.Sys(); sys != nil {
+		if stat, ok := sys.(*syscall.Stat_t); ok {
+			// st_blocks is in 512-byte units; convert to 1024-byte
+			return stat.Blocks / 2
+		}
+	}
+	// Fallback: estimate from size (round up to 4K blocks)
+	return (info.Size() + 4095) / 4096 * 4
 }
 
 func humanSize(size int64) string {

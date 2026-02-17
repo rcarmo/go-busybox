@@ -13,14 +13,17 @@ import (
 
 // Options holds cp command options.
 type Options struct {
-	Recursive   bool // -r, -R: copy directories recursively
-	Force       bool // -f: force overwrite
-	Interactive bool // -i: prompt before overwrite
-	Preserve    bool // -p: preserve mode, ownership, timestamps
-	NoClobber   bool // -n: do not overwrite existing files
-	Verbose     bool // -v: verbose output
-	CopyToDir   string
-	NoTargetDir bool
+	Recursive    bool // -r, -R: copy directories recursively
+	Force        bool // -f: force overwrite
+	Interactive  bool // -i: prompt before overwrite
+	Preserve     bool // -p: preserve mode, ownership, timestamps
+	NoClobber    bool // -n: do not overwrite existing files
+	Verbose      bool // -v: verbose output
+	CopyToDir    string
+	NoTargetDir  bool
+	NoDereference bool // -P, -d: don't follow symlinks
+	Dereference   bool // -L: follow all symlinks
+	DerefArgs     bool // -H: follow only command-line symlinks
 }
 
 // Run executes the cp command with the given arguments.
@@ -62,6 +65,17 @@ func Run(stdio *core.Stdio, args []string) int {
 					case 'a':
 						opts.Preserve = true
 						opts.Recursive = true
+						opts.NoDereference = true
+					case 'd':
+						opts.NoDereference = true
+					case 'P':
+						opts.NoDereference = true
+						opts.Dereference = false
+					case 'L':
+						opts.Dereference = true
+						opts.NoDereference = false
+					case 'H':
+						opts.DerefArgs = true
 					default:
 						return core.UsageError(stdio, "cp", "invalid option -- '"+string(c)+"'")
 					}
@@ -70,6 +84,12 @@ func Run(stdio *core.Stdio, args []string) int {
 		} else {
 			paths = append(paths, arg)
 		}
+	}
+
+	// POSIX: cp -R without -L defaults to -P (preserve symlinks)
+	// -H overrides: follow command-line symlinks, but preserve internal
+	if opts.Recursive && !opts.Dereference {
+		opts.NoDereference = true
 	}
 
 	if len(paths) < 2 {
@@ -95,7 +115,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	for _, src := range sources {
 		target := fileutil.TargetPath(src, dest, destIsDir)
 
-		if err := copyPath(stdio, src, target, &opts); err != nil {
+		if err := copyPath(stdio, src, target, &opts, true); err != nil {
 			exitCode = core.ExitFailure
 		}
 	}
@@ -103,22 +123,63 @@ func Run(stdio *core.Stdio, args []string) int {
 	return exitCode
 }
 
-func copyPath(stdio *core.Stdio, src, dest string, opts *Options) error {
-	srcInfo, err := fs.Stat(src)
+func copyPath(stdio *core.Stdio, src, dest string, opts *Options, isTopLevel bool) error {
+	// Determine whether to follow symlinks for this source
+	var srcInfo os.FileInfo
+	var err error
+	followSymlink := true
+	if opts.NoDereference {
+		followSymlink = false
+	}
+	if opts.DerefArgs && isTopLevel {
+		followSymlink = true
+	}
+	if opts.Dereference {
+		followSymlink = true
+	}
+
+	if followSymlink {
+		srcInfo, err = fs.Stat(src)
+	} else {
+		srcInfo, err = fs.Lstat(src)
+	}
 	if err != nil {
 		stdio.Errorf("cp: cannot stat '%s': %v\n", src, err)
 		return err
 	}
 
+	// Handle symlinks when not following them
+	if srcInfo.Mode()&os.ModeSymlink != 0 {
+		return copySymlink(stdio, src, dest, opts)
+	}
+
 	if srcInfo.IsDir() {
 		if !opts.Recursive {
-			stdio.Errorf("cp: -r not specified; omitting directory '%s'\n", src)
+			stdio.Errorf("cp: omitting directory '%s'\n", src)
 			return os.ErrInvalid
 		}
 		return copyDir(stdio, src, dest, opts)
 	}
 
 	return copyFile(stdio, src, dest, srcInfo, opts)
+}
+
+func copySymlink(stdio *core.Stdio, src, dest string, opts *Options) error {
+	target, err := os.Readlink(src)
+	if err != nil {
+		stdio.Errorf("cp: cannot read symlink '%s': %v\n", src, err)
+		return err
+	}
+	// Remove destination if it exists
+	_ = os.Remove(dest)
+	if err := os.Symlink(target, dest); err != nil {
+		stdio.Errorf("cp: cannot create symlink '%s': %v\n", dest, err)
+		return err
+	}
+	if opts.Verbose {
+		stdio.Printf("'%s' -> '%s'\n", src, dest)
+	}
+	return nil
 }
 
 func copyFile(stdio *core.Stdio, src, dest string, srcInfo os.FileInfo, opts *Options) error {
@@ -193,7 +254,21 @@ func copyDir(stdio *core.Stdio, src, dest string, opts *Options) error {
 		srcPath := filepath.Join(src, entry.Name())
 		destPath := filepath.Join(dest, entry.Name())
 
-		if err := copyPath(stdio, srcPath, destPath, opts); err != nil {
+		// Check if entry is a symlink
+		entryInfo, err := fs.Lstat(srcPath)
+		if err != nil {
+			stdio.Errorf("cp: cannot stat '%s': %v\n", srcPath, err)
+			return err
+		}
+
+		if entryInfo.Mode()&os.ModeSymlink != 0 && opts.NoDereference && !opts.Dereference {
+			if err := copySymlink(stdio, srcPath, destPath, opts); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if err := copyPath(stdio, srcPath, destPath, opts, false); err != nil {
 			return err
 		}
 	}

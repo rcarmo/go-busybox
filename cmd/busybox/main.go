@@ -31,6 +31,7 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/applets/nproc"
 	"github.com/rcarmo/go-busybox/pkg/applets/pgrep"
 	"github.com/rcarmo/go-busybox/pkg/applets/pidof"
+	"github.com/rcarmo/go-busybox/pkg/applets/printf"
 	"github.com/rcarmo/go-busybox/pkg/applets/pkill"
 	"github.com/rcarmo/go-busybox/pkg/applets/ps"
 	"github.com/rcarmo/go-busybox/pkg/applets/pwd"
@@ -76,6 +77,7 @@ var applets = map[string]appletFunc{
 	"mv":                mv.Run,
 	"free":              free.Run,
 	"pidof":             pidof.Run,
+	"printf":            printf.Run,
 	"pgrep":             pgrep.Run,
 	"pkill":             pkill.Run,
 	"logname":           logname.Run,

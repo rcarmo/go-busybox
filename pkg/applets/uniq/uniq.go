@@ -106,14 +106,16 @@ func Run(stdio *core.Stdio, args []string) int {
 
 	var outWriter *bufio.Writer
 	if len(files) > 1 {
-		f, err := os.Create(files[1])
-		if err != nil {
-			stdio.Errorf("uniq: %s: %v\n", files[1], err)
-			return core.ExitFailure
+		if files[1] != "-" {
+			f, err := os.Create(files[1])
+			if err != nil {
+				stdio.Errorf("uniq: %s: %v\n", files[1], err)
+				return core.ExitFailure
+			}
+			defer f.Close()
+			outWriter = bufio.NewWriter(f)
+			defer outWriter.Flush()
 		}
-		defer f.Close()
-		outWriter = bufio.NewWriter(f)
-		defer outWriter.Flush()
 	}
 
 	var scanner *bufio.Scanner

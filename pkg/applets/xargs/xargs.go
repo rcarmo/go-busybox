@@ -20,67 +20,79 @@ func Run(stdio *core.Stdio, args []string) int {
 	eofEnabled := false
 	maxSize := 0 // -s
 	noRun := false
+	maxArgs := 0 // -n
 
-	for len(args) > 0 && strings.HasPrefix(args[0], "-") && args[0] != "-" {
-		switch {
-		case args[0] == "-0":
-			zeroTerm = true
-			args = args[1:]
-		case args[0] == "-t":
-			trace = true
-			args = args[1:]
-		case args[0] == "-r":
-			noRun = true
-			args = args[1:]
-		case strings.HasPrefix(args[0], "-E"):
-			val := args[0][2:]
-			if val == "" {
-				if len(args) < 2 {
-					return core.UsageError(stdio, "xargs", "missing argument for -E")
+	for len(args) > 0 && strings.HasPrefix(args[0], "-") && args[0] != "-" && args[0] != "--" {
+		arg := args[0]
+		args = args[1:]
+		j := 1
+		for j < len(arg) {
+			switch arg[j] {
+			case '0':
+				zeroTerm = true
+				j++
+			case 't':
+				trace = true
+				j++
+			case 'r':
+				noRun = true
+				j++
+			case 'E':
+				val := arg[j+1:]
+				if val == "" {
+					if len(args) == 0 {
+						return core.UsageError(stdio, "xargs", "missing argument for -E")
+					}
+					val = args[0]
+					args = args[1:]
 				}
-				args = args[1:]
-				val = args[0]
-			}
-			eofStr = val
-			eofEnabled = true
-			args = args[1:]
-		case args[0] == "-e":
-			// -e without argument: use _ as default (GNU compat: disable eof)
-			eofEnabled = false
-			args = args[1:]
-		case strings.HasPrefix(args[0], "-e"):
-			val := args[0][2:]
-			eofStr = val
-			eofEnabled = true
-			args = args[1:]
-		case strings.HasPrefix(args[0], "-s"):
-			val := args[0][2:]
-			if val == "" {
-				if len(args) < 2 {
-					return core.UsageError(stdio, "xargs", "missing argument for -s")
+				eofStr = val
+				eofEnabled = true
+				j = len(arg)
+			case 'e':
+				val := arg[j+1:]
+				if val != "" {
+					eofStr = val
+					eofEnabled = true
 				}
-				args = args[1:]
-				val = args[0]
-			}
-			n, err := strconv.Atoi(val)
-			if err != nil || n <= 0 {
-				return core.UsageError(stdio, "xargs", "invalid argument for -s")
-			}
-			maxSize = n
-			args = args[1:]
-		case strings.HasPrefix(args[0], "-n"):
-			// -n NUM: max args per command (accept but simplified implementation)
-			val := args[0][2:]
-			if val == "" {
-				if len(args) < 2 {
-					return core.UsageError(stdio, "xargs", "missing argument for -n")
+				j = len(arg)
+			case 's':
+				val := arg[j+1:]
+				if val == "" {
+					if len(args) == 0 {
+						return core.UsageError(stdio, "xargs", "missing argument for -s")
+					}
+					val = args[0]
+					args = args[1:]
 				}
-				args = args[1:]
+				n, err := strconv.Atoi(val)
+				if err != nil || n <= 0 {
+					return core.UsageError(stdio, "xargs", "invalid argument for -s")
+				}
+				maxSize = n
+				j = len(arg)
+			case 'n':
+				val := arg[j+1:]
+				if val == "" {
+					if len(args) == 0 {
+						return core.UsageError(stdio, "xargs", "missing argument for -n")
+					}
+					val = args[0]
+					args = args[1:]
+				}
+				n, err := strconv.Atoi(val)
+				if err != nil || n <= 0 {
+					return core.UsageError(stdio, "xargs", "invalid argument for -n")
+				}
+				maxArgs = n
+				j = len(arg)
+			default:
+				return core.UsageError(stdio, "xargs", "invalid option -- '"+string(arg[j])+"'")
 			}
-			args = args[1:]
-		default:
-			return core.UsageError(stdio, "xargs", "invalid option -- '"+strings.TrimPrefix(args[0], "-")+"'")
 		}
+	}
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
 	}
 
 	cmdName := "echo"
@@ -104,8 +116,28 @@ func Run(stdio *core.Stdio, args []string) int {
 		return runBatched(stdio, cmdName, cmdBase, words, maxSize, trace)
 	}
 
+	if maxArgs > 0 {
+		return runBatchedByArgs(stdio, cmdName, cmdBase, words, maxArgs, trace)
+	}
+
 	cmdArgs := append(cmdBase, words...)
 	return runOne(stdio, cmdName, cmdArgs, trace)
+}
+
+func runBatchedByArgs(stdio *core.Stdio, cmdName string, cmdBase []string, words []string, maxArgs int, trace bool) int {
+	exitCode := core.ExitSuccess
+	for i := 0; i < len(words); i += maxArgs {
+		end := i + maxArgs
+		if end > len(words) {
+			end = len(words)
+		}
+		cmdArgs := append(append([]string{}, cmdBase...), words[i:end]...)
+		rc := runOne(stdio, cmdName, cmdArgs, trace)
+		if rc != 0 {
+			exitCode = rc
+		}
+	}
+	return exitCode
 }
 
 func runBatched(stdio *core.Stdio, cmdName string, cmdBase []string, words []string, maxSize int, trace bool) int {
@@ -119,7 +151,7 @@ func runBatched(stdio *core.Stdio, cmdName string, cmdBase []string, words []str
 	currentLen := baseLen
 	for _, w := range words {
 		newLen := currentLen + 1 + len(w)
-		if len(batch) > 0 && newLen > maxSize {
+		if len(batch) > 0 && newLen+1 > maxSize {
 			cmdArgs := append(append([]string{}, cmdBase...), batch...)
 			rc := runOne(stdio, cmdName, cmdArgs, trace)
 			if rc != 0 {

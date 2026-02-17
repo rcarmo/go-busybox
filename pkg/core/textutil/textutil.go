@@ -140,40 +140,27 @@ func NormalizeLine(line string, skipFields, skipChars int) string {
 	if skipFields > 0 {
 		i := 0
 		seen := 0
-		inField := false
-		start := 0
-		for i < len(line) {
-			if line[i] == ' ' || line[i] == '\t' {
-				if inField {
-					seen++
-					if seen == skipFields {
-						inField = false
-						for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
-							i++
-						}
-						start = i
-						break
-					}
-					inField = false
-				}
-				i++
-				continue
-			}
-			if !inField {
-				inField = true
-			}
+		// Skip leading blanks before first field
+		for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
 			i++
 		}
-		if inField {
+		for seen < skipFields && i < len(line) {
+			// Skip the field (non-blank chars)
+			for i < len(line) && line[i] != ' ' && line[i] != '\t' {
+				i++
+			}
 			seen++
-			if seen == skipFields {
-				start = i
+			if seen < skipFields {
+				// Skip blanks between fields
+				for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+					i++
+				}
 			}
 		}
 		if seen < skipFields {
 			return ""
 		}
-		line = line[start:]
+		line = line[i:]
 	}
 	if skipChars > 0 {
 		runes := []rune(line)

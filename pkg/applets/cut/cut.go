@@ -24,62 +24,96 @@ func Run(stdio *core.Stdio, args []string) int {
 			files = append(files, args[i+1:]...)
 			break
 		}
-		if strings.HasPrefix(arg, "-") && arg != "-" {
-			switch arg {
-			case "-d":
-				if i+1 >= len(args) {
-					return core.UsageError(stdio, "cut", "missing delimiter")
-				}
-				i++
-				runes := []rune(args[i])
-				if len(runes) != 1 {
-					return core.UsageError(stdio, "cut", "invalid delimiter")
-				}
-				delimiter = runes[0]
-			case "-f":
-				if mode != "" && mode != "f" {
-					return core.UsageError(stdio, "cut", "only one type of list allowed")
-				}
-				mode = "f"
-				if i+1 >= len(args) {
-					return core.UsageError(stdio, "cut", "missing list")
-				}
-				i++
-				spec = args[i]
-			case "-c":
-				if mode != "" && mode != "c" {
-					return core.UsageError(stdio, "cut", "only one type of list allowed")
-				}
-				mode = "c"
-				if i+1 >= len(args) {
-					return core.UsageError(stdio, "cut", "missing list")
-				}
-				i++
-				spec = args[i]
-			case "-b":
-				if mode != "" && mode != "b" {
-					return core.UsageError(stdio, "cut", "only one type of list allowed")
-				}
-				mode = "b"
-				if i+1 >= len(args) {
-					return core.UsageError(stdio, "cut", "missing list")
-				}
-				i++
-				spec = args[i]
-			case "-s":
-				suppress = true
-			case "--output-delimiter":
-				if i+1 >= len(args) {
-					return core.UsageError(stdio, "cut", "missing output delimiter")
-				}
+		if strings.HasPrefix(arg, "--output-delimiter") {
+			parts := strings.SplitN(arg, "=", 2)
+			if len(parts) == 2 {
+				outputDelimiter = parts[1]
+			} else if i+1 < len(args) {
 				i++
 				outputDelimiter = args[i]
-			default:
-				return core.UsageError(stdio, "cut", "invalid option")
 			}
-		} else {
-			files = append(files, arg)
+			continue
 		}
+		if strings.HasPrefix(arg, "-") && arg != "-" {
+			j := 1
+			for j < len(arg) {
+				switch arg[j] {
+				case 'd':
+					val := arg[j+1:]
+					if val == "" {
+						if i+1 >= len(args) {
+							return core.UsageError(stdio, "cut", "missing delimiter")
+						}
+						i++
+						val = args[i]
+					}
+					runes := []rune(val)
+					if len(runes) < 1 {
+						return core.UsageError(stdio, "cut", "invalid delimiter")
+					}
+					delimiter = runes[0]
+					j = len(arg)
+				case 'f':
+					if mode != "" && mode != "f" {
+						return core.UsageError(stdio, "cut", "only one type of list allowed")
+					}
+					mode = "f"
+					val := arg[j+1:]
+					if val == "" {
+						if i+1 >= len(args) {
+							return core.UsageError(stdio, "cut", "missing list")
+						}
+						i++
+						val = args[i]
+					}
+					spec = val
+					j = len(arg)
+				case 'c':
+					if mode != "" && mode != "c" {
+						return core.UsageError(stdio, "cut", "only one type of list allowed")
+					}
+					mode = "c"
+					val := arg[j+1:]
+					if val == "" {
+						if i+1 >= len(args) {
+							return core.UsageError(stdio, "cut", "missing list")
+						}
+						i++
+						val = args[i]
+					}
+					spec = val
+					j = len(arg)
+				case 'b':
+					if mode != "" && mode != "b" {
+						return core.UsageError(stdio, "cut", "only one type of list allowed")
+					}
+					mode = "b"
+					val := arg[j+1:]
+					if val == "" {
+						if i+1 >= len(args) {
+							return core.UsageError(stdio, "cut", "missing list")
+						}
+						i++
+						val = args[i]
+					}
+					spec = val
+					j = len(arg)
+				case 's':
+					suppress = true
+					j++
+				case 'n':
+					// -n is accepted but ignored (multibyte compat)
+					j++
+				case 'D':
+					// -D is accepted but ignored
+					j++
+				default:
+					return core.UsageError(stdio, "cut", "invalid option -- '"+string(arg[j])+"'")
+				}
+			}
+			continue
+		}
+		files = append(files, arg)
 	}
 	if mode == "" {
 		return core.UsageError(stdio, "cut", "missing list")
