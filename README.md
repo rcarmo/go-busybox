@@ -53,24 +53,28 @@ The busybox reference test suite (`/workspace/busybox-reference/testsuite/`) is 
 | awk | 53 | 53 | ✅ 100% |
 | cp | 13 | 13 | ✅ 100% |
 | cut | 22 | 22 | ✅ 100% |
+| diff | 11 | 12 | 91.7% |
+| find | 2 | 2 | ✅ 100% |
 | grep | 44 | 44 | ✅ 100% |
+| gunzip | 5 | 5 | ✅ 100% |
+| head | 2 | 2 | ✅ 100% |
+| pidof | 3 | 3 | ✅ 100% |
 | printf | 24 | 24 | ✅ 100% |
+| sed | 90 | 92 | 97.8% |
 | sort | 5 | 5 | ✅ 100% |
+| tail | 2 | 2 | ✅ 100% |
+| tar | 3 | 3 | ✅ 100% |
+| taskset | 3 | 3 | ✅ 100% |
 | tr | 2 | 2 | ✅ 100% |
 | uniq | 14 | 14 | ✅ 100% |
 | xargs | 7 | 7 | ✅ 100% |
-| find | 2 | 2 | ✅ 100% |
-| head | 2 | 2 | ✅ 100% |
-| tail | 2 | 2 | ✅ 100% |
-| diff | 11 | 12 | 91.7% |
-| sed | 84 | 92 | 91.3% |
-| pidof | 2 | 3 | 66.7% |
-| taskset | 2 | 3 | 66.7% |
-| **New-style total** | **289** | **308** | **93.8%** |
+| **New-style total** | **305** | **308** | **99.0%** |
 
-Old-style directory tests (cat, cp, cut, echo, ls, mkdir, mv, pwd, rm, rmdir, tail, tr, wc, wget): **75/79 (94.9%)**
+Old-style directory tests (cat, cp, cut, echo, find, gzip, ls, mkdir, mv, pwd, rm, rmdir, tail, tr, wc, wget): **76/79 (96.2%)**
 
-**Combined: 364/387 (94.1%)**
+**Combined: 381/387 (98.4%)**
+
+Remaining failures: diff -B (1), sed trailing newline edge cases (2), wget network-dependent tests (3).
 
 ## Feature Completeness Status
 
@@ -80,7 +84,7 @@ Old-style directory tests (cat, cp, cut, echo, ls, mkdir, mv, pwd, rm, rmdir, ta
 |----------|--------|--------|-------|
 | **Shell** | ash | 🟢 ~99% | Builtins complete; pipelines, redirects, control flow, functions, case/esac, arithmetic, command substitution, traps/signals — **349/349 busybox ash tests passing (100%)** |
 | **Text Processing** | awk | 🟢 ~90% | Full parser/evaluator, builtins, printf/sprintf, getline, regex — **53/53 busybox tests (100%)** |
-| | sed | 🟢 ~90% | BRE/ERE regex, in-place editing, hold space, branches/labels, backreferences — **84/92 busybox tests (91.3%)** |
+| | sed | 🟢 ~98% | BRE/ERE regex, in-place editing, hold space, branches/labels, backreferences, \\r/\\t/\\n in replacement and text, --version — **90/92 busybox tests (97.8%)** |
 | | grep | 🟢 Complete | -E/-F/-i/-v/-c/-l/-L/-n/-r/-w/-x/-o/-s/-e/-f flags — **44/44 busybox tests (100%)** |
 | | cut | 🟢 Complete | Fields, characters, bytes, custom delimiters — **22/22 busybox tests (100%)** |
 | | tr | 🟢 Complete | Translation, deletion, squeeze, POSIX classes — **2/2 busybox tests (100%)** |
