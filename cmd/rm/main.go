@@ -1,3 +1,4 @@
+// Command rm is a standalone entry point for the rm applet.
 package main
 
 import (

@@ -8,7 +8,8 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core/fs"
 )
 
-// Run executes the pwd command with the given arguments.
+// Run executes the pwd command. It prints the current working directory.
+// No flags are supported.
 func Run(stdio *core.Stdio, args []string) int {
 	logical := false
 

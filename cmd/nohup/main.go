@@ -1,3 +1,4 @@
+// Command nohup is a standalone entry point for the nohup applet.
 package main
 
 import (

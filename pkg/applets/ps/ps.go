@@ -37,6 +37,18 @@ type procInfo struct {
 	ttyStr string
 }
 
+// Run executes the ps command with the given arguments.
+//
+// Supported flags:
+//
+//	-o FMT    Specify output format columns (comma-separated)
+//	-T        Show threads
+//	-a        Show all processes (accepted for compatibility)
+//	-Z        (accepted for compatibility, ignored)
+//
+// Default output columns are PID, USER, and COMMAND. Custom formats
+// support: pid, ppid, pgid, uid, user, gid, group, tty, vsz, rss,
+// stat, comm, args, nice, etime, time, and %cpu.
 func Run(stdio *core.Stdio, args []string) int {
 	opts := options{}
 	for i := 0; i < len(args); i++ {

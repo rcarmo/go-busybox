@@ -1,3 +1,4 @@
+// Command timeout is a standalone entry point for the timeout applet.
 package main
 
 import (

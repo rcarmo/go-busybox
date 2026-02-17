@@ -1,3 +1,7 @@
+// Command busybox is a multi-call binary that combines many common UNIX
+// utilities into a single executable. The applet to run is selected by
+// the name used to invoke the binary (via symlink) or by passing the
+// applet name as the first argument.
 package main
 
 import (

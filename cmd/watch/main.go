@@ -1,3 +1,4 @@
+// Command watch is a standalone entry point for the watch applet.
 package main
 
 import (

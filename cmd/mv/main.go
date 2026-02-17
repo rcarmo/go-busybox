@@ -1,3 +1,4 @@
+// Command mv is a standalone entry point for the mv applet.
 package main
 
 import (

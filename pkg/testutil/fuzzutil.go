@@ -1,3 +1,5 @@
+// fuzzutil.go provides helpers for fuzz-testing applets against the
+// reference busybox binary.
 package testutil
 
 import (
@@ -18,6 +20,7 @@ type FuzzOptions struct {
 
 var cwdMu sync.Mutex
 
+// ClampBytes truncates data to at most max bytes.
 func ClampBytes(data []byte, max int) []byte {
 	if len(data) > max {
 		return data[:max]
@@ -25,6 +28,7 @@ func ClampBytes(data []byte, max int) []byte {
 	return data
 }
 
+// ClampString truncates data to at most max bytes.
 func ClampString(data string, max int) string {
 	if len(data) > max {
 		return data[:max]
@@ -32,6 +36,8 @@ func ClampString(data string, max int) string {
 	return data
 }
 
+// RunAppletInDir runs an applet function in a temporary directory and returns
+// its stdout, stderr, and exit code.
 func RunAppletInDir(t *testing.T, run RunApplet, args []string, input string, dir string) (string, string, int) {
 	t.Helper()
 	cwdMu.Lock()
@@ -51,6 +57,8 @@ func RunAppletInDir(t *testing.T, run RunApplet, args []string, input string, di
 	return out.String(), errBuf.String(), code
 }
 
+// RunBusyboxInDir runs the reference busybox binary for an applet in a
+// directory and returns stdout, stderr, exit code, and whether busybox was found.
 func RunBusyboxInDir(t *testing.T, applet string, args []string, input string, dir string) (string, string, int, bool) {
 	t.Helper()
 	busyboxPath, err := exec.LookPath("busybox")
@@ -78,6 +86,8 @@ func RunBusyboxInDir(t *testing.T, applet string, args []string, input string, d
 	return outBuf.String(), errBuf.String(), exitCode, true
 }
 
+// FuzzCompare runs an applet with both our implementation and the reference
+// busybox, comparing stdout, stderr, and exit code.
 func FuzzCompare(t *testing.T, applet string, run RunApplet, args []string, input string, files map[string]string, opts FuzzOptions) {
 	t.Helper()
 	if opts.SharedDir {
@@ -112,6 +122,8 @@ func FuzzCompare(t *testing.T, applet string, run RunApplet, args []string, inpu
 	CompareBusyboxOutput(t, applet, ourOut, ourErr, ourCode, busyOut, busyErr, busyCode)
 }
 
+// NormalizePsOutput normalises ps output by collapsing whitespace runs
+// into single spaces, to allow comparison across different column widths.
 func NormalizePsOutput(out string) string {
 	lines := strings.Split(out, "\n")
 	filtered := make([]string, 0, len(lines))
@@ -124,6 +136,8 @@ func NormalizePsOutput(out string) string {
 	return strings.Join(filtered, "\n")
 }
 
+// CompareBusyboxOutput compares our applet output against the reference
+// busybox binary and reports mismatches as test failures.
 func CompareBusyboxOutput(t *testing.T, applet string, ourOut, ourErr string, ourCode int, busyOut, busyErr string, busyCode int) {
 	t.Helper()
 	if applet == "ps" {

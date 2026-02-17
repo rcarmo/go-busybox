@@ -1,3 +1,4 @@
+// Command free is a standalone entry point for the free applet.
 package main
 
 import (

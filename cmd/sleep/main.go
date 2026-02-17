@@ -1,3 +1,4 @@
+// Command sleep is a standalone entry point for the sleep applet.
 package main
 
 import (

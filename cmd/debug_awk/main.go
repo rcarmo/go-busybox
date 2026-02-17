@@ -1,3 +1,4 @@
+// Command debug_awk is a standalone entry point for the debug_awk applet.
 package main
 
 import (

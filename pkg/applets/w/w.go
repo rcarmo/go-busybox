@@ -10,6 +10,9 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the w command. It shows who is logged on and what they
+// are doing, in a format similar to the traditional UNIX w command.
+// No flags are supported.
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) > 0 {
 		return core.UsageError(stdio, "w", "invalid option -- '"+args[0]+"'")

@@ -11,6 +11,15 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the pidof command with the given arguments.
+//
+// pidof finds the process IDs of running programs by name. It searches
+// /proc/PID/comm for exact matches and /proc/PID/cmdline for script
+// names (e.g., "bash script.sh" matches a search for "script.sh").
+//
+// Returns exit code 0 if at least one PID is found, 1 otherwise.
+// The process's own PID is excluded from cmdline matching to avoid
+// false positives from its own arguments.
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) == 0 {
 		return core.UsageError(stdio, "pidof", "missing name")

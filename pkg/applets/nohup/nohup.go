@@ -12,6 +12,10 @@ import (
 	corefs "github.com/rcarmo/go-busybox/pkg/core/fs"
 )
 
+// Run executes the nohup command with the given arguments.
+//
+// nohup runs COMMAND immune to hangups, with output redirected to nohup.out.
+// No flags are supported.
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) == 0 {
 		return core.UsageError(stdio, "nohup", "missing command")

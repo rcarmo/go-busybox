@@ -10,6 +10,8 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the who command. It shows who is currently logged in.
+// No flags are supported.
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) > 0 {
 		return core.UsageError(stdio, "who", "invalid option -- '"+args[0]+"'")

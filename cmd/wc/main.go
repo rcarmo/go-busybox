@@ -1,3 +1,4 @@
+// Command wc is a standalone entry point for the wc applet.
 package main
 
 import (

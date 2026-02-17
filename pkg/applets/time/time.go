@@ -12,6 +12,11 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core/timeutil"
 )
 
+// Run executes the time command with the given arguments.
+//
+// time runs COMMAND and prints a summary of real elapsed time to stderr.
+// No flags are supported. User and system CPU times are reported as 0.00
+// since per-process accounting is not available.
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) == 0 {
 		return core.UsageError(stdio, "time", "missing command")

@@ -1,3 +1,4 @@
+// headtail.go provides shared argument parsing for the head and tail applets.
 package core
 
 import (

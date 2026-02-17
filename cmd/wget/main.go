@@ -1,3 +1,4 @@
+// Command wget is a standalone entry point for the wget applet.
 package main
 
 import (

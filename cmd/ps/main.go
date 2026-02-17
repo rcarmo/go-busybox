@@ -1,3 +1,4 @@
+// Command ps is a standalone entry point for the ps applet.
 package main
 
 import (

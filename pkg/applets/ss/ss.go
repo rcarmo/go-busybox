@@ -39,6 +39,19 @@ type summaryCounts struct {
 	udp   int
 }
 
+// Run executes the ss command with the given arguments.
+//
+// Supported flags:
+//
+//	-t    Display TCP sockets
+//	-u    Display UDP sockets
+//	-l    Display listening sockets only
+//	-n    Show numeric addresses (do not resolve names)
+//	-p    Show process using socket (not implemented, accepted)
+//	-s    Print summary statistics
+//
+// Reads socket information from /proc/net/tcp, /proc/net/tcp6,
+// /proc/net/udp, and /proc/net/udp6.
 func Run(stdio *core.Stdio, args []string) int {
 	opts := options{}
 	for _, arg := range args {

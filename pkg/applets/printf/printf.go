@@ -10,6 +10,25 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the printf command with the given arguments.
+//
+// The first argument is a format string supporting the following conversions:
+//
+//	%d, %i    Signed decimal integer
+//	%u        Unsigned decimal integer
+//	%o        Unsigned octal integer
+//	%x, %X    Unsigned hexadecimal integer
+//	%f        Floating-point number
+//	%e, %E    Scientific notation
+//	%g, %G    Shorter of %f and %e
+//	%s        String
+//	%b        String with backslash escape interpretation
+//	%c        First character of argument
+//	%%        Literal percent sign
+//
+// Backslash escapes in the format string: \\, \a, \b, \f, \n, \r, \t, \v,
+// \0NNN (octal), \xHH (hex). The format is reused if there are more
+// arguments than conversions.
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) == 0 {
 		stdio.Errorf("printf: missing operand\n")

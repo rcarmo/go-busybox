@@ -1,3 +1,7 @@
+// Package sort implements the sort command for sorting lines of text.
+//
+// It supports numeric (-n), reverse (-r), unique (-u), key-field (-k),
+// field-separator (-t), and stability (-s) options.
 package sort
 
 import (
@@ -23,6 +27,20 @@ type options struct {
 	outFile  string
 }
 
+// Run executes the sort command with the given arguments.
+//
+// Supported flags:
+//
+//	-r        Reverse the result of comparisons
+//	-n        Compare according to string numerical value
+//	-u        Output only the first of equal lines
+//	-f        Fold lower case to upper case for comparison
+//	-t SEP    Use SEP as the field separator
+//	-k KEYDEF Use KEYDEF to define sort key (e.g., -k2,2n)
+//	-s        Stabilise sort by disabling last-resort comparison
+//	-o FILE   Write output to FILE instead of stdout
+//
+// Reads from stdin when no files are given or when "-" is specified.
 func Run(stdio *core.Stdio, args []string) int {
 	opts := options{}
 	files := []string{}

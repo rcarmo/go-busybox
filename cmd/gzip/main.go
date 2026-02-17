@@ -1,3 +1,4 @@
+// Command gzip is a standalone entry point for the gzip applet.
 package main
 
 import (

@@ -18,6 +18,13 @@ type Options struct {
 }
 
 // Run executes the rm command with the given arguments.
+//
+// Supported flags:
+//
+//	-r, -R    Remove directories and their contents recursively
+//	-f        Force: ignore nonexistent files, never prompt
+//	-i        Prompt before every removal (not implemented, accepted)
+//	-v        Verbose: print each file as it is removed
 func Run(stdio *core.Stdio, args []string) int {
 	opts := Options{}
 	var paths []string

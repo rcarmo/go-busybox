@@ -1,3 +1,4 @@
+// Command time is a standalone entry point for the time applet.
 package main
 
 import (

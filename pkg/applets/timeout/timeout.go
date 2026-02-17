@@ -15,6 +15,17 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core/timeutil"
 )
 
+// Run executes the timeout command with the given arguments.
+//
+// Supported flags:
+//
+//	-s SIGNAL   Specify the signal to send on timeout (default SIGTERM)
+//	-k DUR      Send SIGKILL after DUR if the process is still running
+//	            (accepted for compatibility, not fully implemented)
+//
+// Duration supports optional suffixes: s (seconds, default), m (minutes),
+// h (hours), d (days). Exit code is 143 when the process is killed by
+// SIGTERM.
 func Run(stdio *core.Stdio, args []string) int {
 	sig := syscall.SIGTERM
 	if len(args) == 0 {

@@ -12,6 +12,14 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the watch command with the given arguments.
+//
+// Supported flags:
+//
+//	-n SEC    Specify update interval in seconds (default 2)
+//
+// Executes COMMAND repeatedly (currently runs once due to non-interactive
+// implementation).
 func Run(stdio *core.Stdio, args []string) int {
 	interval := 2 * time.Second
 	if len(args) == 0 {

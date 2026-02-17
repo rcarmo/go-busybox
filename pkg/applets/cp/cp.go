@@ -36,6 +36,21 @@ type hardLinkKey struct {
 }
 
 // Run executes the cp command with the given arguments.
+//
+// Supported flags:
+//
+//	-f          Force overwrite of existing files
+//	-i          Prompt before overwrite (not implemented, accepted)
+//	-p          Preserve mode, ownership, and timestamps
+//	-n          Do not overwrite existing files
+//	-v          Verbose: print each file as it is copied
+//	-r, -R      Copy directories recursively
+//	-a          Archive mode (equivalent to -dpR)
+//	-d          Preserve hard links and don't dereference symlinks
+//	-P          Never follow symbolic links in source
+//	-L          Always follow symbolic links in source
+//	-H          Follow symlinks on the command line only
+//	--parents   Preserve source path structure under destination
 func Run(stdio *core.Stdio, args []string) int {
 	opts := Options{}
 

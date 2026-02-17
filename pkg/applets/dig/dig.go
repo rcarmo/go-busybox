@@ -87,6 +87,19 @@ var typeNames = map[string]uint16{
 	"SRV":   typeSRV,
 }
 
+// Run executes the dig command with the given arguments.
+//
+// Supported flags:
+//
+//	-x ADDR     Perform a reverse DNS lookup
+//	-4          Use IPv4 only
+//	-6          Use IPv6 only
+//	-t TYPE     Query type (A, AAAA, MX, NS, CNAME, TXT, SOA, PTR, SRV, ANY)
+//	-p PORT     Use non-standard port number
+//	@SERVER     Specify the DNS server to query
+//
+// The first non-flag argument is the domain name to query. When no
+// server is specified, the system resolver from /etc/resolv.conf is used.
 func Run(stdio *core.Stdio, args []string) int {
 	opts, code := parseArgs(stdio, args)
 	if code != core.ExitSuccess {

@@ -20,6 +20,17 @@ type Options struct {
 }
 
 // Run executes the cat command with the given arguments.
+//
+// Supported flags:
+//
+//	-n    Number all output lines
+//	-b    Number non-blank output lines (overrides -n)
+//	-e    Display $ at end of each line (implies -v)
+//	-t    Display TAB as ^I (implies -v)
+//	-v    Display non-printing characters using ^ and M- notation
+//	-A    Equivalent to -vet
+//
+// Reads from stdin when no files are given or when "-" is specified.
 func Run(stdio *core.Stdio, args []string) int {
 	opts := Options{}
 	files := []string{}

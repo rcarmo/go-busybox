@@ -1,3 +1,4 @@
+// Command cat is a standalone entry point for the cat applet.
 package main
 
 import (

@@ -1,3 +1,4 @@
+// Command head is a standalone entry point for the head applet.
 package main
 
 import (

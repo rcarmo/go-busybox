@@ -1,3 +1,4 @@
+// Command killall is a standalone entry point for the killall applet.
 package main
 
 import (

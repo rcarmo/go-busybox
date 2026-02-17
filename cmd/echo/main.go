@@ -1,3 +1,4 @@
+// Command echo is a standalone entry point for the echo applet.
 package main
 
 import (

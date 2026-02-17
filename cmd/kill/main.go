@@ -1,3 +1,4 @@
+// Command kill is a standalone entry point for the kill applet.
 package main
 
 import (

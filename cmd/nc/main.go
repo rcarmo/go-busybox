@@ -1,3 +1,4 @@
+// Command nc is a standalone entry point for the nc applet.
 package main
 
 import (

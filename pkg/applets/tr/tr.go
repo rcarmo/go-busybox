@@ -1,3 +1,9 @@
+// Package tr implements the tr command for translating, squeezing, and
+// deleting characters.
+//
+// It supports POSIX character classes ([:alpha:], [:digit:], etc.),
+// character ranges (a-z), deletion (-d), squeeze-repeats (-s), and
+// complement (-c/-C) modes.
 package tr
 
 import (
@@ -8,6 +14,16 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core/textutil"
 )
 
+// Run executes the tr command with the given arguments.
+//
+// Supported flags:
+//
+//	-c, -C    Complement SET1
+//	-d        Delete characters in SET1 (do not translate)
+//	-s        Squeeze repeated characters in the last specified SET
+//
+// SET syntax supports single characters, ranges (a-z), POSIX classes
+// ([:alpha:], [:digit:], etc.), and backslash escapes (\n, \t, \0NNN).
 func Run(stdio *core.Stdio, args []string) int {
 	var (
 		complement bool

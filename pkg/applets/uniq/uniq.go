@@ -1,3 +1,5 @@
+// Package uniq implements the uniq command for filtering or counting
+// adjacent duplicate lines.
 package uniq
 
 import (
@@ -22,6 +24,19 @@ type options struct {
 	maxChars   int // -w
 }
 
+// Run executes the uniq command with the given arguments.
+//
+// Supported flags:
+//
+//	-c    Prefix lines with the number of occurrences
+//	-d    Only print duplicate lines
+//	-u    Only print unique lines
+//	-i    Ignore case when comparing
+//	-f N  Skip the first N fields before comparing
+//	-s N  Skip the first N characters before comparing
+//	-w N  Compare no more than N characters per line
+//
+// Reads from stdin when no input file is given.
 func Run(stdio *core.Stdio, args []string) int {
 	opts := options{}
 	files := []string{}

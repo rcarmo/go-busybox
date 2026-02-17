@@ -20,6 +20,13 @@ type Options struct {
 }
 
 // Run executes the mv command with the given arguments.
+//
+// Supported flags:
+//
+//	-f    Force: do not prompt before overwriting
+//	-i    Prompt before overwriting (not implemented, accepted)
+//	-n    Do not overwrite existing files
+//	-v    Verbose: print each file as it is moved
 func Run(stdio *core.Stdio, args []string) int {
 	opts := Options{}
 

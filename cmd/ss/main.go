@@ -1,3 +1,4 @@
+// Command ss is a standalone entry point for the ss applet.
 package main
 
 import (

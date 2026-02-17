@@ -1,3 +1,4 @@
+// Command pgrep is a standalone entry point for the pgrep applet.
 package main
 
 import (

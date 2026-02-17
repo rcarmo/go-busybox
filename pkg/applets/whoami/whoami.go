@@ -7,6 +7,8 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the whoami command. It prints the effective user name
+// of the current user. No flags are supported.
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) > 0 {
 		return core.UsageError(stdio, "whoami", "invalid option -- '"+args[0]+"'")

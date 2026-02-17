@@ -50,6 +50,39 @@ type timeFilter struct {
 }
 
 // Run executes the find command with the given arguments.
+//
+// Supported options:
+//
+//	-L / -follow     Follow symbolic links
+//	-H               Follow symlinks on the command line only
+//	-xdev / -mount   Do not cross filesystem boundaries (accepted, not enforced)
+//
+// Supported expressions:
+//
+//	-name PATTERN    Match filename against shell glob pattern
+//	-iname PATTERN   Case-insensitive -name
+//	-path PATTERN    Match full path against glob pattern
+//	-ipath PATTERN   Case-insensitive -path
+//	-type TYPE       Match file type (f, d, l, b, c, p, s)
+//	-mindepth N      Minimum directory depth
+//	-maxdepth N      Maximum directory depth
+//	-size N[ckMG]    Match file size
+//	-mtime N         Match modification time in days
+//	-atime N         Match access time in days
+//	-ctime N         Match change time in days
+//	-newer FILE      Match files newer than FILE
+//	-perm MODE       Match file permissions
+//	-user USER       Match file owner
+//	-group GROUP     Match file group
+//	-empty           Match empty files or directories
+//	-print           Print matching path (default action)
+//	-print0          Print matching path followed by NUL
+//	-prune           Do not descend into matching directories
+//	-delete          Delete matching files
+//	-exec CMD ;      Execute CMD for each match ({} is replaced)
+//	! / -not         Negate next expression
+//	-o / -or         Logical OR between expressions
+//	( ... )          Group expressions
 func Run(stdio *core.Stdio, args []string) int {
 	opts := options{
 		minDepth: 0,

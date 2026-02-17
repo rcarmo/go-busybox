@@ -1,3 +1,4 @@
+// Command pidof is a standalone entry point for the pidof applet.
 package main
 
 import (

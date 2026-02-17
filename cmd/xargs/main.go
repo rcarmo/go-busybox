@@ -1,3 +1,4 @@
+// Command xargs is a standalone entry point for the xargs applet.
 package main
 
 import (

@@ -10,6 +10,20 @@ import (
 	corefs "github.com/rcarmo/go-busybox/pkg/core/fs"
 )
 
+// Run executes the gzip command with the given arguments.
+//
+// Supported flags:
+//
+//	-c         Write to stdout, keep original files
+//	-d         Decompress (act like gunzip)
+//	-f         Force overwrite of output file
+//	-k         Keep (don't delete) input files
+//	-n         Do not save the original filename in the header
+//	-q         Suppress warnings
+//	-v         Verbose output
+//	-1 .. -9   Compression level (1=fastest, 9=best; default 6)
+//
+// Reads from stdin when no files are given or when "-" is specified.
 func Run(stdio *core.Stdio, args []string) int {
 	toStdout := false
 	keep := false

@@ -10,6 +10,16 @@ import (
 )
 
 // Run executes the head command with the given arguments.
+//
+// Supported flags:
+//
+//	-n N    Print the first N lines (default 10)
+//	-c N    Print the first N bytes
+//	-q      Never print filename headers
+//	-v      Always print filename headers
+//	-NUM    Shorthand for -n NUM
+//
+// Reads from stdin when no files are given or when "-" is specified.
 func Run(stdio *core.Stdio, args []string) int {
 	return core.RunHeadTail(stdio, "head", args, headFile)
 }

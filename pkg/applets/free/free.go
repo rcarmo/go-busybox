@@ -19,6 +19,17 @@ const (
 	unitGB        = 1024 * 1024 * 1024
 )
 
+// Run executes the free command with the given arguments.
+//
+// Supported flags:
+//
+//	-b    Display amounts in bytes
+//	-k    Display amounts in kibibytes (default)
+//	-m    Display amounts in mebibytes
+//	-g    Display amounts in gibibytes
+//	-h    Human-readable output with automatic unit selection
+//
+// Reads memory statistics from /proc/meminfo.
 func Run(stdio *core.Stdio, args []string) int {
 	scale := unit(unitKB)
 	human := false

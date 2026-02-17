@@ -1,3 +1,11 @@
+// Package sed implements the sed stream editor.
+//
+// It supports BRE and ERE regular expressions, in-place editing (-i),
+// hold/pattern space manipulation, branches and labels, backreferences,
+// address ranges, and the full set of standard sed commands. Multiple
+// -e and -f expressions may be combined. The implementation tracks
+// per-file trailing-newline status so that output faithfully preserves
+// (or omits) the final newline of each input source.
 package sed
 
 import (
@@ -14,6 +22,16 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core/fs"
 )
 
+// Run executes the sed command with the given arguments.
+//
+// Supported flags:
+//
+//	-n          Suppress automatic printing of pattern space
+//	-e SCRIPT   Add SCRIPT to the commands to be executed
+//	-f FILE     Add the contents of FILE to the commands
+//	-i          Edit files in place
+//	-r / -E     Use extended regular expressions (ERE)
+//	--version   Print version information (for autoconf compatibility)
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) == 0 {
 		return core.UsageError(stdio, "sed", "missing script or file")

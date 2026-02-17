@@ -1,3 +1,4 @@
+// Command ionice is a standalone entry point for the ionice applet.
 package main
 
 import (

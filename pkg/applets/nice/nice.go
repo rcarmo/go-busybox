@@ -12,6 +12,13 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the nice command with the given arguments.
+//
+// Supported flags:
+//
+//	-n PRIORITY   Set the scheduling priority adjustment (default 10)
+//
+// Runs COMMAND with an adjusted niceness. Higher values mean lower priority.
 func Run(stdio *core.Stdio, args []string) int {
 	priority := 10
 	if len(args) > 0 && args[0] == "-n" {

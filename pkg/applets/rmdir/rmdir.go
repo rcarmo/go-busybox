@@ -10,6 +10,11 @@ import (
 )
 
 // Run executes the rmdir command with the given arguments.
+//
+// Supported flags:
+//
+//	-p    Remove DIRECTORY and its ancestors
+//	-v    Verbose: print each directory as it is removed
 func Run(stdio *core.Stdio, args []string) int {
 	parents := false
 	verbose := false

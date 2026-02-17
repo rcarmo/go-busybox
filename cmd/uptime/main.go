@@ -1,3 +1,4 @@
+// Command uptime is a standalone entry point for the uptime applet.
 package main
 
 import (

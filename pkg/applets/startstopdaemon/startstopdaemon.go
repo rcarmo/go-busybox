@@ -11,6 +11,16 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the start-stop-daemon command with the given arguments.
+//
+// Supported flags:
+//
+//	--start          Start a daemon
+//	--exec PATH      Path to the executable to start
+//	--pidfile FILE   PID file for the daemon
+//
+// Only --start mode is currently supported. Arguments after -- are
+// passed to the daemon process.
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) == 0 {
 		return core.UsageError(stdio, "start-stop-daemon", "missing action")

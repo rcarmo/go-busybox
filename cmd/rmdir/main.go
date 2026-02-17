@@ -1,3 +1,4 @@
+// Command rmdir is a standalone entry point for the rmdir applet.
 package main
 
 import (

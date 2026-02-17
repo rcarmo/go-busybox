@@ -1,3 +1,9 @@
+// Package grep implements the grep, egrep, and fgrep commands for searching
+// text patterns in files.
+//
+// It supports basic (BRE), extended (ERE), and fixed-string matching modes
+// along with the standard set of flags: -i, -v, -c, -l, -L, -n, -r, -w, -x,
+// -o, -s, -e, -f, -h, -H, -m, and -q.
 package grep
 
 import (
@@ -37,6 +43,30 @@ type matcher struct {
 	findAll func(line string) []string
 }
 
+// Run executes the grep command with the given arguments.
+// The applet name (grep, egrep, fgrep) is inferred from the first argument
+// or from the invocation name to set the default matching mode.
+//
+// Supported flags:
+//
+//	-E          Use extended regular expressions (ERE)
+//	-F          Use fixed strings instead of regular expressions
+//	-i          Ignore case distinctions in patterns and input
+//	-v          Select non-matching lines
+//	-c          Print only a count of matching lines per file
+//	-l          Print only names of files with matches
+//	-L          Print only names of files without matches
+//	-n          Prefix each line with its line number
+//	-h          Suppress filename prefix on output
+//	-H          Always print filename prefix
+//	-o          Print only the matched parts of lines
+//	-q          Quiet: exit with 0 on first match, suppress output
+//	-r          Recursively search directories
+//	-w          Match whole words only
+//	-x          Match whole lines only
+//	-s          Suppress error messages about nonexistent files
+//	-e PATTERN  Use PATTERN as the pattern (allows multiple)
+//	-f FILE     Read patterns from FILE, one per line
 func Run(stdio *core.Stdio, args []string) int {
 	opts := grepOptions{}
 	var patterns []string

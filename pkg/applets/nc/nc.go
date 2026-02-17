@@ -10,6 +10,14 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the nc (netcat) command with the given arguments.
+//
+// Usage:
+//
+//	nc HOST PORT
+//
+// Opens a TCP connection to HOST:PORT, copies stdin to the connection
+// and the connection output to stdout. No flags are supported.
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) < 2 {
 		return core.UsageError(stdio, "nc", "missing host or port")

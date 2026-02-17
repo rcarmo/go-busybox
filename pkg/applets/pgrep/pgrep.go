@@ -19,6 +19,19 @@ type options struct {
 	kill    bool
 }
 
+// Run executes the pgrep command with the given arguments.
+//
+// Supported flags:
+//
+//	-f          Match against full command line, not just process name
+//	-x          Require exact match
+//	-v          Negate the matching
+//	-u USER     Only match processes owned by USER
+//	-l          (accepted for compatibility, not implemented)
+//	-s SIGNAL   Send SIGNAL to matched processes (used by pkill/killall)
+//
+// Prints matching PIDs, one per line. Returns exit code 0 if at least
+// one process matched, 1 otherwise.
 func Run(stdio *core.Stdio, args []string) int {
 	opts := options{signal: syscall.SIGTERM}
 	var patterns []string

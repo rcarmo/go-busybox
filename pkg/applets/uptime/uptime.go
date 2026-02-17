@@ -11,6 +11,9 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the uptime command. It displays the current time,
+// how long the system has been running, the number of users, and
+// the system load averages. No flags are supported.
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) > 0 {
 		return core.UsageError(stdio, "uptime", "invalid option -- '"+args[0]+"'")

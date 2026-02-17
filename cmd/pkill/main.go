@@ -1,3 +1,4 @@
+// Command pkill is a standalone entry point for the pkill applet.
 package main
 
 import (

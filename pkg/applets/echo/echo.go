@@ -8,6 +8,15 @@ import (
 )
 
 // Run executes the echo command with the given arguments.
+//
+// Supported flags:
+//
+//	-n    Do not output trailing newline
+//	-e    Enable interpretation of backslash escapes
+//	-E    Disable interpretation of backslash escapes (default)
+//
+// Backslash escapes (with -e): \\, \a, \b, \c, \e, \f, \n, \r, \t, \v,
+// \0NNN (octal), \xHH (hex).
 func Run(stdio *core.Stdio, args []string) int {
 	// Parse flags: only -n, -e, -E and combinations thereof
 	noNewline := false

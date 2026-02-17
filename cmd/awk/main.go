@@ -1,3 +1,4 @@
+// Command awk is a standalone entry point for the awk applet.
 package main
 
 import (

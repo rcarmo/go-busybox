@@ -12,6 +12,20 @@ import (
 	corefs "github.com/rcarmo/go-busybox/pkg/core/fs"
 )
 
+// Run executes the gunzip command with the given arguments.
+//
+// Supported flags:
+//
+//	-c    Write to stdout, keep original files
+//	-f    Force overwrite of output file
+//	-k    Keep (don't delete) input files
+//	-t    Test compressed file integrity (not implemented, accepted)
+//	-n    Do not save or restore the original filename
+//	-q    Suppress warnings
+//	-v    Verbose output
+//
+// Reads from stdin when no files are given or when "-" is specified.
+// Output filename is derived by removing the .gz suffix.
 func Run(stdio *core.Stdio, args []string) int {
 	toStdout := false
 	keep := false

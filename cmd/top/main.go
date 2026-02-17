@@ -1,3 +1,4 @@
+// Command top is a standalone entry point for the top applet.
 package main
 
 import (

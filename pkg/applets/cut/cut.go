@@ -1,3 +1,7 @@
+// Package cut implements the cut command for extracting sections from lines.
+//
+// It supports field (-f), character (-c), and byte (-b) modes with custom
+// delimiters (-d) and complement selection (--complement).
 package cut
 
 import (
@@ -9,6 +13,21 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core/textutil"
 )
 
+// Run executes the cut command with the given arguments.
+//
+// Supported flags:
+//
+//	-f LIST   Select fields (1-indexed, comma/dash separated)
+//	-c LIST   Select characters
+//	-b LIST   Select bytes
+//	-d CHAR   Use CHAR as field delimiter (default TAB)
+//	-s        Only print lines containing the delimiter
+//	-n        (ignored, for POSIX compatibility with -b)
+//	-D        Use all delimiters as field terminators
+//	--output-delimiter=STRING  Use STRING as output delimiter
+//	--complement               Complement the selection
+//
+// Reads from stdin when no files are given or when "-" is specified.
 func Run(stdio *core.Stdio, args []string) int {
 	var (
 		mode            string

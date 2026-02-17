@@ -11,6 +11,10 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the setsid command with the given arguments.
+//
+// setsid runs COMMAND in a new session, detaching it from the
+// controlling terminal. No flags are supported.
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) == 0 {
 		return core.UsageError(stdio, "setsid", "missing command")

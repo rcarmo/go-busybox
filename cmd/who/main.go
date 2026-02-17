@@ -1,3 +1,4 @@
+// Command who is a standalone entry point for the who applet.
 package main
 
 import (

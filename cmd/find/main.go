@@ -1,3 +1,4 @@
+// Command find is a standalone entry point for the find applet.
 package main
 
 import (

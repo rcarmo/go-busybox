@@ -1,3 +1,4 @@
+// Command nproc is a standalone entry point for the nproc applet.
 package main
 
 import (

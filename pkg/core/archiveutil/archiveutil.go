@@ -8,6 +8,8 @@ import (
 
 const maxArchiveBytes = int64(64 << 20)
 
+// GzipToWriter compresses data from r and writes the gzip output to w.
+// Input is limited to 64 MiB to prevent unbounded memory use.
 func GzipToWriter(r io.Reader, w io.Writer) error {
 	zw := gzip.NewWriter(w)
 	if _, err := io.Copy(zw, io.LimitReader(r, maxArchiveBytes)); err != nil {
@@ -17,6 +19,8 @@ func GzipToWriter(r io.Reader, w io.Writer) error {
 	return zw.Close()
 }
 
+// GunzipToWriter decompresses gzip data from r and writes it to w.
+// Output is limited to 64 MiB to prevent unbounded memory use.
 func GunzipToWriter(r io.Reader, w io.Writer) error {
 	zr, err := gzip.NewReader(r)
 	if err != nil {

@@ -1,3 +1,4 @@
+// Command cp is a standalone entry point for the cp applet.
 package main
 
 import (

@@ -10,6 +10,16 @@ import (
 )
 
 // Run executes the tail command with the given arguments.
+//
+// Supported flags:
+//
+//	-n N    Output the last N lines (default 10); +N for starting from line N
+//	-c N    Output the last N bytes; +N for starting from byte N
+//	-q      Never print filename headers
+//	-v      Always print filename headers
+//	-NUM    Shorthand for -n NUM
+//
+// Reads from stdin when no files are given or when "-" is specified.
 func Run(stdio *core.Stdio, args []string) int {
 	return core.RunHeadTail(stdio, "tail", args, tailFile)
 }

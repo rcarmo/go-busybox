@@ -1,3 +1,4 @@
+// Command mkdir is a standalone entry point for the mkdir applet.
 package main
 
 import (

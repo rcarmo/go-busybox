@@ -1,3 +1,4 @@
+// Command tail is a standalone entry point for the tail applet.
 package main
 
 import (

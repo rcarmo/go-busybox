@@ -10,6 +10,16 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the kill command with the given arguments.
+//
+// Usage:
+//
+//	kill [-SIGNAL] PID...
+//	kill -l
+//
+// Sends a signal to the specified processes. The default signal is SIGTERM.
+// The signal can be specified by name (e.g., -TERM, -9) or number.
+// Use -l to list all available signal names and numbers.
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) == 0 {
 		return core.UsageError(stdio, "kill", "missing pid")

@@ -1,3 +1,4 @@
+// Command users is a standalone entry point for the users applet.
 package main
 
 import (

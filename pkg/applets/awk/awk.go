@@ -26,7 +26,18 @@ import (
 
 // TODO: Port full BusyBox awk engine. This is a partial port to unblock tests.
 
-// Run executes the awk applet.
+// Run executes the awk command with the given arguments.
+//
+// Supported flags:
+//
+//	-F SEP      Set field separator (default whitespace)
+//	-v VAR=VAL  Assign variable before execution
+//	-f FILE     Read program from FILE
+//	-e PROG     Add PROG text to the program (allows multiple)
+//	-W OPT      GNU-compat extension options (ignored)
+//
+// The first non-flag argument is the AWK program text (unless -f is used).
+// Remaining arguments are input files; stdin is read if none are given.
 func Run(stdio *core.Stdio, args []string) int {
 	programName := programNameFromArgs(args)
 	program, files, vars, fs, warnW, err := parseArgs(stdio, args)

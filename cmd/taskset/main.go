@@ -1,3 +1,4 @@
+// Command taskset is a standalone entry point for the taskset applet.
 package main
 
 import (

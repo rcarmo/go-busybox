@@ -20,6 +20,15 @@ const (
 	ioprioClassRT   = 1
 )
 
+// Run executes the ionice command with the given arguments.
+//
+// Supported flags:
+//
+//	-c CLASS    Set I/O scheduling class (1=RT, 2=best-effort, 3=idle)
+//	-n LEVEL    Set I/O scheduling priority level (0-7)
+//
+// Remaining arguments form the command to execute with the given
+// I/O scheduling parameters.
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) == 0 {
 		stdio.Println("none: prio 0")

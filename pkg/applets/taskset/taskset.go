@@ -14,6 +14,14 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the taskset command with the given arguments.
+//
+// Usage:
+//
+//	taskset MASK COMMAND [ARG...]   Run COMMAND with CPU affinity MASK
+//	taskset -p PID                  Display current affinity of PID
+//
+// MASK is a hexadecimal CPU affinity mask (e.g., 0x3 for CPUs 0 and 1).
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) < 2 {
 		return core.UsageError(stdio, "taskset", "missing mask or command")

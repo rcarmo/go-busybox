@@ -1,3 +1,4 @@
+// Command logname is a standalone entry point for the logname applet.
 package main
 
 import (

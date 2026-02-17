@@ -1,3 +1,4 @@
+// Command ash is a standalone entry point for the ash applet.
 package main
 
 import (

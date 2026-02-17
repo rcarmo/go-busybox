@@ -26,6 +26,20 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Run executes the ash (Almquist shell) command with the given arguments.
+//
+// Supported invocation modes:
+//
+//	ash                  Start an interactive shell reading from stdin
+//	ash -c CMD           Execute CMD string and exit
+//	ash FILE [ARGS...]   Execute FILE as a shell script
+//
+// The shell supports pipelines, redirections (>, >>, <, 2>, &>, |),
+// control flow (if/elif/else/fi, while/until/do/done, for/in/do/done,
+// case/esac), functions, subshells, command substitution ($() and ``),
+// arithmetic expansion ($(())), parameter expansion (${var:-default} etc.),
+// here-documents (<<EOF), traps and signal handling, and most POSIX
+// builtins (cd, export, read, test, [, echo, printf, kill, etc.).
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) == 0 {
 		data, err := io.ReadAll(stdio.In)

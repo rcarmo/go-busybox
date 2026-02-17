@@ -1,3 +1,4 @@
+// Command ls is a standalone entry point for the ls applet.
 package main
 
 import (

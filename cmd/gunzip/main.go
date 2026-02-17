@@ -1,3 +1,4 @@
+// Command gunzip is a standalone entry point for the gunzip applet.
 package main
 
 import (

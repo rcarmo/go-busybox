@@ -1,8 +1,7 @@
-// Package wget implements a minimal wget command.
+// Package wget implements the wget command for downloading files over HTTP.
 package wget
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,6 +13,18 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the wget command with the given arguments.
+//
+// Supported flags:
+//
+//	-q          Quiet mode (suppress progress output)
+//	-O FILE     Write output to FILE instead of deriving name from URL
+//	-P DIR      Save files to DIR (overridden by -O)
+//	-c          Continue (accepted for compatibility, not implemented)
+//
+// When -O is specified it takes precedence over -P: the file is saved to the
+// current directory with the -O name. When only -P is given, files are saved
+// under the prefix directory with a name derived from the URL path.
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) == 0 {
 		return core.UsageError(stdio, "wget", "missing URL")
@@ -165,6 +176,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	return core.ExitSuccess
 }
 
+// hostFromURL extracts the host component from a raw URL string.
 func hostFromURL(rawURL string) string {
 	parsed, err := url.Parse(rawURL)
 	if err == nil && parsed.Host != "" {
@@ -177,6 +189,8 @@ func progressBar() string {
 	return strings.Repeat("*", 30)
 }
 
+// outputName derives a local filename from the URL path.
+// Falls back to "index.html" for root paths or empty path components.
 func outputName(rawURL string) string {
 	parsed, err := url.Parse(rawURL)
 	if err == nil {
@@ -197,7 +211,3 @@ func outputName(rawURL string) string {
 	return base
 }
 
-func init() {
-	// Suppress unused import warning
-	_ = fmt.Sprintf
-}

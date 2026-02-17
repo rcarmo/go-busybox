@@ -1,3 +1,4 @@
+// Command renice is a standalone entry point for the renice applet.
 package main
 
 import (

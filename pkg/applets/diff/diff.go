@@ -1,3 +1,9 @@
+// Package diff implements the diff command for comparing files and directories.
+//
+// It produces unified diff output and supports options for ignoring whitespace
+// changes (-b, -w), blank lines (-B), case (-i), and recursive directory
+// comparison (-r). The implementation uses an LCS-based algorithm and maps
+// normalised lines back to originals for accurate output.
 package diff
 
 import (
@@ -39,6 +45,25 @@ type hunk struct {
 	end   int
 }
 
+// Run executes the diff command with the given arguments.
+//
+// Supported flags:
+//
+//	-u          Unified output format (default)
+//	-U N        Number of context lines (default 3)
+//	-r          Recursively compare directories
+//	-N          Treat absent files as empty
+//	-q          Report only whether files differ
+//	-s          Report when files are identical
+//	-b          Ignore changes in amount of whitespace
+//	-w          Ignore all whitespace
+//	-B          Ignore blank line changes
+//	-i          Ignore case
+//	-a          Treat all files as text
+//	-L LABEL    Use LABEL instead of filename in header
+//	-S FILE     Start directory diff at FILE
+//	-t          Expand tabs in output
+//	-T          Prefix lines with tab for alignment
 func Run(stdio *core.Stdio, args []string) int {
 	opts := diffOptions{}
 	contextLines := 3

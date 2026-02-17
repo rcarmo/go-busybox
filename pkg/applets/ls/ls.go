@@ -35,6 +35,22 @@ type Options struct {
 }
 
 // Run executes the ls command with the given arguments.
+//
+// Supported flags:
+//
+//	-a    Show all entries including those starting with .
+//	-A    Show all except . and ..
+//	-l    Use long listing format
+//	-h    Human-readable sizes (with -l)
+//	-1    One entry per line
+//	-R    List directories recursively
+//	-r    Reverse sort order
+//	-t    Sort by modification time
+//	-S    Sort by file size
+//	-f    Do not sort (implies -a)
+//	-F    Append indicator (*/=>@|) to entries
+//	-p    Append / to directories
+//	-s    Print allocated size of each file in blocks
 func Run(stdio *core.Stdio, args []string) int {
 	opts := Options{}
 	paths := []string{}

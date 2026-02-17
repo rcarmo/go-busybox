@@ -30,6 +30,17 @@ type Counts struct {
 }
 
 // Run executes the wc command with the given arguments.
+//
+// Supported flags:
+//
+//	-l    Print line count
+//	-w    Print word count
+//	-c    Print byte count
+//	-m    Print character count
+//	-L    Print length of longest line
+//
+// When no flags are given, -l, -w, and -c are all enabled.
+// Reads from stdin when no files are given or when "-" is specified.
 func Run(stdio *core.Stdio, args []string) int {
 	opts := Options{}
 

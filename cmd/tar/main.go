@@ -1,3 +1,4 @@
+// Command tar is a standalone entry point for the tar applet.
 package main
 
 import (

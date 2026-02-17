@@ -1,3 +1,4 @@
+// Command pwd is a standalone entry point for the pwd applet.
 package main
 
 import (

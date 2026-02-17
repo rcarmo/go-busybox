@@ -9,6 +9,14 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the nproc command with the given arguments.
+//
+// Supported flags:
+//
+//	--all           Print the number of installed processors
+//	--ignore=N      Exclude N processors from the count
+//
+// Prints the number of available processing units.
 func Run(stdio *core.Stdio, args []string) int {
 	all := false
 	ignore := 0

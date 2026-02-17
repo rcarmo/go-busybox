@@ -9,6 +9,11 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the sleep command with the given arguments.
+//
+// Each argument specifies a duration to pause. Multiple arguments are summed.
+// Durations support optional suffixes: s (seconds, default), m (minutes),
+// h (hours), d (days).
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) == 0 {
 		stdio.Println("BusyBox v1.35.0 (Debian 1:1.35.0-4+b7) multi-call binary.")

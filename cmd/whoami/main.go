@@ -1,3 +1,4 @@
+// Command whoami is a standalone entry point for the whoami applet.
 package main
 
 import (

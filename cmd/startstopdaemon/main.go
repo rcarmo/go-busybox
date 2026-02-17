@@ -1,3 +1,4 @@
+// Command startstopdaemon is a standalone entry point for the startstopdaemon applet.
 package main
 
 import (

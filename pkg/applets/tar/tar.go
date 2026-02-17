@@ -27,6 +27,22 @@ type tarOpts struct {
 	dir      string // -C directory
 }
 
+// Run executes the tar command with the given arguments.
+//
+// Supported flags:
+//
+//	-c          Create a new archive
+//	-x          Extract files from an archive
+//	-t          List the contents of an archive
+//	-v          Verbose: list files processed
+//	-z          Filter the archive through gzip
+//	-f FILE     Use FILE as the archive (use "-" for stdin/stdout)
+//	-C DIR      Change to DIR before extracting/creating
+//	-O          Extract files to stdout
+//
+// When -f is "-" or omitted with piped input, the archive is read from
+// or written to stdin/stdout. Supports regular files, directories,
+// symbolic links, and hard links.
 func Run(stdio *core.Stdio, args []string) int {
 	opts := tarOpts{}
 	var extra []string
@@ -368,18 +384,21 @@ func addPath(tw *tar.Writer, path string, prefix string, verbose bool, stdio *co
 	return err
 }
 
+// nopWriteCloser wraps an io.Writer to satisfy io.WriteCloser with a no-op Close.
 type nopWriteCloser struct {
 	io.Writer
 }
 
+// Close is a no-op that satisfies io.WriteCloser.
 func (nopWriteCloser) Close() error { return nil }
 
-// peekReader wraps a reader and counts bytes read
+// peekReader wraps a reader and counts bytes read.
 type peekReader struct {
 	r io.Reader
 	n int64
 }
 
+// Read implements io.Reader, tracking total bytes read in p.n.
 func (p *peekReader) Read(buf []byte) (int, error) {
 	n, err := p.r.Read(buf)
 	p.n += int64(n)

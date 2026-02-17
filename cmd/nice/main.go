@@ -1,3 +1,4 @@
+// Command nice is a standalone entry point for the nice applet.
 package main
 
 import (

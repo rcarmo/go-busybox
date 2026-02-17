@@ -11,6 +11,15 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the renice command with the given arguments.
+//
+// Usage:
+//
+//	renice [-n] PRIORITY [-p PID...] [-g PGRP...] [-u USER...]
+//
+// Alters the scheduling priority of running processes. When -n is given,
+// PRIORITY is added to the current value; otherwise it is set absolutely.
+// The default target type is -p (process ID).
 func Run(stdio *core.Stdio, args []string) int {
 	if len(args) == 0 {
 		return core.UsageError(stdio, "renice", "missing priority")

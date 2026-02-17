@@ -13,6 +13,19 @@ import (
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
+// Run executes the xargs command with the given arguments.
+//
+// Supported flags:
+//
+//	-0          Input items are terminated by NUL, not whitespace
+//	-t          Print each command line to stderr before executing
+//	-r          Do not run command if stdin is empty
+//	-n N        Use at most N arguments per command line
+//	-s N        Limit command line to N bytes
+//	-E STR      Set logical EOF string (stop reading at STR)
+//	-e[STR]     Same as -E (STR defaults to "_" if omitted)
+//
+// The default command is /bin/echo if none is specified.
 func Run(stdio *core.Stdio, args []string) int {
 	zeroTerm := false
 	trace := false

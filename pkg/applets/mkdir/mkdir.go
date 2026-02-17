@@ -12,6 +12,12 @@ import (
 )
 
 // Run executes the mkdir command with the given arguments.
+//
+// Supported flags:
+//
+//	-p    Create parent directories as needed; no error if existing
+//	-v    Verbose: print each directory as it is created
+//	-m MODE  Set file mode (as in chmod)
 func Run(stdio *core.Stdio, args []string) int {
 	parents := false
 	verbose := false

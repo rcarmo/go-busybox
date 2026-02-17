@@ -1,3 +1,4 @@
+// Command w is a standalone entry point for the w applet.
 package main
 
 import (
