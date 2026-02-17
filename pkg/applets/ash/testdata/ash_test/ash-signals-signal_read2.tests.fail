@@ -1,6 +1,0 @@
---- signal_read2.xx	2026-02-07 22:52:35.504207246 +0000
-+++ signal_read2.right	2021-12-26 16:53:21.000000000 +0000
-@@ -1 +1,2 @@
--ash: fork/exec ./signal_read2.tests: exec format error
-+Hangup
-+Done:129

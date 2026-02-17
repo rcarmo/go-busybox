@@ -1,8 +1,0 @@
---- signal4.xx	2026-02-07 22:52:35.489206763 +0000
-+++ signal4.right	2021-12-26 16:53:21.000000000 +0000
-@@ -1,2 +1,4 @@
--trap: BADNAME: bad trap
-+./signal4.tests: trap: line 3: BADNAME: invalid signal specification
- 1
-+Trapped
-+Ok

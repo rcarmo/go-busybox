@@ -1,7 +1,7 @@
---- signal8.xx	2026-02-07 22:52:35.500207118 +0000
+--- signal8.xx	2026-02-17 09:19:42.437478889 +0000
 +++ signal8.right	2021-12-26 16:53:21.000000000 +0000
-@@ -1 +1,3 @@
--ash: fork/exec ./signal8.tests: exec format error
-+Removing traps
-+End of exit_func
-+Done: 0
+@@ -1,4 +1,3 @@
+-kill: invalid number '%1'
+ Removing traps
+ End of exit_func
+ Done: 0

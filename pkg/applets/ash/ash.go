@@ -432,6 +432,8 @@ type runner struct {
 	signalCh               chan os.Signal
 	forwardSignal          chan os.Signal
 	pendingSignals         []pendingSignal
+	inheritedSignals       map[os.Signal]bool // signals parent has traps for
+	propagatedSignals      []os.Signal        // signals to propagate to parent after subshell
 	inSubshell             bool
 	pendingHereDocs        []string
 	skipHereDocRead        bool
@@ -490,6 +492,35 @@ func defaultHandledSignal(sig os.Signal) bool {
 	return sig == syscall.SIGHUP || sig == syscall.SIGUSR2
 }
 
+func applySignalHandlers(ch chan os.Signal, traps map[string]string, ignored map[os.Signal]bool, extraNotify map[os.Signal]bool) {
+	if ch == nil {
+		return
+	}
+	for sig, name := range signalNames {
+		if ignored[sig] {
+			signal.Ignore(sig)
+			continue
+		}
+		if action, ok := traps[name]; ok {
+			if action == "" || action == "''" {
+				signal.Ignore(sig)
+				continue
+			}
+			signal.Notify(ch, sig)
+			continue
+		}
+		if extraNotify != nil && extraNotify[sig] {
+			signal.Notify(ch, sig)
+			continue
+		}
+		if defaultHandledSignal(sig) {
+			signal.Notify(ch, sig)
+			continue
+		}
+		signal.Reset(sig)
+	}
+}
+
 func (r *runner) addJob(pid int, ch chan int) int {
 	id := r.nextJobID
 	r.nextJobID++
@@ -517,32 +548,45 @@ func (r *runner) handleSignalsNonBlocking() {
 	if r.inTrap {
 		return
 	}
-	if !r.inSubshell {
-		for len(r.pendingSignals) > 0 {
-			pending := r.pendingSignals[0]
-			r.pendingSignals = r.pendingSignals[1:]
-			r.runTrap(pending.sig)
-			if r.exitFlag || r.returnFlag {
-				return
-			}
-			if pending.resetStatus {
-				r.lastStatus = core.ExitSuccess
-				r.vars["?"] = strconv.Itoa(core.ExitSuccess)
-			}
+	for len(r.pendingSignals) > 0 {
+		pending := r.pendingSignals[0]
+		r.pendingSignals = r.pendingSignals[1:]
+		r.runTrap(pending.sig)
+		if r.exitFlag || r.returnFlag {
+			return
+		}
+		if pending.resetStatus {
+			r.lastStatus = core.ExitSuccess
+			r.vars["?"] = strconv.Itoa(core.ExitSuccess)
 		}
 	}
 	for {
 		select {
 		case sig := <-r.signalCh:
-			if r.inSubshell {
-				r.pendingSignals = append(r.pendingSignals, pendingSignal{sig: sig})
-				return
-			}
 			r.runTrap(sig)
 			if r.exitFlag || r.returnFlag {
 				return
 			}
 		default:
+			return
+		}
+	}
+}
+
+func (r *runner) drainSignalsWithTimeout(timeout time.Duration) {
+	if timeout <= 0 || r.signalCh == nil {
+		return
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case sig := <-r.signalCh:
+			r.runTrap(sig)
+			if r.exitFlag || r.returnFlag {
+				return
+			}
+		case <-timer.C:
 			return
 		}
 	}
@@ -803,12 +847,23 @@ func (r *runner) runScript(script string) int {
 				if terminator == "}" {
 					joiner = "\n"
 				}
+				// Detect if we're collecting a case statement
+				inCase := false
+				for _, t := range tokens {
+					if t == "case" {
+						inCase = true
+						break
+					}
+				}
 				for i+1 < len(commands) {
 					i++
 					nextCmd := commands[i].cmd
-					if aliasTokens := splitTokens(nextCmd); len(aliasTokens) > 0 {
-						if _, ok := r.aliases[aliasTokens[0]]; ok {
-							nextCmd = r.expandAliases(nextCmd)
+					// Only alias-expand if not in a case body (patterns shouldn't be expanded)
+					if !inCase {
+						if aliasTokens := splitTokens(nextCmd); len(aliasTokens) > 0 {
+							if _, ok := r.aliases[aliasTokens[0]]; ok {
+								nextCmd = r.expandAliases(nextCmd)
+							}
 						}
 					}
 					compound = compound + joiner + nextCmd
@@ -847,6 +902,24 @@ func (r *runner) runScript(script string) int {
 					if isName(tokens[0]) && !isReservedFuncName(tokens[0]) {
 						isFuncStart = true
 					}
+				}
+			}
+			// Check for reserved word used as function name (syntax error)
+			if !isFuncStart && len(tokens) > 0 {
+				name := ""
+				if strings.HasSuffix(tokens[0], "()") {
+					name = strings.TrimSuffix(tokens[0], "()")
+				} else if len(tokens) >= 2 && tokens[1] == "()" {
+					name = tokens[0]
+				} else if len(tokens) >= 3 && tokens[1] == "(" && tokens[2] == ")" {
+					name = tokens[0]
+				}
+				if name != "" && isReservedFuncName(name) {
+					r.syntaxError = true
+					r.stdio.Errorf("%s: line %d: syntax error: unexpected \")\"\n", r.scriptName, r.currentLine)
+					r.exitFlag = true
+					r.exitCode = 2
+					return 2
 				}
 			}
 			if isFuncStart && !isFuncDefCommand(cmd) {
@@ -1512,6 +1585,11 @@ func (r *runner) runForScript(script string) (int, bool) {
 		// Expand the word list with word splitting and glob expansion
 		var expandedWords []string
 		for _, word := range words {
+			// Special case: "$@" with no positional params produces zero words
+			stripped := strings.TrimSpace(word)
+			if len(r.positional) == 0 && (stripped == "\"$@\"" || stripped == "'$@'") {
+				continue
+			}
 			exp := expandTokenWithRunner(word, r)
 			parts := []string{exp}
 			if !isQuotedToken(word) && strings.ContainsAny(word, "$`") {
@@ -1540,7 +1618,7 @@ func (r *runner) runForScript(script string) (int, bool) {
 						continue
 					}
 				}
-				if part != "" || isQuotedToken(word) {
+				if part != "" || isQuotedToken(word) || containsUnescapedQuote(word) {
 					expandedWords = append(expandedWords, part)
 				}
 			}
@@ -1604,7 +1682,7 @@ func (r *runner) runForScript(script string) (int, bool) {
 //	function f() compound      -- bash-style compound body
 //	function f compound         -- bash-style compound body without parens
 func parseFuncDef(script string) (name string, body string, lineOffset int, ok bool) {
-	script = strings.ReplaceAll(script, string(lineContMarker), " ")
+	script = strings.ReplaceAll(script, string(lineContMarker), "")
 	trimmed := strings.TrimSpace(script)
 
 	hasFunctionKeyword := false
@@ -2105,6 +2183,8 @@ func splitPatternAlternatives(pattern string) []string {
 
 func findCasePatternClose(tok string) int {
 	inBracket := false
+	inSingle := false
+	inDouble := false
 	escape := false
 	for i := 0; i < len(tok); i++ {
 		c := tok[i]
@@ -2112,19 +2192,27 @@ func findCasePatternClose(tok string) int {
 			escape = false
 			continue
 		}
-		if c == '\\' {
+		if c == '\\' && !inSingle {
 			escape = true
 			continue
 		}
-		if c == '[' {
+		if c == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if c == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if c == '[' && !inSingle && !inDouble {
 			inBracket = true
 			continue
 		}
-		if c == ']' {
+		if c == ']' && !inSingle && !inDouble {
 			inBracket = false
 			continue
 		}
-		if c == ')' && !inBracket {
+		if c == ')' && !inBracket && !inSingle && !inDouble {
 			return i
 		}
 	}
@@ -2355,6 +2443,7 @@ func (r *runner) runSubshell(inner string) int {
 	savedPendingHereDocs := r.pendingHereDocs
 	savedFdReaders := r.fdReaders
 	savedFdWriters := r.fdWriters
+	savedPendingSignals := r.pendingSignals
 
 	r.vars = copyStringMap(savedVars)
 	r.exported = copyBoolMap(savedExported)
@@ -2365,6 +2454,22 @@ func (r *runner) runSubshell(inner string) int {
 	r.scriptName = savedScriptName
 	r.argv0 = savedArgv0
 	r.traps, r.ignored = subshellTraps(savedTraps)
+	inheritNotify := map[os.Signal]bool{}
+	for sigName, action := range savedTraps {
+		if action == "" || action == "''" {
+			continue
+		}
+		if sigVal, ok := signalValues[sigName]; ok {
+			inheritNotify[sigVal] = true
+		}
+	}
+	if savedSignalCh != nil {
+		signal.Stop(savedSignalCh)
+	}
+	r.signalCh = make(chan os.Signal, 8)
+	r.inheritedSignals = inheritNotify
+	r.propagatedSignals = nil
+	applySignalHandlers(r.signalCh, r.traps, r.ignored, inheritNotify)
 	r.jobs = map[int]*job{}
 	r.jobByPid = map[int]int{}
 	r.jobOrder = nil
@@ -2380,16 +2485,19 @@ func (r *runner) runSubshell(inner string) int {
 	r.exitFlag = false
 	r.exitCode = core.ExitSuccess
 	r.pendingHereDocs = nil
+	r.pendingSignals = nil
 	r.fdReaders = copyFdReaders(savedFdReaders)
 	r.fdWriters = copyFdWriters(savedFdWriters)
 	r.lineOffset = 0
 	if savedCurrentLine > 0 {
 		r.lineOffset = savedCurrentLine - 1
 	}
-	r.forwardSignal = savedSignalCh
+	r.forwardSignal = nil
 	r.inSubshell = true
 
 	code := r.runScript(inner)
+	r.handleSignalsNonBlocking()
+	r.drainSignalsWithTimeout(20 * time.Millisecond)
 
 	// Run EXIT trap if set in this subshell
 	if exitTrap, ok := r.traps["EXIT"]; ok && exitTrap != "" {
@@ -2416,6 +2524,10 @@ func (r *runner) runSubshell(inner string) int {
 		}
 	}
 
+	// Save propagated signals before restoring parent state
+	propagatedSigs := r.propagatedSignals
+	r.propagatedSignals = nil
+
 	r.vars = savedVars
 	r.exported = savedExported
 	r.funcs = savedFuncs
@@ -2441,13 +2553,32 @@ func (r *runner) runSubshell(inner string) int {
 	r.exitFlag = savedExitFlag
 	r.exitCode = savedExitCode
 	r.pendingHereDocs = savedPendingHereDocs
+	r.pendingSignals = savedPendingSignals
 	r.fdReaders = savedFdReaders
 	r.fdWriters = savedFdWriters
 	r.lineOffset = savedLineOffset
 	r.currentLine = savedCurrentLine
+	if r.signalCh != nil {
+		signal.Stop(r.signalCh)
+	}
 	r.signalCh = savedSignalCh
+	applySignalHandlers(r.signalCh, r.traps, r.ignored, nil)
 	r.forwardSignal = nil
 	r.inSubshell = savedInSubshell
+	r.inheritedSignals = nil
+
+	// Process signals propagated from the subshell using parent's traps
+	if len(propagatedSigs) > 0 {
+		for _, sig := range propagatedSigs {
+			r.lastStatus = code
+			r.vars["?"] = strconv.Itoa(code)
+			r.runTrap(sig)
+			if r.exitFlag {
+				code = r.exitCode
+				break
+			}
+		}
+	}
 
 	return code
 }
@@ -2769,6 +2900,13 @@ func (r *runner) startBackground(cmd string) int {
 		r.stdio.Errorf("ash: restricted: %s\n", cmdSpec.args[0])
 		return core.ExitFailure
 	}
+	// Run builtins like kill/trap in a background subshell (not as external commands)
+	// This matches C ash behavior where background builtins run in a forked subshell
+	// with proper signal forwarding.
+	switch cmdSpec.args[0] {
+	case "kill", "trap", "wait", "jobs", "fg", "bg":
+		return r.startSubshellBackground(cmd)
+	}
 	if strings.HasSuffix(cmdSpec.args[0], ".tests") || strings.HasSuffix(cmdSpec.args[0], ".tests.xx") {
 		cmdArgs = append([]string{cmdSpec.args[0]}, cmdArgs...)
 		cmdSpec.args[0] = "sh"
@@ -2999,7 +3137,9 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			}
 		}()
 	}
-	if len(cmdSpec.prefixAssigns) > 0 && (isSpecialBuiltin || isFunc) {
+	// Apply prefix assignments to shell vars.
+	// For special builtins and functions, these persist; for others, the defer above restores them.
+	if len(cmdSpec.prefixAssigns) > 0 && len(cmdSpec.args) > 0 {
 		for _, pa := range cmdSpec.prefixAssigns {
 			r.vars[pa.name] = pa.newVal
 		}
@@ -3073,6 +3213,20 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 	savedStdio := r.stdio
 	r.stdio = &core.Stdio{In: stdin, Out: stdout, Err: stderr}
 	defer func() {
+		// If the command changed r.stdio.In (e.g., read wraps it in a bufio.Reader),
+		// and the original stdin was the parent's stdin (not a redirect), preserve
+		// the change. This handles: exec <file; read; cat (cat should see buffered data).
+		if r.stdio.In != savedStdio.In && r.stdio.In != stdin {
+			// Check if the new reader wraps the parent's original stdin
+			// (not a redirected one)
+			if br, ok := r.stdio.In.(*bufio.Reader); ok {
+				_ = br // it's a bufio.Reader wrapping something
+				if stdin == savedStdio.In {
+					// The read builtin wrapped the original stdin in a bufio.Reader
+					savedStdio.In = r.stdio.In
+				}
+			}
+		}
 		r.stdio = savedStdio
 	}()
 	if len(cmdSpec.args) >= 2 && cmdSpec.args[0] == "{" && cmdSpec.args[len(cmdSpec.args)-1] == "}" {
@@ -3360,6 +3514,8 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 			if cmdSpec.closeStderr {
 				r.stdio.Err = badFdWriter{}
 			}
+			// Persist exec's stdio changes: update savedStdio so the deferred restore preserves them
+			savedStdio = r.stdio
 			return core.ExitSuccess, false
 		}
 		cmdArgs := append([]string{}, cmdSpec.args[2:]...)
@@ -3552,7 +3708,14 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 				r.exitCode = 2
 				return 2, false
 			}
-			if opt != "-v" && opt != "-f" {
+			validOpt := true
+			for _, ch := range opt[1:] {
+				if ch != 'f' && ch != 'v' {
+					validOpt = false
+					break
+				}
+			}
+			if !validOpt {
 				line := r.currentLine
 				if line == 1 && r.scriptName == "SHELL" {
 					line = 0
@@ -3999,6 +4162,14 @@ func (r *runner) runSimpleCommandInternal(cmd string, stdin io.Reader, stdout io
 					case r.forwardSignal <- sig:
 					default:
 					}
+					continue
+				}
+				// In a subshell with an inherited signal: save for propagation
+				// to parent and continue (don't run trap or terminate).
+				// This mimics C ash where kill $$ in a subshell sends the
+				// signal to the parent process only.
+				if r.inSubshell && r.inheritedSignals[sig] {
+					r.propagatedSignals = append(r.propagatedSignals, sig)
 					continue
 				}
 				if r.signalCh == nil {
@@ -4699,10 +4870,6 @@ runFunction:
 			}
 			return core.ExitSuccess, false
 		case sig := <-r.signalCh:
-			if r.inSubshell {
-				r.pendingSignals = append(r.pendingSignals, pendingSignal{sig: sig})
-				continue
-			}
 			if ignored, ok := r.ignored[sig]; ok && ignored {
 				continue
 			}
@@ -4880,6 +5047,59 @@ type pipelineSegment struct {
 func (r *runner) runPipeline(segments []pipelineSegment) int {
 	if len(segments) == 0 {
 		return core.ExitSuccess
+	}
+
+	// Fast path for 2-segment pipelines: "simple_builtin | compound"
+	// Avoids goroutine and runner-copy overhead by running left side inline
+	// and feeding its output directly as stdin to the right side.
+	if len(segments) == 2 {
+		leftSeg := strings.TrimSpace(segments[0].seg)
+		rightSeg := strings.TrimSpace(segments[1].seg)
+		// Only use fast path when right side is a subshell (...) 
+		// Brace groups and other commands may have external commands that
+		// consume stdin when passed as bytes.Reader
+		isSubshellRight := len(rightSeg) >= 2 && rightSeg[0] == '(' && rightSeg[len(rightSeg)-1] == ')'
+		leftTokens := splitTokens(leftSeg)
+		if isSubshellRight && len(leftTokens) > 0 {
+			leftCmd := leftTokens[0]
+			isSimpleLeft := false
+			switch leftCmd {
+			case "echo", "printf", "cat", "true", "false":
+				// Check no redirections or pipes in left seg
+				if !strings.ContainsAny(leftSeg, "<>|&") {
+					isSimpleLeft = true
+				}
+			}
+			if isSimpleLeft {
+				// Run left side, capture output
+				var leftOut bytes.Buffer
+				leftCode, _ := r.runSimpleCommand(leftSeg, r.stdio.In, &leftOut, r.stdio.Err)
+				// Run right side with captured output as stdin
+				// Save and restore runner state (pipeline segments run as subshells)
+				rightReader := bytes.NewReader(leftOut.Bytes())
+				innerScript := rightSeg
+				if len(rightSeg) >= 2 && rightSeg[0] == '(' && rightSeg[len(rightSeg)-1] == ')' {
+					innerScript = strings.TrimSpace(rightSeg[1 : len(rightSeg)-1])
+				}
+				savedStdio := r.stdio
+				savedVars := r.vars
+				savedExported := r.exported
+				savedLastStatus := r.lastStatus
+				r.vars = copyStringMap(r.vars)
+				r.exported = copyBoolMap(r.exported)
+				r.stdio = &core.Stdio{In: rightReader, Out: r.stdio.Out, Err: r.stdio.Err}
+				code := r.runScript(innerScript)
+				r.stdio = savedStdio
+				r.vars = savedVars
+				r.exported = savedExported
+				r.lastStatus = savedLastStatus
+				// pipefail: if left side failed, propagate its exit code
+				if r.options["pipefail"] && leftCode != core.ExitSuccess && code == core.ExitSuccess {
+					code = leftCode
+				}
+				return code
+			}
+		}
 	}
 
 	type waitFn func() int
@@ -5187,9 +5407,12 @@ func (r *runner) runPipeline(segments []pipelineSegment) int {
 				jobs:       map[int]*job{},
 				jobByPid:   map[int]int{},
 				nextJobID:  1,
-				fdReaders:  copyFdReaders(r.fdReaders),
-				fdWriters:  copyFdWriters(r.fdWriters),
-				signalCh:   make(chan os.Signal, 8),
+				fdReaders:      copyFdReaders(r.fdReaders),
+				fdWriters:      copyFdWriters(r.fdWriters),
+				signalCh:       make(chan os.Signal, 8),
+				scriptCache:    r.scriptCache,
+				scriptLinesCache: r.scriptLinesCache,
+				caseCache:      r.caseCache,
 			}
 			sub.currentLine = lineBase
 			sub.lineOffset = lineBase - 1
@@ -5598,15 +5821,15 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 			spec.redirOut = "&2"
 			continue
 		case "<", "<>", "0<>", ">", ">>", "2>", "2>>", "1>&-", "2>&-":
+			if tok == "1>&-" {
+				spec.closeStdout = true
+				continue
+			}
+			if tok == "2>&-" {
+				spec.closeStderr = true
+				continue
+			}
 			if i+1 >= len(tokens) {
-				if tok == "1>&-" || tok == "2>&-" {
-					if tok == "1>&-" {
-						spec.closeStdout = true
-					} else {
-						spec.closeStderr = true
-					}
-					continue
-				}
 				return spec, fmt.Errorf("missing redirection target")
 			}
 			target := expandTokenWithRunner(tokens[i+1], r)
@@ -5769,6 +5992,10 @@ func (r *runner) parseCommandSpecWithRunner(tokens []string) (commandSpec, error
 				assignVars[name] = expandedVal
 				continue
 			}
+			// Special case: "$@" with no positional params produces zero words
+			if len(r.positional) == 0 && (tok == "\"$@\"" || tok == "'$@'") {
+				continue
+			}
 			tokQuoted := isQuotedToken(tok)
 			hasUnquoted := !tokQuoted && hasUnquotedExpansion(tok)
 			ifs, ifsSet := r.vars["IFS"]
@@ -5910,15 +6137,15 @@ func parseCommandSpec(tokens []string, vars map[string]string) (commandSpec, err
 			spec.redirOut = "&2"
 			continue
 		case "<", ">", ">>", "2>", "2>>", "1>&-", "2>&-":
+			if tok == "1>&-" {
+				spec.closeStdout = true
+				continue
+			}
+			if tok == "2>&-" {
+				spec.closeStderr = true
+				continue
+			}
 			if i+1 >= len(tokens) {
-				if tok == "1>&-" || tok == "2>&-" {
-					if tok == "1>&-" {
-						spec.closeStdout = true
-					} else {
-						spec.closeStderr = true
-					}
-					continue
-				}
 				return spec, fmt.Errorf("missing redirection target")
 			}
 			target := expandToken(tokens[i+1], func(s string) string { return expandVars(s, vars) }, func(s string) string { return expandVarsNoQuotes(s, vars) })
@@ -6009,7 +6236,11 @@ func splitPipelinesWithLines(cmd string) []pipelineSegment {
 	segLineOffset := 0
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
-		if c == '\n' || c == lineContMarker {
+		if c == lineContMarker {
+			lineOffset++
+			continue // don't include marker in segment text
+		}
+		if c == '\n' {
 			lineOffset++
 		}
 		if escape {
@@ -6070,9 +6301,12 @@ func splitPipelinesWithLines(cmd string) []pipelineSegment {
 			}
 		}
 		if c == '|' && !inSingle && !inDouble && !inBacktick && cmdSubDepth == 0 && arithDepth == 0 && parenDepth == 0 {
-			if i+1 < len(cmd) && cmd[i+1] == '|' {
-				buf.WriteString("||")
-				i++
+			nextIdx, nextCh := peekNextNonMarker(cmd, i)
+			if nextIdx >= 0 && nextCh == '|' {
+				for k := i; k <= nextIdx; k++ {
+					buf.WriteByte(cmd[k])
+				}
+				i = nextIdx
 				continue
 			}
 			parts = append(parts, pipelineSegment{seg: strings.TrimSpace(buf.String()), lineOffset: segLineOffset})
@@ -6112,6 +6346,9 @@ func splitAndOr(cmd string) ([]string, []string) {
 	inDoubleBracket := false
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
+		if c == lineContMarker {
+			continue // skip marker, don't include in output
+		}
 		if escape {
 			buf.WriteByte(c)
 			escape = false
@@ -6187,19 +6424,25 @@ func splitAndOr(cmd string) ([]string, []string) {
 			}
 		}
 		if !inSingle && !inDouble && !inBacktick && !inDoubleBracket && cmdSubDepth == 0 && arithDepth == 0 && parenDepth == 0 && braceDepth == 0 {
-			if c == '&' && i+1 < len(cmd) && cmd[i+1] == '&' {
-				parts = append(parts, strings.TrimSpace(buf.String()))
-				ops = append(ops, "&&")
-				buf.Reset()
-				i++
-				continue
+			if c == '&' {
+				nextIdx, nextCh := peekNextNonMarker(cmd, i)
+				if nextIdx >= 0 && nextCh == '&' {
+					parts = append(parts, strings.TrimSpace(buf.String()))
+					ops = append(ops, "&&")
+					buf.Reset()
+					i = nextIdx
+					continue
+				}
 			}
-			if c == '|' && i+1 < len(cmd) && cmd[i+1] == '|' {
-				parts = append(parts, strings.TrimSpace(buf.String()))
-				ops = append(ops, "||")
-				buf.Reset()
-				i++
-				continue
+			if c == '|' {
+				nextIdx, nextCh := peekNextNonMarker(cmd, i)
+				if nextIdx >= 0 && nextCh == '|' {
+					parts = append(parts, strings.TrimSpace(buf.String()))
+					ops = append(ops, "||")
+					buf.Reset()
+					i = nextIdx
+					continue
+				}
 			}
 		}
 		buf.WriteByte(c)
@@ -6211,6 +6454,8 @@ func splitAndOr(cmd string) ([]string, []string) {
 }
 
 func tokenizeScript(script string) []string {
+	// Strip line continuation markers before tokenizing
+	script = strings.ReplaceAll(script, string(lineContMarker), "")
 	var tokens []string
 	var buf strings.Builder
 	var inSingle bool
@@ -6225,6 +6470,9 @@ func tokenizeScript(script string) []string {
 	}
 	for i := 0; i < len(script); i++ {
 		c := script[i]
+		if c == lineContMarker {
+			continue // skip line continuation markers
+		}
 		if escape {
 			buf.WriteByte(c)
 			escape = false
@@ -6462,13 +6710,67 @@ type caseSpec struct {
 	branches []caseBranch
 }
 
+// joinLineContinuations strips \<newline> pairs outside single quotes from script,
+// joinLineContinuations is not used as a standalone preprocessor.
+// Instead, splitCommands handles line continuations inline, respecting heredoc boundaries.
+
+// lineEndsWithContinuation checks if a line ends with an unquoted backslash
+// (odd number of trailing backslashes, and the final backslash is outside
+// single quotes).
+func lineEndsWithContinuation(line string) bool {
+	if len(line) == 0 || line[len(line)-1] != '\\' {
+		return false
+	}
+	// Count trailing backslashes
+	n := 0
+	for j := len(line) - 1; j >= 0 && line[j] == '\\'; j-- {
+		n++
+	}
+	if n%2 == 0 {
+		return false // even number = all escaped, no continuation
+	}
+	// Check if the backslash is inside single quotes
+	inSingle := false
+	inDouble := false
+	for j := 0; j < len(line)-1; j++ { // -1: don't count the trailing backslash
+		c := line[j]
+		if c == '\'' && !inDouble {
+			inSingle = !inSingle
+		} else if c == '"' && !inSingle {
+			inDouble = !inDouble
+		} else if c == '\\' && !inSingle {
+			j++ // skip escaped char
+		}
+	}
+	return !inSingle
+}
+
+// peekNextNonMarker returns the index and byte of the next character in line
+// after position i that is not a lineContMarker. Returns -1, 0 if none found.
+func peekNextNonMarker(line string, i int) (int, byte) {
+	for j := i + 1; j < len(line); j++ {
+		if line[j] != lineContMarker {
+			return j, line[j]
+		}
+	}
+	return -1, 0
+}
+
 func splitCommands(script string) []commandEntry {
+	// Read all lines into a slice, then join continuation lines (outside heredocs)
+	allLines := strings.Split(script, "\n")
+	// strings.Split produces a trailing empty string for scripts ending with \n;
+	// trim it to match bufio.Scanner behavior.
+	scriptEndedWithNewline := len(allLines) > 0 && allLines[len(allLines)-1] == ""
+	if scriptEndedWithNewline {
+		allLines = allLines[:len(allLines)-1]
+	}
+
 	var cmds []commandEntry
 	var buf strings.Builder
 	var inSingle bool
 	var inDouble bool
 	var inBacktick bool
-	lastLineContinued := false
 	braceDepth := 0
 	parenDepth := 0
 	cmdSubDepth := 0
@@ -6503,17 +6805,33 @@ func splitCommands(script string) []commandEntry {
 			pendingHereDocs = append(pendingHereDocs, extractHereDocRequests(cmd)...)
 		}
 	}
-	scanner := bufio.NewScanner(strings.NewReader(script))
 	lineNo := 0
 	startLine := 1
-	for scanner.Scan() {
+	for lineIdx := 0; lineIdx < len(allLines); lineIdx++ {
 		lineNo++
-		line := scanner.Text()
+		origLineNo := lineNo
+		line := allLines[lineIdx]
+
+		// Join continuation lines (outside heredoc content)
+		// Insert lineContMarker at each join point so downstream code can track line offsets.
+		if len(pendingHereDocs) == 0 {
+			for lineEndsWithContinuation(line) && lineIdx+1 < len(allLines) {
+				line = line[:len(line)-1] + string(lineContMarker) + allLines[lineIdx+1]
+				lineIdx++
+				lineNo++
+			}
+			// If the line still ends with continuation but there's no next line (end of file),
+			// strip the trailing backslash only if the original script ended with \n after it
+			if lineEndsWithContinuation(line) && scriptEndedWithNewline {
+				line = line[:len(line)-1]
+			}
+		}
+
 		if buf.Len() == 0 {
-			startLine = lineNo
+			startLine = origLineNo
 		}
 		if len(pendingHereDocs) > 0 {
-			cmds = append(cmds, commandEntry{cmd: line, raw: line, line: lineNo})
+			cmds = append(cmds, commandEntry{cmd: line, raw: line, line: origLineNo})
 			check := line
 			if pendingHereDocs[0].stripTabs {
 				check = strings.TrimLeft(check, "\t")
@@ -6525,6 +6843,12 @@ func splitCommands(script string) []commandEntry {
 		}
 		for i := 0; i < len(line); i++ {
 			c := line[i]
+			if c == lineContMarker {
+				// Skip line-continuation markers in operator/command processing;
+				// they're only used for line number tracking in downstream code.
+				buf.WriteByte(c)
+				continue
+			}
 			if escape {
 				buf.WriteByte(c)
 				escape = false
@@ -6548,30 +6872,49 @@ func splitCommands(script string) []commandEntry {
 					flushToken()
 				}
 			}
-			if c == '$' && i+1 < len(line) && line[i+1] == '(' && !inSingle {
-				if i+2 < len(line) && line[i+2] == '(' {
-					buf.WriteString("$((")
-					arithDepth++
-					i += 2
+			if c == '$' && !inSingle {
+				nextIdx, nextCh := peekNextNonMarker(line, i)
+				if nextIdx >= 0 && nextCh == '(' {
+					nextIdx2, nextCh2 := peekNextNonMarker(line, nextIdx)
+					if nextIdx2 >= 0 && nextCh2 == '(' {
+						// $((  — arithmetic
+						for k := i; k <= nextIdx2; k++ {
+							buf.WriteByte(line[k])
+						}
+						arithDepth++
+						i = nextIdx2
+						continue
+					}
+					// $(  — command substitution
+					for k := i; k <= nextIdx; k++ {
+						buf.WriteByte(line[k])
+					}
+					cmdSubDepth++
+					i = nextIdx
 					continue
 				}
-				buf.WriteByte(c)
-				buf.WriteByte('(')
-				cmdSubDepth++
-				i++
-				continue
 			}
 			// Track ${...} nesting
-			if c == '$' && i+1 < len(line) && line[i+1] == '{' && !inSingle {
-				buf.WriteString("${")
-				braceExpDepth++
-				i++
-				continue
+			if c == '$' && !inSingle {
+				nextIdx, nextCh := peekNextNonMarker(line, i)
+				if nextIdx >= 0 && nextCh == '{' {
+					for k := i; k <= nextIdx; k++ {
+						buf.WriteByte(line[k])
+					}
+					braceExpDepth++
+					i = nextIdx
+					continue
+				}
 			}
 			// Also catch { after $ when $ was at end of previous continued line
 			if c == '{' && !inSingle && buf.Len() > 0 {
 				s := buf.String()
-				if s[len(s)-1] == '$' {
+				// Skip lineContMarker to find the real last char
+				lastIdx := len(s) - 1
+				for lastIdx > 0 && s[lastIdx] == lineContMarker {
+					lastIdx--
+				}
+				if s[lastIdx] == '$' {
 					braceExpDepth++
 					buf.WriteByte(c)
 					continue
@@ -6619,11 +6962,16 @@ func splitCommands(script string) []commandEntry {
 				buf.WriteByte(c)
 				continue
 			}
-			if !inSingle && !inDouble && arithDepth > 0 && c == ')' && i+1 < len(line) && line[i+1] == ')' {
-				buf.WriteString("))")
-				arithDepth--
-				i++
-				continue
+			if !inSingle && !inDouble && arithDepth > 0 && c == ')' {
+				nextIdx, nextCh := peekNextNonMarker(line, i)
+				if nextIdx >= 0 && nextCh == ')' {
+					for k := i; k <= nextIdx; k++ {
+						buf.WriteByte(line[k])
+					}
+					arithDepth--
+					i = nextIdx
+					continue
+				}
 			}
 			if !inSingle && !inDouble {
 				// Track { and } only at command-starting position
@@ -6652,22 +7000,27 @@ func splitCommands(script string) []commandEntry {
 			if !inSingle && inDouble && c == ')' && cmdSubDepth > 0 {
 				cmdSubDepth--
 			}
-			if !inSingle && inDouble && arithDepth > 0 && c == ')' && i+1 < len(line) && line[i+1] == ')' {
-				arithDepth--
-				i++
+			if !inSingle && inDouble && arithDepth > 0 && c == ')' {
+				nextIdx, nextCh := peekNextNonMarker(line, i)
+				if nextIdx >= 0 && nextCh == ')' {
+					for k := i; k <= nextIdx; k++ {
+						buf.WriteByte(line[k])
+					}
+					arithDepth--
+					i = nextIdx
+					continue
+				}
 			}
 			// Split on semicolons outside quotes and subshells
-			if c == ';' && i+1 < len(line) && line[i+1] == ';' && !inSingle && !inDouble && !inBacktick && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
-				buf.WriteString(";;")
-				i++
-				continue
-			}
-			// Handle ;\<newline>; as ;; (line continuation forming double semicolon)
-			if c == ';' && i+1 < len(line) && line[i+1] == '\\' && i+2 >= len(line) && !inSingle && !inDouble && !inBacktick {
-				buf.WriteByte(c)
-				continue
-			}
 			if c == ';' && !inSingle && !inDouble && !inBacktick && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
+				nextIdx, nextCh := peekNextNonMarker(line, i)
+				if nextIdx >= 0 && nextCh == ';' {
+					for k := i; k <= nextIdx; k++ {
+						buf.WriteByte(line[k])
+					}
+					i = nextIdx
+					continue
+				}
 				raw := buf.String()
 				if cmd := strings.TrimSpace(raw); cmd != "" {
 					appendCommand(cmd, raw, startLine)
@@ -6677,17 +7030,16 @@ func splitCommands(script string) []commandEntry {
 				continue
 			}
 			if c == '&' && !inSingle && !inDouble && !inBacktick && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
-				if i+1 < len(line) && line[i+1] == '&' {
-					buf.WriteString("&&")
-					i++
+				nextIdx, nextCh := peekNextNonMarker(line, i)
+				if nextIdx >= 0 && nextCh == '&' {
+					// Write & + any lineContMarkers + &
+					for k := i; k <= nextIdx; k++ {
+						buf.WriteByte(line[k])
+					}
+					i = nextIdx
 					continue
 				}
 				if i > 0 && (line[i-1] == '>' || line[i-1] == '<') {
-					buf.WriteByte(c)
-					continue
-				}
-				// If & is followed by \ at end of line, it's a continuation (forming && with next line)
-				if i+1 < len(line) && line[i+1] == '\\' && i+2 >= len(line) {
 					buf.WriteByte(c)
 					continue
 				}
@@ -6706,17 +7058,11 @@ func splitCommands(script string) []commandEntry {
 			flushToken()
 		}
 		if escape {
+			// Backslash at end of line inside single/double quotes etc. - keep it
 			escape = false
-			lastLineContinued = true
-			if buf.Len() > 0 {
-				bufStr := buf.String()
-				buf.Reset()
-				buf.WriteString(bufStr[:len(bufStr)-1])
-			}
-			buf.WriteByte(lineContMarker)
+			buf.WriteByte('\n')
 			continue
 		}
-		lastLineContinued = false
 		if !inSingle && !inDouble && !inBacktick && braceDepth == 0 && parenDepth == 0 && cmdSubDepth == 0 && arithDepth == 0 && braceExpDepth == 0 {
 			trimmed := strings.TrimSpace(buf.String())
 			hasHereDoc := len(extractHereDocRequests(buf.String())) > 0
@@ -6735,10 +7081,6 @@ func splitCommands(script string) []commandEntry {
 			buf.WriteByte('\n')
 		}
 	}
-	if lastLineContinued && !strings.HasSuffix(script, "\n") {
-		// The last line ended with \ and no trailing newline - restore the backslash
-		buf.WriteByte('\\')
-	}
 	raw := buf.String()
 	if inSingle || inDouble {
 		// Unterminated quoted string
@@ -6752,6 +7094,7 @@ func splitCommands(script string) []commandEntry {
 }
 
 func splitTokens(cmd string) []string {
+	cmd = strings.ReplaceAll(cmd, string(lineContMarker), "")
 	var tokens []string
 	var buf strings.Builder
 	var inSingle bool
@@ -6764,7 +7107,7 @@ func splitTokens(cmd string) []string {
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
 		if c == lineContMarker {
-			continue
+			continue // Skip line continuation markers
 		}
 		if escape {
 			buf.WriteByte(c)
@@ -6807,18 +7150,12 @@ func splitTokens(cmd string) []string {
 			continue
 		}
 		// Track $( command substitution
-		if c == '$' && !inSingle {
-			j := i + 1
-			for j < len(cmd) && cmd[j] == lineContMarker {
-				j++
-			}
-			if j < len(cmd) && cmd[j] == '(' {
-				buf.WriteByte(c)
-				buf.WriteByte('(')
-				inCmdSub++
-				i = j
-				continue
-			}
+		if c == '$' && !inSingle && i+1 < len(cmd) && cmd[i+1] == '(' {
+			buf.WriteByte(c)
+			buf.WriteByte('(')
+			inCmdSub++
+			i++
+			continue
 		}
 		if c == '(' && inCmdSub > 0 {
 			buf.WriteByte(c)
@@ -7671,6 +8008,11 @@ func expandDollarSingleQuote(s string) string {
 func readReady(reader *bufio.Reader, stdin io.Reader) bool {
 	if reader != nil && reader.Buffered() > 0 {
 		return true
+	}
+	// Check for in-memory readers (e.g., bytes.Reader, strings.Reader)
+	type lenner interface{ Len() int }
+	if l, ok := stdin.(lenner); ok {
+		return l.Len() > 0
 	}
 	file, ok := stdin.(*os.File)
 	if !ok {
@@ -10158,14 +10500,9 @@ func normalizeBracketBackslash(pattern string) string {
 
 func expandParamPattern(pattern string, vars map[string]string, mode braceQuoteMode) string {
 	pattern = expandVarsPreserveQuotes(pattern, vars)
-	quoted := false
-	if stripped, wasQuoted := stripOuterQuotes(pattern); wasQuoted {
-		pattern = stripped
-		quoted = true
-	}
 	pattern = stripPatternQuotes(pattern)
 	pattern = normalizeBracketBackslash(pattern)
-	if !quoted && mode == braceStripBoth {
+	if mode == braceStripBoth {
 		pattern = expandTildePattern(pattern, vars)
 	}
 	return pattern
@@ -10909,12 +11246,13 @@ func (r *runner) expandCommandSubsWithRunner(tok string) string {
 }
 
 func (r *runner) expandCommandSubsWithRunnerInQuotes(tok string, inDouble bool) string {
-	// Handle $(...) first (skip when inside single quotes)
+	// Handle $(...) first (skip when inside single quotes or backtick regions)
 	for {
-		// Find $( that's not inside single quotes
+		// Find $( that's not inside single quotes or backticks
 		start := -1
 		inSQ := false
 		inDQ := inDouble
+		inBT := false
 		escape := false
 		for j := 0; j < len(tok)-1; j++ {
 			c := tok[j]
@@ -10926,15 +11264,19 @@ func (r *runner) expandCommandSubsWithRunnerInQuotes(tok string, inDouble bool) 
 				escape = true
 				continue
 			}
-			if c == '\'' && !inDQ {
+			if c == '\'' && !inDQ && !inBT {
 				inSQ = !inSQ
 				continue
 			}
-			if c == '"' && !inSQ {
+			if c == '"' && !inSQ && !inBT {
 				inDQ = !inDQ
 				continue
 			}
-			if tok[j] == '$' && tok[j+1] == '(' && !inSQ {
+			if c == '`' && !inSQ {
+				inBT = !inBT
+				continue
+			}
+			if tok[j] == '$' && tok[j+1] == '(' && !inSQ && !inBT {
 				start = j
 				break
 			}
@@ -11053,7 +11395,7 @@ func runCommandSub(cmdStr string, vars map[string]string) string {
 		r.exported[key] = true
 	}
 	_ = r.runScript(cmdStr)
-	return strings.TrimSuffix(out.String(), "\n")
+	return strings.TrimRight(out.String(), "\n")
 }
 
 func (r *runner) runCommandSubWithRunner(cmdStr string, backtick bool) string {
@@ -11082,7 +11424,7 @@ func (r *runner) runCommandSubWithRunner(cmdStr string, backtick bool) string {
 					r.hadCommandSub = true
 					r.lastCommandSubStatus = status
 					r.commandSubSeq++
-					return strings.TrimSuffix(out.String(), "\n")
+					return strings.TrimRight(out.String(), "\n")
 				}
 			}
 		}
@@ -11133,7 +11475,7 @@ func (r *runner) runCommandSubWithRunner(cmdStr string, backtick bool) string {
 	r.hadCommandSub = true
 	r.lastCommandSubStatus = status
 	r.commandSubSeq++
-	return strings.TrimSuffix(out.String(), "\n")
+	return strings.TrimRight(out.String(), "\n")
 }
 
 func (r *runner) evalExprBuiltin(args []string, stdout io.Writer, stderr io.Writer) (int, error) {

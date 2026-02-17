@@ -1,6 +1,0 @@
---- save-ret.xx	2026-02-07 22:52:33.471141700 +0000
-+++ save-ret.right	2021-12-26 16:53:21.000000000 +0000
-@@ -1 +1,2 @@
--ash: fork/exec ./save-ret.tests: exec format error
-+YEAH
-+0

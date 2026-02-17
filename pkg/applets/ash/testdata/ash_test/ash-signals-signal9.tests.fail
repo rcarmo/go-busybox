@@ -1,7 +1,0 @@
---- signal9.xx	2026-02-07 22:52:35.502207182 +0000
-+++ signal9.right	2021-12-26 16:53:21.000000000 +0000
-@@ -1 +1,3 @@
--ash: fork/exec ./signal9.tests: exec format error
-+Removing traps
-+End of exit_func
-+Done: 0

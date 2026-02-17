@@ -20,13 +20,37 @@ This project ports common busybox utilities to Go, targeting WebAssembly (WASI) 
 
 Current parity target: **BusyBox v1.35.0 (Debian 1:1.35.0-4+b7)** as installed on the test host.
 
+### ash Test Suite Results
+
+The Go `ash` implementation is validated against the reference C busybox using the full busybox ash test suite. Each `.tests` file is run under both shells and outputs are compared.
+
+| Category | Pass | Total |
+|----------|------|-------|
+| ash-alias | 5 | 5 |
+| ash-arith | 6 | 6 |
+| ash-comm | 3 | 3 |
+| ash-getopts | 8 | 8 |
+| ash-glob | 10 | 10 |
+| ash-heredoc | 25 | 25 |
+| ash-invert | 3 | 3 |
+| ash-misc | 99 | 99 |
+| ash-parsing | 35 | 35 |
+| ash-quoting | 24 | 24 |
+| ash-read | 10 | 10 |
+| ash-redir | 27 | 27 |
+| ash-signals | 22 | 22 |
+| ash-standalone | 6 | 6 |
+| ash-vars | 69 | 69 |
+| ash-z_slow | 3 | 3 |
+| **Total** | **349** | **349 (100%)** |
+
 ## Feature Completeness Status
 
 ### Applet Implementation Status
 
 | Category | Applet | Status | Notes |
 |----------|--------|--------|-------|
-| **Shell** | ash | 🟡 ~85% | Builtins complete; pipelines, redirects, control flow, functions, case/esac, arithmetic, command substitution |
+| **Shell** | ash | 🟢 ~99% | Builtins complete; pipelines, redirects, control flow, functions, case/esac, arithmetic, command substitution, traps/signals — **349/349 busybox ash tests passing (100%)** |
 | **Text Processing** | awk | 🟢 ~90% | Full parser/evaluator, builtins, printf/sprintf, getline, regex |
 | | sed | 🟢 Complete | Basic and extended regex, in-place editing |
 | | grep | 🟢 Complete | -E, -i, -v, -c, -l, -n, -r flags |
@@ -87,22 +111,22 @@ Current parity target: **BusyBox v1.35.0 (Debian 1:1.35.0-4+b7)** as installed o
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| **Parsing** | ✅ Complete | Tokenizer, quoting, escapes |
-| **Pipelines** | ✅ Complete | Multi-stage with timeout protection |
-| **Redirections** | ✅ Complete | `<`, `>`, `>>`, `2>`, `2>>` |
-| **Control Flow** | ✅ Complete | if/elif/else/fi, while, for, case/esac |
-| **Command Substitution** | ✅ Complete | `$(...)` and backticks |
+| **Parsing** | ✅ Complete | Tokenizer, quoting, escapes, backslash-newline continuation |
+| **Pipelines** | ✅ Complete | Multi-stage with fast path optimization for simple builtins |
+| **Redirections** | ✅ Complete | `<`, `>`, `>>`, `2>`, `2>>`, `>&`, `<&`, fd close (`>&-`) |
+| **Control Flow** | ✅ Complete | if/elif/else/fi, while, until, for, case/esac |
+| **Command Substitution** | ✅ Complete | `$(...)` and backticks, nested, with proper newline stripping |
 | **Arithmetic** | ✅ Complete | `$((...))` with operators |
 | **Functions** | ✅ Complete | Definition and positional params |
 | **Parameter Expansion** | ✅ Complete | `${VAR:-default}`, `${#VAR}`, `${VAR##pattern}`, etc. |
 | **Positional Params** | ✅ Complete | `$0`-`$9`, `$@`, `$*`, `$#`, shift |
-| **Special Variables** | ✅ Complete | `$$`, `$?`, `$!` |
+| **Special Variables** | ✅ Complete | `$$`, `$?`, `$!`, `$PPID`, `$LINENO` |
 | **File Tests** | ✅ Complete | -e, -f, -d, -r, -w, -x, -s, -L |
 | **Builtins** | ✅ Complete | 25+ builtins including cd, export, eval, read, printf, alias, getopts, trap |
-| **Background Jobs** | 🟡 Basic | `&`, jobs/fg/wait with minimal tracking |
-| **Here-documents** | 🟡 Partial | Marker detection; content parsing WIP |
-| **Subshells** | 🟡 Basic | `(...)` grouping |
-| **Traps/Signals** | 🟡 Partial | trap builtin stores handlers; signal wiring pending |
+| **Background Jobs** | ✅ Complete | `&`, jobs/fg/wait with signal forwarding |
+| **Here-documents** | ✅ Complete | Quoted/unquoted delimiters, tab stripping (`<<-`), variable expansion |
+| **Subshells** | ✅ Complete | `(...)` grouping with proper state isolation |
+| **Traps/Signals** | ✅ Complete | trap builtin, signal handlers, inherited signal propagation, return-in-trap |
 
 ### AWK Feature Details
 

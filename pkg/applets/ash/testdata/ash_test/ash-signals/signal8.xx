@@ -1,1 +1,4 @@
-ash: fork/exec ./signal8.tests: exec format error
+kill: invalid number '%1'
+Removing traps
+End of exit_func
+Done: 0
