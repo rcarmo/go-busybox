@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -146,6 +147,19 @@ func listPath(stdio *core.Stdio, path string, display string, opts *Options) err
 		sortEntries(filtered, opts)
 	}
 
+	// Print total for long format
+	if opts.Long {
+		var totalBlocks int64
+		for _, e := range filtered {
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			totalBlocks += getBlocks(filepath.Join(path, e.Name()), info)
+		}
+		stdio.Printf("total %d\n", totalBlocks)
+	}
+
 	// Print entries
 	for _, e := range filtered {
 		info, err := e.Info()
@@ -216,7 +230,27 @@ func printEntry(stdio *core.Stdio, name string, path string, info fs.FileInfo, o
 		}
 		timeStr := formatTime(modTime)
 
-		stdio.Printf("%s %8s %s %s", mode.String(), sizeStr, timeStr, displayName)
+		// Get link count, owner, group from syscall
+		nlink := uint64(1)
+		owner := "?"
+		group := "?"
+		if sys := info.Sys(); sys != nil {
+			if stat, ok := sys.(*syscall.Stat_t); ok {
+				nlink = stat.Nlink
+				if u, err := user.LookupId(fmt.Sprintf("%d", stat.Uid)); err == nil {
+					owner = u.Username
+				} else {
+					owner = fmt.Sprintf("%d", stat.Uid)
+				}
+				if g, err := user.LookupGroupId(fmt.Sprintf("%d", stat.Gid)); err == nil {
+					group = g.Name
+				} else {
+					group = fmt.Sprintf("%d", stat.Gid)
+				}
+			}
+		}
+
+		stdio.Printf("%s %2d %-8s %-8s %8s %s %s", mode.String(), nlink, owner, group, sizeStr, timeStr, displayName)
 	} else {
 		stdio.Print(name)
 	}
@@ -249,6 +283,11 @@ func classifyChar(info fs.FileInfo) string {
 }
 
 func formatTime(t time.Time) string {
+	now := time.Now()
+	sixMonthsAgo := now.AddDate(0, -6, 0)
+	if t.Before(sixMonthsAgo) || t.After(now.AddDate(0, 0, 1)) {
+		return t.Format("Jan _2  2006")
+	}
 	return t.Format("Jan _2 15:04")
 }
 
