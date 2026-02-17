@@ -53,14 +53,14 @@ The busybox reference test suite (`/workspace/busybox-reference/testsuite/`) is 
 | awk | 53 | 53 | ✅ 100% |
 | cp | 13 | 13 | ✅ 100% |
 | cut | 22 | 22 | ✅ 100% |
-| diff | 11 | 12 | 91.7% |
+| diff | 12 | 12 | ✅ 100% |
 | find | 2 | 2 | ✅ 100% |
 | grep | 44 | 44 | ✅ 100% |
 | gunzip | 5 | 5 | ✅ 100% |
 | head | 2 | 2 | ✅ 100% |
 | pidof | 3 | 3 | ✅ 100% |
 | printf | 24 | 24 | ✅ 100% |
-| sed | 90 | 92 | 97.8% |
+| sed | 92 | 92 | ✅ 100% |
 | sort | 5 | 5 | ✅ 100% |
 | tail | 2 | 2 | ✅ 100% |
 | tar | 3 | 3 | ✅ 100% |
@@ -68,13 +68,13 @@ The busybox reference test suite (`/workspace/busybox-reference/testsuite/`) is 
 | tr | 2 | 2 | ✅ 100% |
 | uniq | 14 | 14 | ✅ 100% |
 | xargs | 7 | 7 | ✅ 100% |
-| **New-style total** | **305** | **308** | **99.0%** |
+| **New-style total** | **308** | **308** | **100%** |
 
 Old-style directory tests (cat, cp, cut, echo, find, gzip, ls, mkdir, mv, pwd, rm, rmdir, tail, tr, wc, wget): **76/79 (96.2%)**
 
-**Combined: 381/387 (98.4%)**
+**Combined: 384/387 (99.2%)**
 
-Remaining failures: diff -B (1), sed trailing newline edge cases (2), wget network-dependent tests (3).
+Remaining failures: 3 wget tests requiring network access.
 
 ## Feature Completeness Status
 
@@ -84,7 +84,7 @@ Remaining failures: diff -B (1), sed trailing newline edge cases (2), wget netwo
 |----------|--------|--------|-------|
 | **Shell** | ash | 🟢 ~99% | Builtins complete; pipelines, redirects, control flow, functions, case/esac, arithmetic, command substitution, traps/signals — **349/349 busybox ash tests passing (100%)** |
 | **Text Processing** | awk | 🟢 ~90% | Full parser/evaluator, builtins, printf/sprintf, getline, regex — **53/53 busybox tests (100%)** |
-| | sed | 🟢 ~98% | BRE/ERE regex, in-place editing, hold space, branches/labels, backreferences, \\r/\\t/\\n in replacement and text, --version — **90/92 busybox tests (97.8%)** |
+| | sed | 🟢 Complete | BRE/ERE regex, in-place editing, hold space, branches/labels, backreferences, \\r/\\t/\\n in replacement and text, --version, per-line trailing-NL tracking — **92/92 busybox tests (100%)** |
 | | grep | 🟢 Complete | -E/-F/-i/-v/-c/-l/-L/-n/-r/-w/-x/-o/-s/-e/-f flags — **44/44 busybox tests (100%)** |
 | | cut | 🟢 Complete | Fields, characters, bytes, custom delimiters — **22/22 busybox tests (100%)** |
 | | tr | 🟢 Complete | Translation, deletion, squeeze, POSIX classes — **2/2 busybox tests (100%)** |
