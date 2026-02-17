@@ -17,6 +17,19 @@ func Run(stdio *core.Stdio, args []string) int {
 	if len(args) == 0 {
 		return core.UsageError(stdio, "sed", "missing script or file")
 	}
+
+	// Handle --version for autoconf compatibility
+	for _, arg := range args {
+		if arg == "--version" {
+			stdio.Printf("GNU sed version 4.2.1\n")
+			return core.ExitSuccess
+		}
+		if arg == "--help" {
+			stdio.Printf("Usage: sed [-nri] [-e CMD]... [-f FILE]... [CMD] [FILE]...\n")
+			return core.ExitSuccess
+		}
+	}
+
 	quiet := false
 	inPlace := false
 	scripts := []string{}
@@ -415,10 +428,15 @@ func (p *parser) readUntilUnescaped(delim byte) string {
 }
 
 func (p *parser) parseTextArg() string {
-	if p.pos < len(p.src) && p.src[p.pos] == '\\' && p.pos+1 < len(p.src) && p.src[p.pos+1] == '\n' {
-		p.pos += 2
-	} else {
-		p.skipSpaces()
+	// Skip whitespace between command and text
+	p.skipSpaces()
+	// Handle text-start marker: \ alone or \<newline>
+	if p.pos < len(p.src) && p.src[p.pos] == '\\' {
+		if p.pos+1 < len(p.src) && p.src[p.pos+1] == '\n' {
+			p.pos += 2 // skip \<newline> (text starts on next line)
+		} else {
+			p.pos++ // skip leading \ (text-start marker on same line)
+		}
 	}
 	return p.parseTextBlock()
 }
@@ -434,16 +452,56 @@ func (p *parser) parseTextBlock() string {
 		if p.pos < len(p.src) && p.src[p.pos] == '\n' {
 			p.pos++
 		}
-		// Process \n escapes in text
-		line = strings.ReplaceAll(line, "\\n", "\n")
-		if strings.HasSuffix(line, "\\") && !strings.HasSuffix(line, "\\\\") {
-			lines = append(lines, line[:len(line)-1])
-			continue
+
+		// Check for continuation: line ending with odd number of backslashes
+		// Single \ at end = continuation, \\ at end = literal backslash (not continuation)
+		continuation := false
+		nTrailingBS := 0
+		for i := len(line) - 1; i >= 0 && line[i] == '\\'; i-- {
+			nTrailingBS++
 		}
+		if nTrailingBS%2 == 1 {
+			continuation = true
+			line = line[:len(line)-1] // strip trailing backslash
+		}
+
+		// Process escape sequences in text
+		line = processTextEscapes(line)
+
 		lines = append(lines, line)
-		break
+		if !continuation {
+			break
+		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// processTextEscapes interprets \n, \t, \r, \\ in a/i/c text
+func processTextEscapes(s string) string {
+	var buf strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case 'n':
+				buf.WriteByte('\n')
+				i++
+			case 't':
+				buf.WriteByte('\t')
+				i++
+			case 'r':
+				buf.WriteByte('\r')
+				i++
+			case '\\':
+				buf.WriteByte('\\')
+				i++
+			default:
+				buf.WriteByte(s[i])
+			}
+		} else {
+			buf.WriteByte(s[i])
+		}
+	}
+	return buf.String()
 }
 
 func (p *parser) parseLabel() string {
@@ -607,6 +665,8 @@ type engine struct {
 	wfiles            map[string]*os.File
 	lastWasAppend     bool // true if last output was from a/i/c command
 	lastOutputLineNum int  // line number of last output
+	lastFullCycleLine int  // lineNum of last line that got full command processing
+	prevCycleLine     int  // lineNum of line before lastFullCycleLine (for gap detection)
 }
 
 func newEngine(prog []*sedCommand, quiet bool) *engine {
@@ -638,6 +698,8 @@ func (e *engine) run(lr *lineReader) {
 func (e *engine) processLine(line string, lastLine bool, lr *lineReader) {
 	patSpace := line
 	e.substituted = false
+	e.prevCycleLine = e.lastFullCycleLine
+	e.lastFullCycleLine = e.lineNum
 	var appendText []string
 
 	flow := e.execCmds(e.prog, &patSpace, lastLine, lr, &appendText)
@@ -786,7 +848,15 @@ func (e *engine) matches(cmd *sedCommand, patSpace string, lastLine bool) bool {
 	// Range
 	active := e.rangeActive[cmd]
 	if !active {
-		if e.addrMatch(cmd.addr1, patSpace, lastLine) {
+		startMatch := e.addrMatch(cmd.addr1, patSpace, lastLine)
+		// If lines were skipped by N (gap between previous full-cycle line and current),
+		// and addr1 is a line-number address that falls in the gap, activate retroactively
+		if !startMatch && e.prevCycleLine > 0 &&
+			cmd.addr1.lineNum > 0 && !cmd.addr1.last && cmd.addr1.regex == nil &&
+			cmd.addr1.lineNum > e.prevCycleLine && cmd.addr1.lineNum < e.lineNum {
+			startMatch = true
+		}
+		if startMatch {
 			e.rangeActive[cmd] = true
 			e.rangeStart[cmd] = e.lineNum
 			if cmd.negated {
@@ -1239,6 +1309,26 @@ func convertSedRepl(repl string) string {
 			if next == '&' {
 				// Literal &
 				buf.WriteByte('&')
+				i++
+				continue
+			}
+			if next == 'n' {
+				buf.WriteByte('\n')
+				i++
+				continue
+			}
+			if next == 'r' {
+				buf.WriteByte('\r')
+				i++
+				continue
+			}
+			if next == 't' {
+				buf.WriteByte('\t')
+				i++
+				continue
+			}
+			if next == '\\' {
+				buf.WriteByte('\\')
 				i++
 				continue
 			}

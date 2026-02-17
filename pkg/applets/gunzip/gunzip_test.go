@@ -18,9 +18,11 @@ func TestGunzip(t *testing.T) {
 
 	tests := []testutil.AppletTestCase{
 		{
-			Name:     "missing",
+			Name:     "stdin_to_stdout",
 			Args:     []string{},
-			WantCode: core.ExitUsage,
+			Input:    buf.String(),
+			WantOut:  "hello\n",
+			WantCode: core.ExitSuccess,
 		},
 		{
 			Name:     "basic",

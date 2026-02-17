@@ -12,9 +12,10 @@ import (
 func TestGzip(t *testing.T) {
 	tests := []testutil.AppletTestCase{
 		{
-			Name:     "missing",
+			Name:     "stdin_to_stdout",
 			Args:     []string{},
-			WantCode: core.ExitUsage,
+			Input:    "hello\n",
+			WantCode: core.ExitSuccess,
 		},
 		{
 			Name:     "basic",
