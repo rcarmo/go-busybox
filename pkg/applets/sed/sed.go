@@ -595,17 +595,18 @@ func (lr *lineReader) isLast() bool {
 }
 
 type engine struct {
-	prog          []*sedCommand
-	quiet         bool
-	out           *bytes.Buffer
-	holdSpace     string
-	lastRegex     *regexp.Regexp
-	lineNum       int
-	substituted   bool
-	rangeActive   map[*sedCommand]bool
-	rangeStart    map[*sedCommand]int
-	wfiles        map[string]*os.File
-	lastWasAppend bool // true if last output was from a/i/c command
+	prog              []*sedCommand
+	quiet             bool
+	out               *bytes.Buffer
+	holdSpace         string
+	lastRegex         *regexp.Regexp
+	lineNum           int
+	substituted       bool
+	rangeActive       map[*sedCommand]bool
+	rangeStart        map[*sedCommand]int
+	wfiles            map[string]*os.File
+	lastWasAppend     bool // true if last output was from a/i/c command
+	lastOutputLineNum int  // line number of last output
 }
 
 func newEngine(prog []*sedCommand, quiet bool) *engine {
@@ -671,11 +672,13 @@ func (e *engine) processLine(line string, lastLine bool, lr *lineReader) {
 		e.out.WriteString(patSpace)
 		e.out.WriteByte('\n')
 		e.lastWasAppend = false
+		e.lastOutputLineNum = e.lineNum
 	}
 	for _, t := range appendText {
 		e.out.WriteString(t)
 		e.out.WriteByte('\n')
 		e.lastWasAppend = true
+		e.lastOutputLineNum = e.lineNum
 	}
 }
 
@@ -874,6 +877,8 @@ func (e *engine) execOne(cmd *sedCommand, patSpace *string, lastLine bool, lr *l
 	case 'p':
 		e.out.WriteString(*patSpace)
 		e.out.WriteByte('\n')
+		e.lastOutputLineNum = e.lineNum
+		e.lastWasAppend = false
 	case 'P':
 		s := *patSpace
 		idx := strings.Index(s, "\n")
@@ -974,6 +979,8 @@ func (e *engine) execOne(cmd *sedCommand, patSpace *string, lastLine bool, lr *l
 			if cmd.flagP {
 				e.out.WriteString(*patSpace)
 				e.out.WriteByte('\n')
+				e.lastOutputLineNum = e.lineNum
+				e.lastWasAppend = false
 			}
 			if cmd.flagW != "" {
 				e.writeFile(cmd.flagW, *patSpace+"\n")
@@ -1100,8 +1107,10 @@ func runFiles(stdio *core.Stdio, prog []*sedCommand, quiet bool, files []string)
 
 	result := eng.out.Bytes()
 	// If original input didn't end with newline, strip trailing newline from output
-	// But only if the last output was from pattern-space printing (not append/insert)
-	if !lastNewline && !eng.lastWasAppend && len(result) > 0 && result[len(result)-1] == '\n' {
+	// But only if the last output was from the last line of input (not from earlier lines)
+	// and not from append/insert text
+	totalLines := len(allLines)
+	if !lastNewline && !eng.lastWasAppend && eng.lastOutputLineNum == totalLines && len(result) > 0 && result[len(result)-1] == '\n' {
 		result = result[:len(result)-1]
 	}
 	if len(result) > 0 {
@@ -1129,7 +1138,8 @@ func runInPlace(stdio *core.Stdio, prog []*sedCommand, quiet bool, files []strin
 		eng.close()
 
 		result := eng.out.Bytes()
-		if !hasNL && !eng.lastWasAppend && len(result) > 0 && result[len(result)-1] == '\n' {
+		totalLines := len(lines)
+		if !hasNL && !eng.lastWasAppend && eng.lastOutputLineNum == totalLines && len(result) > 0 && result[len(result)-1] == '\n' {
 			result = result[:len(result)-1]
 		}
 
