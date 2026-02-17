@@ -225,7 +225,7 @@ go-busybox/
 | Metric | Count |
 |---|---|
 | Applet packages | 57 (+procutil) |
-| Source files (non-test) | 134 |
+| Source files (non-test) | 138 |
 | Source lines | ~29,000 |
 | Unit test files | 62 |
 | Fuzz test files | 58 |
