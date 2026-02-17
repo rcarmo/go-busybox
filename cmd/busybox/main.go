@@ -68,6 +68,7 @@ type appletFunc func(stdio *core.Stdio, args []string) int
 var applets = map[string]appletFunc{
 	"echo":              echo.Run,
 	"ash":               ash.Run,
+	"sh":                ash.Run,
 	"awk":               awk.Run,
 	"cat":               cat.Run,
 	"ls":                ls.Run,

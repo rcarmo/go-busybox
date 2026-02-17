@@ -238,6 +238,25 @@ func ParseSet(spec string) ([]rune, error) {
 	var out []rune
 	runes := []rune(spec)
 	for i := 0; i < len(runes); i++ {
+		// Check for POSIX character classes: [:alnum:], [:alpha:], etc.
+		if runes[i] == '[' && i+1 < len(runes) && runes[i+1] == ':' {
+			end := -1
+			for j := i + 2; j+1 < len(runes); j++ {
+				if runes[j] == ':' && runes[j+1] == ']' {
+					end = j
+					break
+				}
+			}
+			if end > 0 {
+				className := string(runes[i+2 : end])
+				chars := posixClass(className)
+				if chars != nil {
+					out = append(out, chars...)
+					i = end + 1 // skip past :]
+					continue
+				}
+			}
+		}
 		if i+2 < len(runes) && runes[i+1] == '-' {
 			start := runes[i]
 			end := runes[i+2]
@@ -253,6 +272,65 @@ func ParseSet(spec string) ([]rune, error) {
 		out = append(out, runes[i])
 	}
 	return out, nil
+}
+
+func posixClass(name string) []rune {
+	switch name {
+	case "alnum":
+		var r []rune
+		for i := '0'; i <= '9'; i++ { r = append(r, i) }
+		for i := 'A'; i <= 'Z'; i++ { r = append(r, i) }
+		for i := 'a'; i <= 'z'; i++ { r = append(r, i) }
+		return r
+	case "alpha":
+		var r []rune
+		for i := 'A'; i <= 'Z'; i++ { r = append(r, i) }
+		for i := 'a'; i <= 'z'; i++ { r = append(r, i) }
+		return r
+	case "digit":
+		var r []rune
+		for i := '0'; i <= '9'; i++ { r = append(r, i) }
+		return r
+	case "lower":
+		var r []rune
+		for i := 'a'; i <= 'z'; i++ { r = append(r, i) }
+		return r
+	case "upper":
+		var r []rune
+		for i := 'A'; i <= 'Z'; i++ { r = append(r, i) }
+		return r
+	case "space":
+		return []rune{' ', '\t', '\n', '\r', '\f', '\v'}
+	case "blank":
+		return []rune{' ', '\t'}
+	case "print":
+		var r []rune
+		for i := rune(32); i < 127; i++ { r = append(r, i) }
+		return r
+	case "graph":
+		var r []rune
+		for i := rune(33); i < 127; i++ { r = append(r, i) }
+		return r
+	case "cntrl":
+		var r []rune
+		for i := rune(0); i < 32; i++ { r = append(r, i) }
+		r = append(r, 127)
+		return r
+	case "punct":
+		var r []rune
+		for i := rune(33); i < 48; i++ { r = append(r, i) }
+		for i := rune(58); i < 65; i++ { r = append(r, i) }
+		for i := rune(91); i < 97; i++ { r = append(r, i) }
+		for i := rune(123); i < 127; i++ { r = append(r, i) }
+		return r
+	case "xdigit":
+		var r []rune
+		for i := '0'; i <= '9'; i++ { r = append(r, i) }
+		for i := 'A'; i <= 'F'; i++ { r = append(r, i) }
+		for i := 'a'; i <= 'f'; i++ { r = append(r, i) }
+		return r
+	}
+	return nil
 }
 
 // ComplementSet returns the complement of the set across bytes 0-255.

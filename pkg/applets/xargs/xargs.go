@@ -7,45 +7,148 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/rcarmo/go-busybox/pkg/core"
 )
 
 func Run(stdio *core.Stdio, args []string) int {
-	if len(args) == 0 {
-		return core.UsageError(stdio, "xargs", "missing command")
-	}
 	zeroTerm := false
 	trace := false
-	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
-		switch args[0] {
-		case "-0":
+	eofStr := "" // -E
+	eofEnabled := false
+	maxSize := 0 // -s
+	noRun := false
+
+	for len(args) > 0 && strings.HasPrefix(args[0], "-") && args[0] != "-" {
+		switch {
+		case args[0] == "-0":
 			zeroTerm = true
 			args = args[1:]
-		case "-t":
+		case args[0] == "-t":
 			trace = true
+			args = args[1:]
+		case args[0] == "-r":
+			noRun = true
+			args = args[1:]
+		case strings.HasPrefix(args[0], "-E"):
+			val := args[0][2:]
+			if val == "" {
+				if len(args) < 2 {
+					return core.UsageError(stdio, "xargs", "missing argument for -E")
+				}
+				args = args[1:]
+				val = args[0]
+			}
+			eofStr = val
+			eofEnabled = true
+			args = args[1:]
+		case args[0] == "-e":
+			// -e without argument: use _ as default (GNU compat: disable eof)
+			eofEnabled = false
+			args = args[1:]
+		case strings.HasPrefix(args[0], "-e"):
+			val := args[0][2:]
+			eofStr = val
+			eofEnabled = true
+			args = args[1:]
+		case strings.HasPrefix(args[0], "-s"):
+			val := args[0][2:]
+			if val == "" {
+				if len(args) < 2 {
+					return core.UsageError(stdio, "xargs", "missing argument for -s")
+				}
+				args = args[1:]
+				val = args[0]
+			}
+			n, err := strconv.Atoi(val)
+			if err != nil || n <= 0 {
+				return core.UsageError(stdio, "xargs", "invalid argument for -s")
+			}
+			maxSize = n
+			args = args[1:]
+		case strings.HasPrefix(args[0], "-n"):
+			// -n NUM: max args per command (accept but simplified implementation)
+			val := args[0][2:]
+			if val == "" {
+				if len(args) < 2 {
+					return core.UsageError(stdio, "xargs", "missing argument for -n")
+				}
+				args = args[1:]
+			}
 			args = args[1:]
 		default:
 			return core.UsageError(stdio, "xargs", "invalid option -- '"+strings.TrimPrefix(args[0], "-")+"'")
 		}
 	}
-	if len(args) == 0 {
-		return core.UsageError(stdio, "xargs", "missing command")
+
+	cmdName := "echo"
+	var cmdBase []string
+	if len(args) > 0 {
+		cmdName = args[0]
+		cmdBase = args[1:]
 	}
-	words, err := readWords(stdio.In, zeroTerm)
+
+	words, err := readWords(stdio.In, zeroTerm, eofEnabled, eofStr)
 	if err != nil {
 		stdio.Errorf("xargs: %v\n", err)
 		return core.ExitFailure
 	}
-	cmdArgs := append(args, words...)
-	if trace {
-		stdio.Errorf("%s\n", strings.Join(cmdArgs, " "))
+
+	if noRun && len(words) == 0 {
+		return core.ExitSuccess
 	}
-	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...) // #nosec G204 -- xargs runs user-provided command
+
+	if maxSize > 0 {
+		return runBatched(stdio, cmdName, cmdBase, words, maxSize, trace)
+	}
+
+	cmdArgs := append(cmdBase, words...)
+	return runOne(stdio, cmdName, cmdArgs, trace)
+}
+
+func runBatched(stdio *core.Stdio, cmdName string, cmdBase []string, words []string, maxSize int, trace bool) int {
+	exitCode := core.ExitSuccess
+	baseLen := len(cmdName)
+	for _, b := range cmdBase {
+		baseLen += 1 + len(b)
+	}
+
+	var batch []string
+	currentLen := baseLen
+	for _, w := range words {
+		newLen := currentLen + 1 + len(w)
+		if len(batch) > 0 && newLen > maxSize {
+			cmdArgs := append(append([]string{}, cmdBase...), batch...)
+			rc := runOne(stdio, cmdName, cmdArgs, trace)
+			if rc != 0 {
+				exitCode = rc
+			}
+			batch = nil
+			currentLen = baseLen
+		}
+		batch = append(batch, w)
+		currentLen += 1 + len(w)
+	}
+	if len(batch) > 0 {
+		cmdArgs := append(append([]string{}, cmdBase...), batch...)
+		rc := runOne(stdio, cmdName, cmdArgs, trace)
+		if rc != 0 {
+			exitCode = rc
+		}
+	}
+	return exitCode
+}
+
+func runOne(stdio *core.Stdio, cmdName string, cmdArgs []string, trace bool) int {
+	fullArgs := append([]string{cmdName}, cmdArgs...)
+	if trace {
+		stdio.Errorf("%s\n", strings.Join(fullArgs, " "))
+	}
+	cmd := exec.Command(cmdName, cmdArgs...) // #nosec G204
 	cmd.Stdout = stdio.Out
 	cmd.Stderr = stdio.Err
-	cmd.Stdin = stdio.In
 	cmd.Env = os.Environ()
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -57,7 +160,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	return core.ExitSuccess
 }
 
-func readWords(r io.Reader, zeroTerm bool) ([]string, error) {
+func readWords(r io.Reader, zeroTerm bool, eofEnabled bool, eofStr string) ([]string, error) {
 	if zeroTerm {
 		data, err := io.ReadAll(r)
 		if err != nil {
@@ -76,7 +179,16 @@ func readWords(r io.Reader, zeroTerm bool) ([]string, error) {
 	reader := bufio.NewScanner(r)
 	var words []string
 	for reader.Scan() {
-		words = append(words, strings.Fields(reader.Text())...)
+		line := reader.Text()
+		if eofEnabled && line == eofStr {
+			break
+		}
+		for _, w := range strings.Fields(line) {
+			if eofEnabled && w == eofStr {
+				return words, nil
+			}
+			words = append(words, w)
+		}
 	}
 	if err := reader.Err(); err != nil {
 		return nil, err

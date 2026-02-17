@@ -9,42 +9,40 @@ import (
 
 // Run executes the echo command with the given arguments.
 func Run(stdio *core.Stdio, args []string) int {
-	// Parse flags
+	// Parse flags: only -n, -e, -E and combinations thereof
 	noNewline := false
 	enableEscapes := false
 	startIdx := 0
 
 	for i, arg := range args {
-		if arg == "-n" {
-			noNewline = true
-			startIdx = i + 1
-		} else if arg == "-e" {
-			enableEscapes = true
-			startIdx = i + 1
-		} else if arg == "-E" {
-			enableEscapes = false
-			startIdx = i + 1
-		} else if len(arg) > 0 && arg[0] == '-' {
-			// Combined flags like -ne
-			for _, c := range arg[1:] {
-				switch c {
-				case 'n':
-					noNewline = true
-				case 'e':
-					enableEscapes = true
-				case 'E':
-					enableEscapes = false
-				default:
-					// Unknown flag, treat as argument
-					goto done
-				}
-			}
-			startIdx = i + 1
-		} else {
+		if len(arg) < 2 || arg[0] != '-' {
 			break
 		}
+		valid := true
+		for _, c := range arg[1:] {
+			switch c {
+			case 'n', 'e', 'E':
+				// valid flag char
+			default:
+				valid = false
+			}
+		}
+		if !valid {
+			break
+		}
+		// Apply flags
+		for _, c := range arg[1:] {
+			switch c {
+			case 'n':
+				noNewline = true
+			case 'e':
+				enableEscapes = true
+			case 'E':
+				enableEscapes = false
+			}
+		}
+		startIdx = i + 1
 	}
-done:
 
 	output := strings.Join(args[startIdx:], " ")
 	halt := false
@@ -62,7 +60,7 @@ done:
 	return core.ExitSuccess
 }
 
-// processEscapes handles escape sequences like \n, \t, etc.
+// processEscapes handles escape sequences like \n, \t, \0NNN, \NNN, etc.
 func processEscapes(s string) (string, bool) {
 	var result strings.Builder
 	i := 0
@@ -95,9 +93,47 @@ func processEscapes(s string) (string, bool) {
 				result.WriteByte('\v')
 				i += 2
 			case '0':
-				// Octal escape - simplified, just handle \0
-				result.WriteByte(0)
+				// \0NNN: octal escape with \0 prefix, up to 3 octal digits
 				i += 2
+				val := 0
+				count := 0
+				for count < 3 && i < len(s) && s[i] >= '0' && s[i] <= '7' {
+					val = val*8 + int(s[i]-'0')
+					i++
+					count++
+				}
+				result.WriteByte(byte(val))
+			case '1', '2', '3', '4', '5', '6', '7':
+				// \NNN: octal escape without \0 prefix, up to 3 octal digits
+				i++ // skip backslash
+				val := 0
+				count := 0
+				for count < 3 && i < len(s) && s[i] >= '0' && s[i] <= '7' {
+					val = val*8 + int(s[i]-'0')
+					i++
+					count++
+				}
+				result.WriteByte(byte(val))
+			case 'x':
+				// \xHH: hex escape
+				i += 2
+				val := 0
+				count := 0
+				for count < 2 && i < len(s) {
+					c := s[i]
+					if c >= '0' && c <= '9' {
+						val = val*16 + int(c-'0')
+					} else if c >= 'a' && c <= 'f' {
+						val = val*16 + int(c-'a'+10)
+					} else if c >= 'A' && c <= 'F' {
+						val = val*16 + int(c-'A'+10)
+					} else {
+						break
+					}
+					i++
+					count++
+				}
+				result.WriteByte(byte(val))
 			case 'c':
 				halt = true
 				i = len(s)

@@ -3,6 +3,7 @@ package diff
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -42,65 +43,92 @@ func Run(stdio *core.Stdio, args []string) int {
 	opts := diffOptions{}
 	contextLines := 3
 	i := 0
-	for i < len(args) && strings.HasPrefix(args[i], "-") {
+	for i < len(args) && strings.HasPrefix(args[i], "-") && args[i] != "-" {
 		if args[i] == "--" {
 			i++
 			break
 		}
-		switch args[i] {
-		case "-a":
-			opts.treatAsText = true
-		case "-q":
-			opts.brief = true
-		case "-r":
-			opts.recursive = true
-		case "-s":
-			opts.same = true
-		case "-b":
-			opts.ignoreSpaceAmount = true
-		case "-B":
-			opts.ignoreBlank = true
-		case "-d":
-			// no-op in this implementation (uses LCS)
-		case "-i":
-			opts.ignoreCase = true
-		case "-N":
-			opts.allowAbsent = true
-		case "-t":
-			opts.expandTabs = true
-		case "-T":
-			opts.prefixTabs = true
-		case "-w":
-			opts.ignoreAllSpace = true
-		case "-L":
-			if i+1 >= len(args) {
-				return core.UsageError(stdio, "diff", "missing label")
+		arg := args[i]
+		if strings.HasPrefix(arg, "-U") {
+			val := arg[2:]
+			if val == "" {
+				if i+1 >= len(args) {
+					return core.UsageError(stdio, "diff", "missing context lines")
+				}
+				i++
+				val = args[i]
 			}
-			i++
-			if opts.labelLeft == "" {
-				opts.labelLeft = args[i]
-			} else {
-				opts.labelRight = args[i]
-			}
-		case "-S":
-			if i+1 >= len(args) {
-				return core.UsageError(stdio, "diff", "missing start file")
-			}
-			i++
-			opts.startFile = args[i]
-		case "-U":
-			if i+1 >= len(args) {
-				return core.UsageError(stdio, "diff", "missing context lines")
-			}
-			val := args[i+1]
-			i++
 			parsed, err := parsePositiveInt(val)
 			if err != nil {
 				return core.UsageError(stdio, "diff", "invalid context lines")
 			}
 			contextLines = parsed
-		default:
-			return core.UsageError(stdio, "diff", "invalid option")
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-L") {
+			val := arg[2:]
+			if val == "" {
+				if i+1 >= len(args) {
+					return core.UsageError(stdio, "diff", "missing label")
+				}
+				i++
+				val = args[i]
+			}
+			if opts.labelLeft == "" {
+				opts.labelLeft = val
+			} else {
+				opts.labelRight = val
+			}
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-S") {
+			val := arg[2:]
+			if val == "" {
+				if i+1 >= len(args) {
+					return core.UsageError(stdio, "diff", "missing start file")
+				}
+				i++
+				val = args[i]
+			}
+			opts.startFile = val
+			i++
+			continue
+		}
+		// Handle combined flags like -ubw, -rN, etc.
+		flags := arg[1:]
+		for _, ch := range flags {
+			switch ch {
+			case 'a':
+				opts.treatAsText = true
+			case 'q':
+				opts.brief = true
+			case 'r':
+				opts.recursive = true
+			case 's':
+				opts.same = true
+			case 'b':
+				opts.ignoreSpaceAmount = true
+			case 'B':
+				opts.ignoreBlank = true
+			case 'd':
+				// no-op
+			case 'i':
+				opts.ignoreCase = true
+			case 'N':
+				opts.allowAbsent = true
+			case 't':
+				opts.expandTabs = true
+			case 'T':
+				opts.prefixTabs = true
+			case 'u':
+				// unified format (already default)
+			case 'w':
+				opts.ignoreAllSpace = true
+			default:
+				return core.UsageError(stdio, "diff", fmt.Sprintf("invalid option -- '%c'", ch))
+			}
 		}
 		i++
 	}
@@ -134,6 +162,15 @@ func parsePositiveInt(val string) (int, error) {
 }
 
 func diffPath(stdio *core.Stdio, left string, right string, opts diffOptions, contextLines int) (bool, int, error) {
+	// Handle stdin "-"
+	if left == "-" && right == "-" {
+		// Both stdin: read once, compare to self
+		return false, core.ExitSuccess, nil
+	}
+	if left == "-" || right == "-" {
+		return diffWithStdin(stdio, left, right, opts, contextLines)
+	}
+
 	leftInfo, leftErr := corefs.Stat(left)
 	rightInfo, rightErr := corefs.Stat(right)
 
@@ -163,6 +200,28 @@ func diffPath(stdio *core.Stdio, left string, right string, opts diffOptions, co
 		return diffDirOrFile(stdio, left, right, leftInfo.IsDir(), rightInfo.IsDir(), opts, contextLines)
 	}
 	return diffFile(stdio, left, right, opts, contextLines)
+}
+
+func diffWithStdin(stdio *core.Stdio, left string, right string, opts diffOptions, contextLines int) (bool, int, error) {
+	stdinData, err := io.ReadAll(stdio.In)
+	if err != nil {
+		stdio.Errorf("diff: read stdin: %v\n", err)
+		return false, core.ExitUsage, err
+	}
+	if left == "-" {
+		fileData, err := corefs.ReadFile(right)
+		if err != nil {
+			stdio.Errorf("diff: %s: %v\n", right, err)
+			return false, core.ExitUsage, err
+		}
+		return diffData(stdio, stdinData, fileData, "-", right, opts, contextLines)
+	}
+	fileData, err := corefs.ReadFile(left)
+	if err != nil {
+		stdio.Errorf("diff: %s: %v\n", left, err)
+		return false, core.ExitUsage, err
+	}
+	return diffData(stdio, fileData, stdinData, left, "-", opts, contextLines)
 }
 
 func diffDirOrFile(stdio *core.Stdio, left string, right string, leftIsDir bool, rightIsDir bool, opts diffOptions, contextLines int) (bool, int, error) {
@@ -286,6 +345,10 @@ func diffFile(stdio *core.Stdio, left string, right string, opts diffOptions, co
 		stdio.Errorf("diff: %s: %v\n", right, err)
 		return false, core.ExitUsage, err
 	}
+	return diffData(stdio, leftData, rightData, left, right, opts, contextLines)
+}
+
+func diffData(stdio *core.Stdio, leftData []byte, rightData []byte, left string, right string, opts diffOptions, contextLines int) (bool, int, error) {
 	if bytes.Equal(leftData, rightData) {
 		if opts.same {
 			stdio.Printf("Files %s and %s are identical\n", left, right)
@@ -319,7 +382,10 @@ func diffFile(stdio *core.Stdio, left string, right string, opts diffOptions, co
 	if opts.labelRight != "" {
 		rightLabel = opts.labelRight
 	}
-	writeUnified(stdio, lines, leftLabel, rightLabel, contextLines, opts)
+	// Detect "no newline at end of file"
+	leftNoNewline := len(leftData) > 0 && leftData[len(leftData)-1] != '\n'
+	rightNoNewline := len(rightData) > 0 && rightData[len(rightData)-1] != '\n'
+	writeUnified(stdio, lines, leftLabel, rightLabel, contextLines, opts, leftNoNewline, rightNoNewline)
 	return true, core.ExitSuccess, nil
 }
 
@@ -355,7 +421,7 @@ func diffMissingFile(stdio *core.Stdio, left string, right string, leftErr error
 	if opts.labelRight != "" {
 		rightLabel = opts.labelRight
 	}
-	writeUnified(stdio, lines, leftLabel, rightLabel, contextLines, opts)
+	writeUnified(stdio, lines, leftLabel, rightLabel, contextLines, opts, false, false)
 	return true, core.ExitSuccess, nil
 }
 
@@ -455,14 +521,15 @@ func buildDiffLinesWithOriginal(leftOrig []string, rightOrig []string, left []st
 			j++
 			continue
 		}
-		if j < len(right) && (i == len(left) || lcs[i][j+1] >= lcs[i+1][j]) {
+		if i < len(left) && (j == len(right) || lcs[i+1][j] >= lcs[i][j+1]) {
+			lines = append(lines, diffLine{tag: '-', text: leftOrig[leftMap[i]]})
+			i++
+			continue
+		}
+		if j < len(right) {
 			lines = append(lines, diffLine{tag: '+', text: rightOrig[rightMap[j]]})
 			j++
 			continue
-		}
-		if i < len(left) {
-			lines = append(lines, diffLine{tag: '-', text: leftOrig[leftMap[i]]})
-			i++
 		}
 	}
 	return lines
@@ -505,7 +572,7 @@ func makeHunks(lines []diffLine, context int) []hunk {
 	return hunks
 }
 
-func writeUnified(stdio *core.Stdio, lines []diffLine, left string, right string, contextLines int, opts diffOptions) {
+func writeUnified(stdio *core.Stdio, lines []diffLine, left string, right string, contextLines int, opts diffOptions, leftNoNewline bool, rightNoNewline bool) {
 	hunks := makeHunks(lines, contextLines)
 	if len(hunks) == 0 {
 		return
@@ -540,19 +607,20 @@ func writeUnified(stdio *core.Stdio, lines []diffLine, left string, right string
 			bPart = fmt.Sprintf("+%d,%d", bStart, bCount)
 		}
 		stdio.Printf("@@ %s %s @@\n", aPart, bPart)
-		for _, line := range lines[h.start:h.end] {
-			if line.tag == '-' {
-				stdio.Printf("%s%s\n", formatPrefix("-", opts), formatDiffLine(line.text, opts))
-			}
-		}
-		for _, line := range lines[h.start:h.end] {
-			if line.tag == '+' {
-				stdio.Printf("%s%s\n", formatPrefix("+", opts), formatDiffLine(line.text, opts))
-			}
-		}
-		for _, line := range lines[h.start:h.end] {
-			if line.tag == ' ' {
-				stdio.Printf("%s%s\n", formatPrefix(" ", opts), formatDiffLine(line.text, opts))
+		for idx, line := range lines[h.start:h.end] {
+			globalIdx := h.start + idx
+			prefix := string(line.tag)
+			stdio.Printf("%s%s\n", formatPrefix(prefix, opts), formatDiffLine(line.text, opts))
+			// "No newline at end of file" marker
+			isLastLine := globalIdx == len(lines)-1
+			if isLastLine {
+				if line.tag == '-' && leftNoNewline {
+					stdio.Printf("\\ No newline at end of file\n")
+				} else if line.tag == '+' && rightNoNewline {
+					stdio.Printf("\\ No newline at end of file\n")
+				} else if line.tag == ' ' && leftNoNewline && rightNoNewline {
+					stdio.Printf("\\ No newline at end of file\n")
+				}
 			}
 		}
 	}

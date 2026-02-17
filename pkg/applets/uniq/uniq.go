@@ -2,6 +2,8 @@ package uniq
 
 import (
 	"bufio"
+	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -17,6 +19,7 @@ type options struct {
 	ignoreCase bool
 	skipFields int
 	skipChars  int
+	maxChars   int // -w
 }
 
 func Run(stdio *core.Stdio, args []string) int {
@@ -29,22 +32,55 @@ func Run(stdio *core.Stdio, args []string) int {
 			break
 		}
 		if strings.HasPrefix(arg, "-") && arg != "-" {
-			if arg == "-f" || arg == "-s" {
-				if i+1 >= len(args) {
-					return core.UsageError(stdio, "uniq", "missing number")
+			// Handle -f N, -s N, -w N as standalone or combined
+			switch {
+			case strings.HasPrefix(arg, "-f"):
+				val := arg[2:]
+				if val == "" {
+					if i+1 >= len(args) {
+						return core.UsageError(stdio, "uniq", "missing number")
+					}
+					i++
+					val = args[i]
 				}
-				i++
-				val, err := strconv.Atoi(args[i])
-				if err != nil || val < 0 {
+				n, err := strconv.Atoi(val)
+				if err != nil || n < 0 {
 					return core.UsageError(stdio, "uniq", "invalid number")
 				}
-				if arg == "-f" {
-					opts.skipFields = val
-				} else {
-					opts.skipChars = val
+				opts.skipFields = n
+				continue
+			case strings.HasPrefix(arg, "-s"):
+				val := arg[2:]
+				if val == "" {
+					if i+1 >= len(args) {
+						return core.UsageError(stdio, "uniq", "missing number")
+					}
+					i++
+					val = args[i]
 				}
+				n, err := strconv.Atoi(val)
+				if err != nil || n < 0 {
+					return core.UsageError(stdio, "uniq", "invalid number")
+				}
+				opts.skipChars = n
+				continue
+			case strings.HasPrefix(arg, "-w"):
+				val := arg[2:]
+				if val == "" {
+					if i+1 >= len(args) {
+						return core.UsageError(stdio, "uniq", "missing number")
+					}
+					i++
+					val = args[i]
+				}
+				n, err := strconv.Atoi(val)
+				if err != nil || n < 0 {
+					return core.UsageError(stdio, "uniq", "invalid number")
+				}
+				opts.maxChars = n
 				continue
 			}
+			// Handle combined boolean flags: -cdi
 			for _, c := range arg[1:] {
 				switch c {
 				case 'c':
@@ -55,26 +91,6 @@ func Run(stdio *core.Stdio, args []string) int {
 					opts.uniq = true
 				case 'i':
 					opts.ignoreCase = true
-				case 'f':
-					if i+1 >= len(args) {
-						return core.UsageError(stdio, "uniq", "missing number")
-					}
-					i++
-					val, err := strconv.Atoi(args[i])
-					if err != nil || val < 0 {
-						return core.UsageError(stdio, "uniq", "invalid number")
-					}
-					opts.skipFields = val
-				case 's':
-					if i+1 >= len(args) {
-						return core.UsageError(stdio, "uniq", "missing number")
-					}
-					i++
-					val, err := strconv.Atoi(args[i])
-					if err != nil || val < 0 {
-						return core.UsageError(stdio, "uniq", "invalid number")
-					}
-					opts.skipChars = val
 				default:
 					return core.UsageError(stdio, "uniq", "invalid option -- '"+string(c)+"'")
 				}
@@ -83,22 +99,43 @@ func Run(stdio *core.Stdio, args []string) int {
 			files = append(files, arg)
 		}
 	}
-	file := "-"
+	inFile := "-"
 	if len(files) > 0 {
-		file = files[0]
+		inFile = files[0]
+	}
+
+	var outWriter *bufio.Writer
+	if len(files) > 1 {
+		f, err := os.Create(files[1])
+		if err != nil {
+			stdio.Errorf("uniq: %s: %v\n", files[1], err)
+			return core.ExitFailure
+		}
+		defer f.Close()
+		outWriter = bufio.NewWriter(f)
+		defer outWriter.Flush()
 	}
 
 	var scanner *bufio.Scanner
-	if file == "-" {
+	if inFile == "-" {
 		scanner = bufio.NewScanner(stdio.In)
 	} else {
-		f, err := fs.Open(file)
+		f, err := fs.Open(inFile)
 		if err != nil {
-			stdio.Errorf("uniq: %s: %v\n", file, err)
+			stdio.Errorf("uniq: %s: %v\n", inFile, err)
 			return core.ExitFailure
 		}
 		defer f.Close()
 		scanner = bufio.NewScanner(f)
+	}
+
+	writeLine := func(s string) {
+		if outWriter != nil {
+			outWriter.WriteString(s)
+			outWriter.WriteByte('\n')
+		} else {
+			stdio.Println(s)
+		}
 	}
 
 	prev := ""
@@ -116,9 +153,9 @@ func Run(stdio *core.Stdio, args []string) int {
 			return
 		}
 		if opts.count {
-			stdio.Printf("%7d %s\n", count, prev)
+			writeLine(fmt.Sprintf("%7d %s", count, prev))
 		} else {
-			stdio.Println(prev)
+			writeLine(prev)
 		}
 	}
 
@@ -126,6 +163,9 @@ func Run(stdio *core.Stdio, args []string) int {
 		key := textutil.NormalizeLine(line, opts.skipFields, opts.skipChars)
 		if opts.ignoreCase {
 			key = strings.ToLower(key)
+		}
+		if opts.maxChars > 0 && len(key) > opts.maxChars {
+			key = key[:opts.maxChars]
 		}
 		return key
 	}

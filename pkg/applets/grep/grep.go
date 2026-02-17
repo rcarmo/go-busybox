@@ -3,6 +3,8 @@ package grep
 import (
 	"bufio"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -12,18 +14,22 @@ import (
 )
 
 type grepOptions struct {
-	showLineNum  bool
-	ignoreCase   bool
-	invert       bool
-	countOnly    bool
-	listFiles    bool
-	quiet        bool
-	fixed        bool
-	noFilename   bool
-	forcePrefix  bool
-	onlyMatching bool
-	extended     bool
-	recursive    bool
+	showLineNum    bool
+	ignoreCase     bool
+	invert         bool
+	countOnly      bool
+	listFiles      bool
+	listNonMatch   bool // -L
+	quiet          bool
+	fixed          bool
+	noFilename     bool
+	forcePrefix    bool
+	onlyMatching   bool
+	extended       bool
+	recursive      bool
+	exactMatch     bool // -x
+	wordMatch      bool // -w
+	suppressErrors bool // -s
 }
 
 type matcher struct {
@@ -33,64 +39,180 @@ type matcher struct {
 
 func Run(stdio *core.Stdio, args []string) int {
 	opts := grepOptions{}
+	var patterns []string
+	var patternFiles []string
 	i := 0
-	for i < len(args) && strings.HasPrefix(args[i], "-") {
+	for i < len(args) && strings.HasPrefix(args[i], "-") && args[i] != "-" {
 		if args[i] == "--" {
 			i++
 			break
 		}
-		flag := args[i]
-		if flag == "-" {
-			break
+		arg := args[i]
+		if strings.HasPrefix(arg, "-e") {
+			val := arg[2:]
+			if val == "" {
+				if i+1 >= len(args) {
+					return core.UsageError(stdio, "grep", "missing pattern")
+				}
+				i++
+				val = args[i]
+			}
+			patterns = append(patterns, val)
+			i++
+			continue
 		}
-		switch flag {
-		case "-n":
-			opts.showLineNum = true
-		case "-i":
-			opts.ignoreCase = true
-		case "-v":
-			opts.invert = true
-		case "-c":
-			opts.countOnly = true
-		case "-l":
-			opts.listFiles = true
-		case "-q":
-			opts.quiet = true
-		case "-F":
-			opts.fixed = true
-		case "-h":
-			opts.noFilename = true
-		case "-H":
-			opts.forcePrefix = true
-		case "-o":
-			opts.onlyMatching = true
-		case "-E":
-			opts.extended = true
-		case "-r":
-			opts.recursive = true
-		default:
-			return core.UsageError(stdio, "grep", "invalid option")
+		if strings.HasPrefix(arg, "-f") {
+			val := arg[2:]
+			if val == "" {
+				if i+1 >= len(args) {
+					return core.UsageError(stdio, "grep", "missing file")
+				}
+				i++
+				val = args[i]
+			}
+			patternFiles = append(patternFiles, val)
+			i++
+			continue
 		}
+		// Handle combined flags like -Fxvq, but -e/-f must be last
+		flags := arg[1:]
+		valid := true
+		for ci, ch := range flags {
+			switch ch {
+			case 'n':
+				opts.showLineNum = true
+			case 'i':
+				opts.ignoreCase = true
+			case 'v':
+				opts.invert = true
+			case 'c':
+				opts.countOnly = true
+			case 'l':
+				opts.listFiles = true
+			case 'L':
+				opts.listNonMatch = true
+			case 'q':
+				opts.quiet = true
+			case 'F':
+				opts.fixed = true
+			case 'h':
+				opts.noFilename = true
+			case 'H':
+				opts.forcePrefix = true
+			case 'o':
+				opts.onlyMatching = true
+			case 'E':
+				opts.extended = true
+			case 'r':
+				opts.recursive = true
+			case 'x':
+				opts.exactMatch = true
+			case 'w':
+				opts.wordMatch = true
+			case 's':
+				opts.suppressErrors = true
+			case 'e':
+				// -e as part of combined flags: rest is pattern or next arg
+				rest := string([]rune(flags)[ci+1:])
+				if rest == "" {
+					if i+1 >= len(args) {
+						return core.UsageError(stdio, "grep", "missing pattern")
+					}
+					i++
+					rest = args[i]
+				}
+				patterns = append(patterns, rest)
+				goto nextArg
+			case 'f':
+				// -f as part of combined flags: rest is filename or next arg
+				rest := string([]rune(flags)[ci+1:])
+				if rest == "" {
+					if i+1 >= len(args) {
+						return core.UsageError(stdio, "grep", "missing file")
+					}
+					i++
+					rest = args[i]
+				}
+				patternFiles = append(patternFiles, rest)
+				goto nextArg
+			default:
+				valid = false
+			}
+		}
+		if !valid {
+			return core.UsageError(stdio, "grep", fmt.Sprintf("invalid option -- '%s'", flags))
+		}
+	nextArg:
 		i++
 	}
-	if i >= len(args) {
-		return core.UsageError(stdio, "grep", "missing pattern or file")
+
+	// Read patterns from -f files
+	for _, pf := range patternFiles {
+		var data []byte
+		if pf == "-" {
+			var err error
+			data, err = io.ReadAll(stdio.In)
+			if err != nil {
+				stdio.Errorf("grep: (standard input): %v\n", err)
+				return core.ExitFailure
+			}
+		} else {
+			var err error
+			data, err = corefs.ReadFile(pf)
+			if err != nil {
+				stdio.Errorf("grep: %s: %v\n", pf, err)
+				return core.ExitFailure
+			}
+		}
+		content := string(data)
+		if content == "" {
+			// Empty pattern file: no patterns added (matches nothing)
+			continue
+		}
+		content = strings.TrimSuffix(content, "\n")
+		for _, p := range strings.Split(content, "\n") {
+			patterns = append(patterns, p)
+		}
 	}
-	pattern := args[i]
-	i++
+
+	// If no -e or -f, first positional arg is the pattern
+	if len(patterns) == 0 && len(patternFiles) == 0 {
+		if i >= len(args) {
+			return core.UsageError(stdio, "grep", "missing pattern or file")
+		}
+		pat := args[i]
+		i++
+		// Pattern can be a newline-delimited list
+		patterns = append(patterns, pat)
+	}
+
+	// If -f was used with empty file(s) and no patterns were added, match nothing
+	emptyPatternFile := len(patternFiles) > 0 && len(patterns) == 0
+
 	files := args[i:]
 	if len(files) == 0 {
 		files = []string{"-"}
 	}
 
-	match, err := buildMatcher(pattern, opts)
-	if err != nil {
-		stdio.Errorf("grep: %v\n", err)
-		return core.ExitFailure
+	var match *matcher
+	if emptyPatternFile {
+		// Empty pattern file: nothing matches
+		match = &matcher{
+			match:   func(line string) bool { return false },
+			findAll: func(line string) []string { return nil },
+		}
+	} else {
+		var err error
+		match, err = buildMatcher(patterns, opts)
+		if err != nil {
+			stdio.Errorf("grep: %v\n", err)
+			return core.ExitFailure
+		}
 	}
 
 	multi := opts.forcePrefix || (!opts.noFilename && (len(files) > 1 || opts.recursive))
 	found := false
+	nonMatchFound := false
 	hadErr := false
 
 	for _, file := range files {
@@ -100,14 +222,26 @@ func Run(stdio *core.Stdio, args []string) int {
 			if opts.quiet {
 				return core.ExitSuccess
 			}
+		} else if err == nil {
+			nonMatchFound = true
 		}
 		if err != nil {
 			hadErr = true
 		}
 	}
 
-	if hadErr && !found {
-		return core.ExitFailure
+	// -L: exit 0 if we listed any non-matching files
+	if opts.listNonMatch {
+		if nonMatchFound {
+			return core.ExitSuccess
+		}
+		if hadErr {
+			return 2
+		}
+		return 1
+	}
+	if hadErr {
+		return 2
 	}
 	if found {
 		return core.ExitSuccess
@@ -115,54 +249,158 @@ func Run(stdio *core.Stdio, args []string) int {
 	return 1
 }
 
-func buildMatcher(pattern string, opts grepOptions) (*matcher, error) {
-	if opts.fixed {
-		return buildFixedMatcher(pattern, opts.ignoreCase), nil
+func buildMatcher(patterns []string, opts grepOptions) (*matcher, error) {
+	// Expand newline-delimited patterns
+	var expanded []string
+	for _, p := range patterns {
+		if strings.Contains(p, "\n") {
+			for _, sub := range strings.Split(p, "\n") {
+				expanded = append(expanded, sub)
+			}
+		} else {
+			expanded = append(expanded, p)
+		}
 	}
-	if !opts.extended {
-		pattern = breToRE2(pattern)
+
+	if opts.fixed {
+		return buildFixedMatcher(expanded, opts), nil
+	}
+
+	// Build combined regex
+	var regexParts []string
+	for _, p := range expanded {
+		if !opts.extended {
+			p = breToRE2(p)
+		}
+		regexParts = append(regexParts, p)
+	}
+
+	combined := strings.Join(regexParts, "|")
+	if opts.wordMatch {
+		combined = `(?:^|(?:\W))(?:` + combined + `)(?:(?:\W)|$)`
 	}
 	if opts.ignoreCase {
-		pattern = "(?i)" + pattern
+		combined = "(?i)" + combined
 	}
-	re, err := regexp.Compile(pattern)
+
+	re, err := regexp.Compile(combined)
 	if err != nil {
 		return nil, err
 	}
-	return &matcher{
-		match: re.MatchString,
-		findAll: func(line string) []string {
-			indices := re.FindAllStringIndex(line, -1)
-			out := make([]string, 0, len(indices))
-			for _, idx := range indices {
-				out = append(out, line[idx[0]:idx[1]])
+
+	// For -w, build a separate regex for findAll that captures the word
+	var findRe *regexp.Regexp
+	if opts.wordMatch {
+		wordCombined := strings.Join(regexParts, "|")
+		if opts.ignoreCase {
+			wordCombined = "(?i)" + wordCombined
+		}
+		findRe, _ = regexp.Compile(wordCombined)
+	} else {
+		findRe = re
+	}
+
+	matchFn := func(line string) bool {
+		if opts.exactMatch {
+			if re.MatchString(line) {
+				m := re.FindString(line)
+				return m == line
 			}
-			return out
-		},
-	}, nil
+			return false
+		}
+		return re.MatchString(line)
+	}
+
+	findAllFn := func(line string) []string {
+		indices := findRe.FindAllStringIndex(line, -1)
+		out := make([]string, 0, len(indices))
+		for _, idx := range indices {
+			out = append(out, line[idx[0]:idx[1]])
+		}
+		return out
+	}
+
+	return &matcher{match: matchFn, findAll: findAllFn}, nil
 }
 
-func buildFixedMatcher(pattern string, ignoreCase bool) *matcher {
-	if ignoreCase {
-		lowerPattern := strings.ToLower(pattern)
-		return &matcher{
-			match: func(line string) bool {
-				return strings.Contains(strings.ToLower(line), lowerPattern)
-			},
-			findAll: func(line string) []string {
-				lowerLine := strings.ToLower(line)
-				return findAllFixed(line, lowerLine, lowerPattern)
-			},
+func buildFixedMatcher(patterns []string, opts grepOptions) *matcher {
+	// Filter out empty patterns for matching purposes
+	var nonEmpty []string
+	hasEmpty := false
+	for _, p := range patterns {
+		if p == "" {
+			hasEmpty = true
+		} else {
+			nonEmpty = append(nonEmpty, p)
 		}
 	}
-	return &matcher{
-		match: func(line string) bool {
-			return strings.Contains(line, pattern)
-		},
-		findAll: func(line string) []string {
-			return findAllFixed(line, line, pattern)
-		},
+
+	matchFn := func(line string) bool {
+		if hasEmpty {
+			return true // empty pattern matches everything
+		}
+		for _, p := range nonEmpty {
+			hay, needle := line, p
+			if opts.ignoreCase {
+				hay = strings.ToLower(hay)
+				needle = strings.ToLower(needle)
+			}
+			if opts.exactMatch {
+				if hay == needle {
+					return true
+				}
+			} else if opts.wordMatch {
+				if fixedWordMatch(hay, needle) {
+					return true
+				}
+			} else {
+				if strings.Contains(hay, needle) {
+					return true
+				}
+			}
+		}
+		return false
 	}
+
+	findAllFn := func(line string) []string {
+		var results []string
+		for _, p := range nonEmpty {
+			hay, needle := line, p
+			if opts.ignoreCase {
+				hay = strings.ToLower(hay)
+				needle = strings.ToLower(needle)
+			}
+			results = append(results, findAllFixed(line, hay, needle)...)
+		}
+		return results
+	}
+
+	return &matcher{match: matchFn, findAll: findAllFn}
+}
+
+func fixedWordMatch(hay, needle string) bool {
+	offset := 0
+	for {
+		idx := strings.Index(hay[offset:], needle)
+		if idx == -1 {
+			return false
+		}
+		start := offset + idx
+		end := start + len(needle)
+		leftOk := start == 0 || !isWordChar(hay[start-1])
+		rightOk := end == len(hay) || !isWordChar(hay[end])
+		if leftOk && rightOk {
+			return true
+		}
+		offset = start + 1
+		if offset >= len(hay) {
+			return false
+		}
+	}
+}
+
+func isWordChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
 }
 
 func findAllFixed(original string, haystack string, needle string) []string {
@@ -225,7 +463,9 @@ func grepPath(stdio *core.Stdio, path string, match *matcher, opts grepOptions, 
 	}
 	info, err := corefs.Stat(path)
 	if err != nil {
-		stdio.Errorf("grep: %s: %v\n", path, err)
+		if !opts.suppressErrors {
+			stdio.Errorf("grep: %s: %v\n", path, err)
+		}
 		return false, err
 	}
 	if info.IsDir() {
@@ -233,16 +473,54 @@ func grepPath(stdio *core.Stdio, path string, match *matcher, opts grepOptions, 
 			stdio.Errorf("grep: %s: Is a directory\n", path)
 			return false, fmt.Errorf("is a directory")
 		}
-		entries, err := corefs.ReadDir(path)
-		if err != nil {
+		return grepDir(stdio, path, match, opts, multi)
+	}
+	return grepFile(stdio, path, match, opts, multi)
+}
+
+func grepDir(stdio *core.Stdio, path string, match *matcher, opts grepOptions, multi bool) (bool, error) {
+	entries, err := corefs.ReadDir(path)
+	if err != nil {
+		if !opts.suppressErrors {
 			stdio.Errorf("grep: %s: %v\n", path, err)
-			return false, err
 		}
-		matchedAny := false
-		var walkErr error
-		for _, entry := range entries {
-			next := filepath.Join(path, entry.Name())
-			matched, err := grepPath(stdio, next, match, opts, multi)
+		return false, err
+	}
+	matchedAny := false
+	var walkErr error
+	for _, entry := range entries {
+		next := filepath.Join(path, entry.Name())
+		if entry.IsDir() {
+			matched, err := grepDir(stdio, next, match, opts, multi)
+			if matched {
+				matchedAny = true
+			}
+			if err != nil {
+				walkErr = err
+			}
+		} else if entry.Type()&os.ModeSymlink != 0 {
+			// For symlinks, stat to check target
+			info, err := corefs.Stat(next)
+			if err != nil {
+				if !opts.suppressErrors {
+					stdio.Errorf("grep: %s: %v\n", next, err)
+				}
+				walkErr = err
+				continue
+			}
+			if info.IsDir() {
+				// Don't follow symlinks to directories in -r
+				continue
+			}
+			matched, err := grepFile(stdio, next, match, opts, multi)
+			if matched {
+				matchedAny = true
+			}
+			if err != nil {
+				walkErr = err
+			}
+		} else {
+			matched, err := grepFile(stdio, next, match, opts, multi)
 			if matched {
 				matchedAny = true
 			}
@@ -250,31 +528,37 @@ func grepPath(stdio *core.Stdio, path string, match *matcher, opts grepOptions, 
 				walkErr = err
 			}
 		}
-		return matchedAny, walkErr
 	}
-	return grepFile(stdio, path, match, opts, multi)
+	return matchedAny, walkErr
 }
 
 func grepFile(stdio *core.Stdio, file string, match *matcher, opts grepOptions, multi bool) (bool, error) {
-	var scanner *bufio.Scanner
+	displayName := file
 	if file == "-" {
-		scanner = bufio.NewScanner(stdio.In)
+		displayName = "(standard input)"
+	}
+	var reader io.Reader
+	if file == "-" {
+		reader = stdio.In
 	} else {
 		f, err := corefs.Open(file)
 		if err != nil {
-			stdio.Errorf("grep: %s: %v\n", file, err)
+			if !opts.suppressErrors {
+				stdio.Errorf("grep: %s: %v\n", file, err)
+			}
 			return false, err
 		}
 		defer f.Close()
-		scanner = bufio.NewScanner(f)
+		reader = f
 	}
+	scanner := bufio.NewScanner(reader)
 
 	count := 0
 	lineNum := 1
 	matchedAny := false
 	prefix := ""
 	if multi {
-		prefix = file + ":"
+		prefix = displayName + ":"
 	}
 
 	for scanner.Scan() {
@@ -291,13 +575,17 @@ func grepFile(stdio *core.Stdio, file string, match *matcher, opts grepOptions, 
 				return true, nil
 			}
 			if opts.listFiles {
-				stdio.Printf("%s\n", file)
+				stdio.Printf("%s\n", displayName)
 				return true, nil
 			}
-			if !opts.countOnly {
+			if !opts.countOnly && !opts.listNonMatch {
 				if opts.onlyMatching {
 					if !opts.invert {
-						for _, m := range match.findAll(line) {
+						matches := match.findAll(line)
+						for _, m := range matches {
+							if m == "" {
+								continue // skip zero-length matches
+							}
 							if opts.showLineNum {
 								stdio.Printf("%s%d:%s\n", prefix, lineNum, m)
 							} else {
@@ -320,6 +608,9 @@ func grepFile(stdio *core.Stdio, file string, match *matcher, opts grepOptions, 
 	}
 	if opts.countOnly {
 		stdio.Printf("%s%d\n", prefix, count)
+	}
+	if opts.listNonMatch && !matchedAny {
+		stdio.Printf("%s\n", displayName)
 	}
 	return matchedAny, nil
 }

@@ -150,20 +150,27 @@ func RunHeadTail(stdio *Stdio, applet string, args []string, fn HeadTailFileFunc
 }
 
 func parseNumericFlagValue(args []string, i int, arg string, j int, applet string, stdio *Stdio) (int, int, int) {
+	var valStr string
 	if j+1 < len(arg) {
-		n, err := strconv.Atoi(arg[j+1:])
-		if err != nil {
-			return 0, i, UsageError(stdio, applet, "invalid number: "+arg[j+1:])
-		}
-		return n, i, ExitSuccess
-	}
-	if i+1 < len(args) {
+		valStr = arg[j+1:]
+	} else if i+1 < len(args) {
 		i++
-		n, err := strconv.Atoi(args[i])
-		if err != nil {
-			return 0, i, UsageError(stdio, applet, "invalid number: "+args[i])
-		}
-		return n, i, ExitSuccess
+		valStr = args[i]
+	} else {
+		return 0, i, UsageError(stdio, applet, "missing number")
 	}
-	return 0, i, UsageError(stdio, applet, "missing number")
+	// +N means "from start" — encode as negative
+	fromStart := false
+	if len(valStr) > 0 && valStr[0] == '+' {
+		fromStart = true
+		valStr = valStr[1:]
+	}
+	n, err := strconv.Atoi(valStr)
+	if err != nil {
+		return 0, i, UsageError(stdio, applet, "invalid number: "+valStr)
+	}
+	if fromStart {
+		n = -n
+	}
+	return n, i, ExitSuccess
 }
