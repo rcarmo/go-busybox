@@ -70,11 +70,9 @@ The busybox reference test suite (`/workspace/busybox-reference/testsuite/`) is 
 | xargs | 7 | 7 | ✅ 100% |
 | **New-style total** | **308** | **308** | **100%** |
 
-Old-style directory tests (cat, cp, cut, echo, find, gzip, ls, mkdir, mv, pwd, rm, rmdir, tail, tr, wc, wget): **76/79 (96.2%)**
+Old-style directory tests (cat, cp, cut, echo, find, gzip, ls, mkdir, mv, pwd, rm, rmdir, tail, tr, wc, wget): **79/79 (100%)**
 
-**Combined: 384/387 (99.2%)**
-
-Remaining failures: 3 wget tests requiring network access.
+**Combined: 387/387 (100%)**
 
 ## Feature Completeness Status
 
