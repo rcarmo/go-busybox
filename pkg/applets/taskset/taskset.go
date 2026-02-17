@@ -23,8 +23,12 @@ func Run(stdio *core.Stdio, args []string) int {
 			return core.UsageError(stdio, "taskset", "missing pid")
 		}
 		pid, err := strconv.Atoi(args[1])
-		if err != nil || pid < 1 {
+		if err != nil {
 			return core.UsageError(stdio, "taskset", "number "+args[1]+" is not in 1..2147483647 range")
+		}
+		if pid < 1 {
+			stdio.Errorf("taskset: failed to get pid %d's affinity\n", pid)
+			return core.ExitFailure
 		}
 		mask, err := getAffinityMask(pid)
 		if err != nil {

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/rcarmo/go-busybox/pkg/core"
 	"github.com/rcarmo/go-busybox/pkg/core/fileutil"
@@ -13,17 +14,25 @@ import (
 
 // Options holds cp command options.
 type Options struct {
-	Recursive    bool // -r, -R: copy directories recursively
-	Force        bool // -f: force overwrite
-	Interactive  bool // -i: prompt before overwrite
-	Preserve     bool // -p: preserve mode, ownership, timestamps
-	NoClobber    bool // -n: do not overwrite existing files
-	Verbose      bool // -v: verbose output
-	CopyToDir    string
-	NoTargetDir  bool
+	Recursive     bool   // -r, -R: copy directories recursively
+	Force         bool   // -f: force overwrite
+	Interactive   bool   // -i: prompt before overwrite
+	Preserve      bool   // -p: preserve mode, ownership, timestamps
+	NoClobber     bool   // -n: do not overwrite existing files
+	Verbose       bool   // -v: verbose output
+	CopyToDir     string
+	NoTargetDir   bool
 	NoDereference bool // -P, -d: don't follow symlinks
 	Dereference   bool // -L: follow all symlinks
 	DerefArgs     bool // -H: follow only command-line symlinks
+	Parents       bool // --parents: preserve source path structure
+	hardLinks     map[hardLinkKey]string // track inode -> dest for hard link preservation
+}
+
+// hardLinkKey identifies a file by device+inode for hard link tracking
+type hardLinkKey struct {
+	dev uint64
+	ino uint64
 }
 
 // Run executes the cp command with the given arguments.
@@ -39,6 +48,9 @@ func Run(stdio *core.Stdio, args []string) int {
 		}
 		if len(arg) > 0 && arg[0] == '-' && len(arg) > 1 {
 			switch arg {
+			case "--parents":
+				opts.Parents = true
+				continue
 			case "-t":
 				if i+1 >= len(args) {
 					return core.UsageError(stdio, "cp", "missing operand")
@@ -111,9 +123,27 @@ func Run(stdio *core.Stdio, args []string) int {
 		return core.UsageError(stdio, "cp", "target '"+dest+"' is a directory")
 	}
 
+	// Initialize hard link tracking for -d copies
+	if opts.NoDereference {
+		opts.hardLinks = make(map[hardLinkKey]string)
+	}
+
 	exitCode := core.ExitSuccess
 	for _, src := range sources {
-		target := fileutil.TargetPath(src, dest, destIsDir)
+		var target string
+		if opts.Parents {
+			// --parents: replicate source path under dest
+			target = filepath.Join(dest, src)
+			// Ensure parent directories exist
+			parentDir := filepath.Dir(target)
+			if err := os.MkdirAll(parentDir, 0755); err != nil {
+				stdio.Errorf("cp: cannot create directory '%s': %v\n", parentDir, err)
+				exitCode = core.ExitFailure
+				continue
+			}
+		} else {
+			target = fileutil.TargetPath(src, dest, destIsDir)
+		}
 
 		if err := copyPath(stdio, src, target, &opts, true); err != nil {
 			exitCode = core.ExitFailure
@@ -183,6 +213,26 @@ func copySymlink(stdio *core.Stdio, src, dest string, opts *Options) error {
 }
 
 func copyFile(stdio *core.Stdio, src, dest string, srcInfo os.FileInfo, opts *Options) error {
+	// Check for hard link preservation
+	if opts.hardLinks != nil {
+		if stat, ok := srcInfo.Sys().(*syscall.Stat_t); ok && stat.Nlink > 1 {
+			key := hardLinkKey{dev: stat.Dev, ino: stat.Ino}
+			if existingDest, found := opts.hardLinks[key]; found {
+				// Create a hard link to the already-copied file
+				_ = os.Remove(dest)
+				if err := os.Link(existingDest, dest); err == nil {
+					if opts.Verbose {
+						stdio.Printf("'%s' -> '%s'\n", src, dest)
+					}
+					return nil
+				}
+				// Fall through to normal copy if link fails
+			} else {
+				opts.hardLinks[key] = dest
+			}
+		}
+	}
+
 	// Check if destination exists
 	if _, err := fs.Stat(dest); err == nil {
 		if opts.NoClobber {

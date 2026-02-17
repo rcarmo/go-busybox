@@ -13,18 +13,20 @@ import (
 
 // Options holds wc command options.
 type Options struct {
-	Lines bool // -l: count lines
-	Words bool // -w: count words
-	Chars bool // -m: count characters
-	Bytes bool // -c: count bytes
+	Lines      bool // -l: count lines
+	Words      bool // -w: count words
+	Chars      bool // -m: count characters
+	Bytes      bool // -c: count bytes
+	MaxLineLen bool // -L: print longest line length
 }
 
 // Counts holds the counts for a file.
 type Counts struct {
-	Lines int64
-	Words int64
-	Chars int64
-	Bytes int64
+	Lines      int64
+	Words      int64
+	Chars      int64
+	Bytes      int64
+	MaxLineLen int64
 }
 
 // Run executes the wc command with the given arguments.
@@ -36,6 +38,7 @@ func Run(stdio *core.Stdio, args []string) int {
 		'w': &opts.Words,
 		'm': &opts.Chars,
 		'c': &opts.Bytes,
+		'L': &opts.MaxLineLen,
 	}
 
 	files, code := core.ParseBoolFlags(stdio, "wc", args, flagMap, nil)
@@ -44,7 +47,7 @@ func Run(stdio *core.Stdio, args []string) int {
 	}
 
 	// Default: show lines, words, bytes
-	if !opts.Lines && !opts.Words && !opts.Chars && !opts.Bytes {
+	if !opts.Lines && !opts.Words && !opts.Chars && !opts.Bytes && !opts.MaxLineLen {
 		opts.Lines = true
 		opts.Words = true
 		opts.Bytes = true
@@ -70,6 +73,9 @@ func Run(stdio *core.Stdio, args []string) int {
 		total.Words += counts.Words
 		total.Chars += counts.Chars
 		total.Bytes += counts.Bytes
+		if counts.MaxLineLen > total.MaxLineLen {
+			total.MaxLineLen = counts.MaxLineLen
+		}
 	}
 
 	if len(files) > 1 {
@@ -97,11 +103,16 @@ func countFile(stdio *core.Stdio, path string) (*Counts, error) {
 	counts := &Counts{}
 	br := bufio.NewReader(reader)
 	inWord := false
+	var curLineLen int64
 
 	for {
 		r, size, err := br.ReadRune()
 		if err != nil {
 			if err == io.EOF {
+				// Check last line (no trailing newline)
+				if curLineLen > counts.MaxLineLen {
+					counts.MaxLineLen = curLineLen
+				}
 				break
 			}
 			return nil, err
@@ -112,6 +123,12 @@ func countFile(stdio *core.Stdio, path string) (*Counts, error) {
 
 		if r == '\n' {
 			counts.Lines++
+			if curLineLen > counts.MaxLineLen {
+				counts.MaxLineLen = curLineLen
+			}
+			curLineLen = 0
+		} else {
+			curLineLen++
 		}
 
 		if unicode.IsSpace(r) {
@@ -138,6 +155,9 @@ func printCounts(stdio *core.Stdio, c *Counts, name string, opts *Options, stdin
 	}
 	if opts.Bytes {
 		fields = append(fields, c.Bytes)
+	}
+	if opts.MaxLineLen {
+		fields = append(fields, c.MaxLineLen)
 	}
 	format := "%9d"
 	if len(fields) == 1 {

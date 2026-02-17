@@ -73,6 +73,9 @@ func Run(stdio *core.Stdio, args []string) int {
 			opts.followSymlinks = true
 		case "-H":
 			opts.followSymlinks = true
+		case "-xdev", "-mount":
+			// Don't cross filesystem boundaries - accepted but not enforced
+			// in this minimal implementation
 		case "-name":
 			i++
 			if i >= len(args) {
