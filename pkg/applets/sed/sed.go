@@ -98,6 +98,18 @@ func Run(stdio *core.Stdio, args []string) int {
 	}
 
 	if inPlace {
+		// -i with no real files is an error
+		hasRealFile := false
+		for _, f := range files {
+			if f != "-" {
+				hasRealFile = true
+				break
+			}
+		}
+		if !hasRealFile {
+			stdio.Errorf("sed: no input files\n")
+			return core.ExitFailure
+		}
 		return runInPlace(stdio, prog, quiet, files)
 	}
 	return runFiles(stdio, prog, quiet, files)
@@ -106,10 +118,12 @@ func Run(stdio *core.Stdio, args []string) int {
 // --- Data model ---
 
 type address struct {
-	lineNum int
-	regex   *regexp.Regexp
-	last    bool
-	step    int
+	lineNum    int
+	regex      *regexp.Regexp
+	last       bool
+	step       int
+	reuseRegex bool // // means reuse last regex
+	relative   bool // +N: relative line offset
 }
 
 type sedCommand struct {
@@ -135,7 +149,44 @@ func parseProgram(script string) ([]*sedCommand, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Validate that all branch/test labels exist
+	if err := validateLabels(cmds); err != nil {
+		return nil, err
+	}
 	return cmds, nil
+}
+
+func validateLabels(cmds []*sedCommand) error {
+	labels := map[string]bool{}
+	collectLabels(cmds, labels)
+	return checkBranches(cmds, labels)
+}
+
+func collectLabels(cmds []*sedCommand, labels map[string]bool) {
+	for _, cmd := range cmds {
+		if cmd.cmd == ':' {
+			labels[cmd.text] = true
+		}
+		if len(cmd.sub) > 0 {
+			collectLabels(cmd.sub, labels)
+		}
+	}
+}
+
+func checkBranches(cmds []*sedCommand, labels map[string]bool) error {
+	for _, cmd := range cmds {
+		if (cmd.cmd == 'b' || cmd.cmd == 't' || cmd.cmd == 'T') && cmd.text != "" {
+			if !labels[cmd.text] {
+				return fmt.Errorf("can't find label for jump to '%s'", cmd.text)
+			}
+		}
+		if len(cmd.sub) > 0 {
+			if err := checkBranches(cmd.sub, labels); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 type parser struct {
@@ -307,7 +358,11 @@ func (p *parser) parseAddress() (*address, error) {
 		}
 		p.pos++
 		pat := p.readUntilUnescaped(delim)
-		re, err := regexp.Compile(pat)
+		if pat == "" {
+			// Empty regex: reuse last regex
+			return &address{reuseRegex: true}, nil
+		}
+		re, err := compileBRE(pat)
 		if err != nil {
 			return nil, fmt.Errorf("invalid regex: %v", err)
 		}
@@ -321,7 +376,7 @@ func (p *parser) parseAddress() (*address, error) {
 		}
 		if p.pos > start {
 			n, _ := strconv.Atoi(p.src[start:p.pos])
-			return &address{lineNum: -n}, nil // negative = relative
+			return &address{lineNum: n, relative: true}, nil
 		}
 		p.pos--
 	}
@@ -405,8 +460,8 @@ func (p *parser) parseSubstitution(cmd *sedCommand) error {
 	}
 	delim := p.src[p.pos]
 	p.pos++
-	pattern := p.readSubstPart(delim)
-	replacement := p.readSubstPart(delim)
+	pattern := p.readSubstPart(delim, true)
+	replacement := p.readSubstPart(delim, false)
 
 	// Parse flags until end of command
 	for p.pos < len(p.src) && p.src[p.pos] != '\n' && p.src[p.pos] != ';' && p.src[p.pos] != '}' {
@@ -418,7 +473,7 @@ func (p *parser) parseSubstitution(cmd *sedCommand) error {
 			cmd.flagP = true
 		case 'i', 'I':
 			if pattern != "" {
-				re, err := regexp.Compile("(?i)" + pattern)
+				re, err := compileBRE("(?i)" + pattern)
 				if err == nil {
 					cmd.re = re
 				}
@@ -447,17 +502,17 @@ func (p *parser) parseSubstitution(cmd *sedCommand) error {
 	}
 
 	if pattern != "" && cmd.re == nil {
-		re, err := regexp.Compile(pattern)
+		re, err := compileBRE(pattern)
 		if err != nil {
 			return fmt.Errorf("invalid regex: %v", err)
 		}
 		cmd.re = re
 	}
-	cmd.repl = replacement
+	cmd.repl = convertSedRepl(replacement)
 	return nil
 }
 
-func (p *parser) readSubstPart(delim byte) string {
+func (p *parser) readSubstPart(delim byte, allowCharClass bool) string {
 	var buf strings.Builder
 	inCharClass := false
 	for p.pos < len(p.src) {
@@ -484,7 +539,7 @@ func (p *parser) readSubstPart(delim byte) string {
 			p.pos += 2
 			continue
 		}
-		if ch == '[' && !inCharClass {
+		if allowCharClass && ch == '[' && !inCharClass {
 			inCharClass = true
 			buf.WriteByte(ch)
 			p.pos++
@@ -512,8 +567,8 @@ func (p *parser) parseTransliterate(cmd *sedCommand) error {
 	}
 	delim := p.src[p.pos]
 	p.pos++
-	src := p.readSubstPart(delim)
-	dst := p.readSubstPart(delim)
+	src := p.readSubstPart(delim, false)
+	dst := p.readSubstPart(delim, false)
 	cmd.text = src + "\x00" + dst
 	return nil
 }
@@ -540,16 +595,17 @@ func (lr *lineReader) isLast() bool {
 }
 
 type engine struct {
-	prog        []*sedCommand
-	quiet       bool
-	out         *bytes.Buffer
-	holdSpace   string
-	lastRegex   *regexp.Regexp
-	lineNum     int
-	substituted bool
-	rangeActive map[*sedCommand]bool
-	rangeStart  map[*sedCommand]int
-	wfiles      map[string]*os.File
+	prog          []*sedCommand
+	quiet         bool
+	out           *bytes.Buffer
+	holdSpace     string
+	lastRegex     *regexp.Regexp
+	lineNum       int
+	substituted   bool
+	rangeActive   map[*sedCommand]bool
+	rangeStart    map[*sedCommand]int
+	wfiles        map[string]*os.File
+	lastWasAppend bool // true if last output was from a/i/c command
 }
 
 func newEngine(prog []*sedCommand, quiet bool) *engine {
@@ -590,16 +646,19 @@ func (e *engine) processLine(line string, lastLine bool, lr *lineReader) {
 		for _, t := range appendText {
 			e.out.WriteString(t)
 			e.out.WriteByte('\n')
+			e.lastWasAppend = true
 		}
 		return
 	case flowQuit:
 		if !e.quiet {
 			e.out.WriteString(patSpace)
 			e.out.WriteByte('\n')
+			e.lastWasAppend = false
 		}
 		for _, t := range appendText {
 			e.out.WriteString(t)
 			e.out.WriteByte('\n')
+			e.lastWasAppend = true
 		}
 		e.lineNum = -1
 		return
@@ -611,11 +670,50 @@ func (e *engine) processLine(line string, lastLine bool, lr *lineReader) {
 	if !e.quiet {
 		e.out.WriteString(patSpace)
 		e.out.WriteByte('\n')
+		e.lastWasAppend = false
 	}
 	for _, t := range appendText {
 		e.out.WriteString(t)
 		e.out.WriteByte('\n')
+		e.lastWasAppend = true
 	}
+}
+
+func (e *engine) preActivateRanges(cmds []*sedCommand, patSpace string, lastLine bool) {
+	for _, cmd := range cmds {
+		if cmd.addr1 != nil && cmd.addr2 != nil && !e.rangeActive[cmd] {
+			if e.addrMatchNoTrack(cmd.addr1, patSpace, lastLine) {
+				e.rangeActive[cmd] = true
+				e.rangeStart[cmd] = e.lineNum
+			}
+		}
+		if len(cmd.sub) > 0 {
+			e.preActivateRanges(cmd.sub, patSpace, lastLine)
+		}
+	}
+}
+
+// addrMatchNoTrack matches an address without updating lastRegex
+func (e *engine) addrMatchNoTrack(addr *address, patSpace string, lastLine bool) bool {
+	if addr == nil {
+		return true
+	}
+	if addr.last {
+		return lastLine
+	}
+	if addr.reuseRegex && e.lastRegex != nil {
+		return e.lastRegex.MatchString(patSpace)
+	}
+	if addr.regex != nil {
+		return addr.regex.MatchString(patSpace)
+	}
+	if addr.step > 0 {
+		if addr.lineNum == 0 {
+			return e.lineNum%addr.step == 0
+		}
+		return e.lineNum >= addr.lineNum && (e.lineNum-addr.lineNum)%addr.step == 0
+	}
+	return e.lineNum == addr.lineNum
 }
 
 const (
@@ -628,6 +726,9 @@ const (
 )
 
 func (e *engine) execCmds(cmds []*sedCommand, patSpace *string, lastLine bool, lr *lineReader, appendText *[]string) int {
+	// Pre-activate ranges for this line. This ensures that ranges with line-number
+	// addr1 are activated even if earlier commands (like d) abort processing.
+	e.preActivateRanges(cmds, *patSpace, lastLine)
 restart:
 	for i := 0; i < len(cmds); i++ {
 		cmd := cmds[i]
@@ -689,7 +790,9 @@ func (e *engine) matches(cmd *sedCommand, patSpace string, lastLine bool) bool {
 				return false
 			}
 			// Check if addr2 is a line number <= current: one-line range
-			if cmd.addr2.lineNum > 0 && cmd.addr2.lineNum <= e.lineNum {
+			if cmd.addr2.relative && cmd.addr2.lineNum == 0 {
+				e.rangeActive[cmd] = false
+			} else if !cmd.addr2.relative && cmd.addr2.lineNum > 0 && cmd.addr2.lineNum <= e.lineNum {
 				e.rangeActive[cmd] = false
 			}
 			return true
@@ -702,8 +805,8 @@ func (e *engine) matches(cmd *sedCommand, patSpace string, lastLine bool) bool {
 
 	// In range
 	endMatch := false
-	if cmd.addr2.lineNum < 0 {
-		endMatch = e.lineNum >= e.rangeStart[cmd]+(-cmd.addr2.lineNum)
+	if cmd.addr2.relative {
+		endMatch = e.lineNum >= e.rangeStart[cmd]+cmd.addr2.lineNum
 	} else if cmd.addr2.lineNum > 0 {
 		endMatch = e.lineNum >= cmd.addr2.lineNum
 	} else if cmd.addr2.last {
@@ -729,8 +832,20 @@ func (e *engine) addrMatch(addr *address, patSpace string, lastLine bool) bool {
 	if addr.last {
 		return lastLine
 	}
+	if addr.reuseRegex {
+		if e.lastRegex != nil {
+			if e.lastRegex.MatchString(patSpace) {
+				return true
+			}
+		}
+		return false
+	}
 	if addr.regex != nil {
-		return addr.regex.MatchString(patSpace)
+		if addr.regex.MatchString(patSpace) {
+			e.lastRegex = addr.regex
+			return true
+		}
+		return false
 	}
 	if addr.step > 0 {
 		if addr.lineNum == 0 {
@@ -972,8 +1087,10 @@ func runFiles(stdio *core.Stdio, prog []*sedCommand, quiet bool, files []string)
 			stdio.Errorf("sed: %v\n", err)
 			return core.ExitFailure
 		}
-		allLines = append(allLines, lines...)
-		lastNewline = hasNL
+		if len(lines) > 0 {
+			allLines = append(allLines, lines...)
+			lastNewline = hasNL
+		}
 	}
 
 	eng := newEngine(prog, quiet)
@@ -983,7 +1100,8 @@ func runFiles(stdio *core.Stdio, prog []*sedCommand, quiet bool, files []string)
 
 	result := eng.out.Bytes()
 	// If original input didn't end with newline, strip trailing newline from output
-	if !lastNewline && len(result) > 0 && result[len(result)-1] == '\n' {
+	// But only if the last output was from pattern-space printing (not append/insert)
+	if !lastNewline && !eng.lastWasAppend && len(result) > 0 && result[len(result)-1] == '\n' {
 		result = result[:len(result)-1]
 	}
 	if len(result) > 0 {
@@ -1011,7 +1129,7 @@ func runInPlace(stdio *core.Stdio, prog []*sedCommand, quiet bool, files []strin
 		eng.close()
 
 		result := eng.out.Bytes()
-		if !hasNL && len(result) > 0 && result[len(result)-1] == '\n' {
+		if !hasNL && !eng.lastWasAppend && len(result) > 0 && result[len(result)-1] == '\n' {
 			result = result[:len(result)-1]
 		}
 
@@ -1022,6 +1140,111 @@ func runInPlace(stdio *core.Stdio, prog []*sedCommand, quiet bool, files []strin
 		}
 	}
 	return exitCode
+}
+
+// compileBRE compiles a BRE (Basic Regular Expression) pattern by converting
+// BRE syntax to Go's ERE syntax before compilation.
+func compileBRE(pat string) (*regexp.Regexp, error) {
+	// Convert BRE to ERE:
+	// \( → (, \) → ), \| → |, \{ → {, \} → }
+	// ( → \(, ) → \), | → \|, { → \{, } → \}
+	var result strings.Builder
+	inCharClass := false
+	for i := 0; i < len(pat); i++ {
+		ch := pat[i]
+		if ch == '[' && !inCharClass {
+			inCharClass = true
+			result.WriteByte(ch)
+			continue
+		}
+		if ch == ']' && inCharClass {
+			inCharClass = false
+			result.WriteByte(ch)
+			continue
+		}
+		if inCharClass {
+			result.WriteByte(ch)
+			continue
+		}
+		if ch == '\\' && i+1 < len(pat) {
+			next := pat[i+1]
+			switch next {
+			case '(':
+				result.WriteByte('(')
+				i++
+			case ')':
+				result.WriteByte(')')
+				i++
+			case '|':
+				result.WriteByte('|')
+				i++
+			case '{':
+				result.WriteByte('{')
+				i++
+			case '}':
+				result.WriteByte('}')
+				i++
+			case '1', '2', '3', '4', '5', '6', '7', '8', '9':
+				// Backreference: \1-\9 — Go regex doesn't support, but keep as-is
+				result.WriteByte('\\')
+				result.WriteByte(next)
+				i++
+			default:
+				result.WriteByte('\\')
+				result.WriteByte(next)
+				i++
+			}
+			continue
+		}
+		// Literal special chars in BRE
+		if ch == '(' || ch == ')' || ch == '|' || ch == '{' || ch == '}' {
+			result.WriteByte('\\')
+			result.WriteByte(ch)
+			continue
+		}
+		result.WriteByte(ch)
+	}
+	return regexp.Compile(result.String())
+}
+
+// convertSedRepl converts sed replacement syntax to Go regexp replacement syntax.
+// Note: \n and \\ are already handled by readSubstPart.
+// sed: & = entire match, \1-\9 = groups
+// Go:  ${0} = entire match, ${1}-${9} = groups
+func convertSedRepl(repl string) string {
+	var buf strings.Builder
+	for i := 0; i < len(repl); i++ {
+		ch := repl[i]
+		if ch == '&' {
+			buf.WriteString("${0}")
+			continue
+		}
+		if ch == '\\' && i+1 < len(repl) {
+			next := repl[i+1]
+			if next >= '0' && next <= '9' {
+				buf.WriteString("${" + string(next) + "}")
+				i++
+				continue
+			}
+			if next == '&' {
+				// Literal &
+				buf.WriteByte('&')
+				i++
+				continue
+			}
+			buf.WriteByte(ch)
+			buf.WriteByte(next)
+			i++
+			continue
+		}
+		// Escape $ to prevent Go from treating it as group reference
+		if ch == '$' {
+			buf.WriteString("$$")
+			continue
+		}
+		buf.WriteByte(ch)
+	}
+	return buf.String()
 }
 
 func escapeForL(s string) string {
