@@ -1,3 +1,5 @@
+//go:build !js && !wasm && !wasip1
+
 // Package ash implements a minimal BusyBox ash-like shell.
 package ash
 

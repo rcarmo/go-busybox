@@ -41,9 +41,10 @@ go-busybox/
 - POSIX compliance where applicable
 
 ### Constraints
-- Binary size: <2MB combined, <100KB per applet
+- Binary size: 4.7MB standard WASM, 2.0MB optimised (`-opt=z -no-debug`)
 - Startup: <10ms cold start
 - Memory: <16MB baseline
+- 16 applets stubbed under WASI (OS-dependent syscalls); 41 fully functional
 
 ## Implementation phases
 

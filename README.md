@@ -31,7 +31,8 @@ Busybox utilities in Go, compilable to WebAssembly via TinyGo for sandboxed exec
 make setup-toolchain   # Go + TinyGo via Homebrew
 make install-dev       # linters, security tools
 make build             # native binary → _build/busybox
-make build-wasm        # WASM binary  → _build/busybox.wasm
+make build-wasm        # WASM binary       → _build/busybox.wasm  (4.7MB)
+make build-wasm-optimized  # size-optimised → _build/busybox.wasm  (2.0MB)
 make test
 ```
 
@@ -57,7 +58,7 @@ wasmtime --dir=. _build/busybox.wasm cat file.txt
 | System | `free` `ionice` `logname` `nproc` `sleep` `uptime` `users` `w` `watch` `who` `whoami` |
 | Network | `dig` `nc` `ss` `wget` |
 
-`start-stop-daemon` and `top` are native-only. Network applets require explicit opt-in under WASM.
+`start-stop-daemon`, `top`, and 14 other OS-dependent applets return stubs under WASM (see [Sandboxing](#sandboxing)).
 
 ---
 
@@ -248,7 +249,11 @@ sandbox.Init(&sandbox.Config{
 })
 ```
 
-Applets requiring OS APIs unavailable in WASM (`ash`, `ionice`, `nice`, `nohup`, `setsid`, `start-stop-daemon`, `taskset`, `time`, `timeout`, `top`, `users`, `watch`, `who`, `w`) have `*_wasm.go` stubs.
+Applets requiring OS APIs unavailable under WASI have `*_wasm.go` stubs that print an error and exit. 16 applets are stubbed:
+
+`ash`, `ionice`, `nice`, `nohup`, `renice`, `setsid`, `ss`, `start-stop-daemon`, `taskset`, `time`, `timeout`, `top`, `users`, `w`, `watch`, `who`.
+
+The remaining 41 applets compile and run natively under WASM. Process-management applets (`kill`, `killall`, `pgrep`, `pkill`, `pidof`, `ps`) compile but depend on `/proc` at runtime — they'll fail gracefully if the filesystem isn't mounted. The `procutil` signal table is reduced under WASI (no `SIGHUP`, `SIGUSR1`, `SIGUSR2`, `SIGALRM`).
 
 ---
 

@@ -1,3 +1,5 @@
+//go:build !js && !wasm && !wasip1
+
 // Package ss implements a minimal /proc-based ss command.
 package ss
 

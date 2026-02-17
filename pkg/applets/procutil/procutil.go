@@ -229,23 +229,8 @@ func ParseSignal(arg string) (syscall.Signal, error) {
 }
 
 // SignalNames returns a mapping from signal numbers to their short names
-// (e.g., syscall.SIGTERM → "TERM").
+// (e.g., syscall.SIGTERM → "TERM"). The set of signals varies by platform;
+// WASM builds omit signals unavailable under WASI.
 func SignalNames() map[syscall.Signal]string {
-	return map[syscall.Signal]string{
-		syscall.SIGHUP:  "HUP",
-		syscall.SIGINT:  "INT",
-		syscall.SIGQUIT: "QUIT",
-		syscall.SIGILL:  "ILL",
-		syscall.SIGTRAP: "TRAP",
-		syscall.SIGABRT: "ABRT",
-		syscall.SIGBUS:  "BUS",
-		syscall.SIGFPE:  "FPE",
-		syscall.SIGKILL: "KILL",
-		syscall.SIGUSR1: "USR1",
-		syscall.SIGSEGV: "SEGV",
-		syscall.SIGUSR2: "USR2",
-		syscall.SIGPIPE: "PIPE",
-		syscall.SIGALRM: "ALRM",
-		syscall.SIGTERM: "TERM",
-	}
+	return signalNames()
 }
