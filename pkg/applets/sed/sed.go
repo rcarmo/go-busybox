@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strconv"
@@ -634,9 +635,10 @@ func (p *parser) parseTransliterate(cmd *sedCommand) error {
 // --- Execution ---
 
 type lineReader struct {
-	lines   []string
-	pos     int
-	hasNL   bool // whether original input ended with newline
+	lines      []string
+	pos        int
+	hasNL      bool  // whether original input ended with newline
+	noNLLines  map[int]bool // set of 1-based line numbers that have no trailing newline
 }
 
 func (lr *lineReader) next() (string, bool) {
@@ -663,20 +665,23 @@ type engine struct {
 	rangeActive       map[*sedCommand]bool
 	rangeStart        map[*sedCommand]int
 	wfiles            map[string]*os.File
+	wfileLastLine     map[string]int // last lineNum written to each wfile
 	lastWasAppend     bool // true if last output was from a/i/c command
 	lastOutputLineNum int  // line number of last output
 	lastFullCycleLine int  // lineNum of last line that got full command processing
 	prevCycleLine     int  // lineNum of line before lastFullCycleLine (for gap detection)
+	noNLLines         map[int]bool // 1-based line numbers with no trailing newline
 }
 
 func newEngine(prog []*sedCommand, quiet bool) *engine {
 	return &engine{
-		prog:        prog,
-		quiet:       quiet,
-		out:         &bytes.Buffer{},
-		rangeActive: make(map[*sedCommand]bool),
-		rangeStart:  make(map[*sedCommand]int),
-		wfiles:      make(map[string]*os.File),
+		prog:          prog,
+		quiet:         quiet,
+		out:           &bytes.Buffer{},
+		rangeActive:   make(map[*sedCommand]bool),
+		rangeStart:    make(map[*sedCommand]int),
+		wfiles:        make(map[string]*os.File),
+		wfileLastLine: make(map[string]int),
 	}
 }
 
@@ -1115,10 +1120,19 @@ func (e *engine) writeFile(name string, data string) {
 		e.wfiles[name] = f
 	}
 	f.WriteString(data)
+	e.wfileLastLine[name] = e.lineNum
 }
 
 func (e *engine) close() {
-	for _, f := range e.wfiles {
+	for name, f := range e.wfiles {
+		// If the last line written to this file was a no-newline line,
+		// truncate the file to remove the trailing \n
+		if lastLine, ok := e.wfileLastLine[name]; ok && e.noNLLines[lastLine] {
+			pos, err := f.Seek(0, io.SeekCurrent)
+			if err == nil && pos > 0 {
+				f.Truncate(pos - 1) // remove trailing \n
+			}
+		}
 		f.Close()
 	}
 }
@@ -1158,6 +1172,7 @@ func runFiles(stdio *core.Stdio, prog []*sedCommand, quiet bool, files []string)
 	// Collect all lines from all files
 	var allLines []string
 	lastNewline := true
+	noNLLines := make(map[int]bool) // 1-based line numbers with no trailing newline
 	for _, file := range files {
 		lines, hasNL, err := readAllLines(stdio, file)
 		if err != nil {
@@ -1165,22 +1180,25 @@ func runFiles(stdio *core.Stdio, prog []*sedCommand, quiet bool, files []string)
 			return core.ExitFailure
 		}
 		if len(lines) > 0 {
+			if !hasNL {
+				// Last line of this file has no trailing newline
+				noNLLines[len(allLines)+len(lines)] = true // 1-based
+			}
 			allLines = append(allLines, lines...)
 			lastNewline = hasNL
 		}
 	}
 
 	eng := newEngine(prog, quiet)
-	lr := &lineReader{lines: allLines, hasNL: lastNewline}
+	eng.noNLLines = noNLLines
+	lr := &lineReader{lines: allLines, hasNL: lastNewline, noNLLines: noNLLines}
 	eng.run(lr)
 	eng.close()
 
 	result := eng.out.Bytes()
-	// If original input didn't end with newline, strip trailing newline from output
-	// But only if the last output was from the last line of input (not from earlier lines)
-	// and not from append/insert text
-	totalLines := len(allLines)
-	if !lastNewline && !eng.lastWasAppend && eng.lastOutputLineNum == totalLines && len(result) > 0 && result[len(result)-1] == '\n' {
+	// If the line that produced the last output had no trailing newline in its
+	// source file, strip the trailing newline from output
+	if !eng.lastWasAppend && eng.lastOutputLineNum > 0 && noNLLines[eng.lastOutputLineNum] && len(result) > 0 && result[len(result)-1] == '\n' {
 		result = result[:len(result)-1]
 	}
 	if len(result) > 0 {
@@ -1202,14 +1220,18 @@ func runInPlace(stdio *core.Stdio, prog []*sedCommand, quiet bool, files []strin
 			continue
 		}
 
+		noNLLines := make(map[int]bool)
+		if !hasNL && len(lines) > 0 {
+			noNLLines[len(lines)] = true
+		}
 		eng := newEngine(prog, quiet)
-		lr := &lineReader{lines: lines, hasNL: hasNL}
+		eng.noNLLines = noNLLines
+		lr := &lineReader{lines: lines, hasNL: hasNL, noNLLines: noNLLines}
 		eng.run(lr)
 		eng.close()
 
 		result := eng.out.Bytes()
-		totalLines := len(lines)
-		if !hasNL && !eng.lastWasAppend && eng.lastOutputLineNum == totalLines && len(result) > 0 && result[len(result)-1] == '\n' {
+		if !eng.lastWasAppend && eng.lastOutputLineNum > 0 && noNLLines[eng.lastOutputLineNum] && len(result) > 0 && result[len(result)-1] == '\n' {
 			result = result[:len(result)-1]
 		}
 
